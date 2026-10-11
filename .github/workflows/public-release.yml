@@ -42,8 +42,11 @@ jobs:
         with:
           node-version: 26.9.0
           package-manager-cache: false
+      - name: Install pinned npm
+        run: npm install --global npm@12.2.0 --ignore-scripts --no-audit --no-fund
+      - name: Verify npm version
+        run: test "$(npm --version)" = '12.2.0'
       - run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt,clippy
-      - run: test "$(npm --version)" = '12.2.0'
       - run: node scripts/public-release.mjs context --target '${{ matrix.target }}'
       - run: npm ci
       - run: npm run build:resources
@@ -75,8 +78,11 @@ jobs:
         with:
           node-version: 26.9.0
           package-manager-cache: false
+      - name: Install pinned npm
+        run: npm install --global npm@12.2.0 --ignore-scripts --no-audit --no-fund
+      - name: Verify npm version
+        run: test "$(npm --version)" = '12.2.0'
       - run: rustup toolchain install 1.99.0 --profile minimal
-      - run: test "$(npm --version)" = '12.2.0'
       - run: npm ci
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -109,6 +115,10 @@ jobs:
         with:
           node-version: 26.9.0
           package-manager-cache: false
+      - name: Install pinned npm
+        run: npm install --global npm@12.2.0 --ignore-scripts --no-audit --no-fund
+      - name: Verify npm version
+        run: test "$(npm --version)" = '12.2.0'
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: prepared-packages
@@ -141,6 +151,10 @@ jobs:
           node-version: 26.9.0
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
+      - name: Install pinned npm
+        run: npm install --global npm@12.2.0 --ignore-scripts --no-audit --no-fund
+      - name: Verify npm version
+        run: test "$(npm --version)" = '12.2.0'
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: prepared-packages
@@ -155,7 +169,6 @@ jobs:
           pattern: smoke-*
           merge-multiple: true
           path: smoke-results
-      - run: test "$(npm --version)" = '12.2.0'
       - run: node scripts/public-release.mjs verify
       - name: Install pinned GitHub attestation verifier
         run: |
