@@ -4,7 +4,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { run, tar } from '../../scripts/release-utils.mjs'
+import { run } from '../../scripts/release-utils.mjs'
+import { extractTarXz } from '../scripts/build.mjs'
 
 // A synthetic USTAR/XZ archive containing only sample.txt, with fixed metadata.
 const fixture = Buffer.from(
@@ -12,21 +13,14 @@ const fixture = Buffer.from(
 	'base64',
 )
 
-test('XZ extraction handles absolute archive paths with spaces without Git tar or external xz on Windows', async () => {
+test('XZ extraction handles absolute paths with spaces using build-host tools without Git tar on Windows', async () => {
 	const folder = await mkdtemp(path.join(os.tmpdir(), 'bluink tar test '))
 	try {
 		const archive = path.join(folder, 'fixture archive.tar.xz')
 		const destination = path.join(folder, 'output directory')
 		await mkdir(destination)
 		await writeFile(archive, fixture)
-		await tar(['-xf', archive, '-C', destination], {
-			capture: true,
-			// No PATH lookup or separate compressor should be needed on Windows.
-			env:
-				process.platform === 'win32'
-					? { ...process.env, PATH: '' }
-					: process.env,
-		})
+		await extractTarXz(archive, destination)
 		assert.equal(
 			await readFile(path.join(destination, 'sample.txt'), 'utf8'),
 			'Bluink archive extraction fixture.\n',
@@ -41,14 +35,11 @@ test('failed archive extraction reports the tool diagnostic', async () => {
 	try {
 		const archive = path.join(folder, 'invalid.tar.xz')
 		await writeFile(archive, 'This is not an archive.')
-		await assert.rejects(
-			tar(['-xf', archive, '-C', folder], { capture: true }),
-			(error) => {
-				assert.match(error.message, /failed \([1-9]\d*\)/)
-				assert.ok(error.message.split('). ').at(-1).trim().length > 0)
-				return true
-			},
-		)
+		await assert.rejects(extractTarXz(archive, folder), (error) => {
+			assert.match(error.message, /failed \([1-9]\d*\)/)
+			assert.ok(error.message.split('). ').at(-1).trim().length > 0)
+			return true
+		})
 	} finally {
 		await rm(folder, { recursive: true, force: true })
 	}

@@ -16,7 +16,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { inflateRawSync } from 'node:zlib'
-import { tar } from '../../scripts/release-utils.mjs'
+import { run, tar } from '../../scripts/release-utils.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const cache = path.join(root, '.cache')
@@ -74,11 +74,7 @@ export async function prepareTypst(requested = Object.keys(targets)) {
 			console.log(`Extracting ${spec.archive}`)
 			if (spec.archive.endsWith('.zip'))
 				await extractZipFiles(bytes, spec.directory, temporary)
-			else
-				await tar(['-xf', archivePath, '-C', temporary], {
-					capture: true,
-					timeout: 120_000,
-				})
+			else await extractTarXz(archivePath, temporary)
 			console.log(`Verifying Typst ${target} executable`)
 			const source = path.join(temporary, spec.directory)
 			await rm(destination, { recursive: true, force: true })
@@ -96,6 +92,32 @@ export async function prepareTypst(requested = Object.keys(targets)) {
 		} finally {
 			await rm(temporary, { recursive: true, force: true })
 		}
+	}
+}
+
+/** Windows Server tar can stall on XZ; use the build host's 7-Zip for that layer. */
+export async function extractTarXz(archive, destination) {
+	let tarball = archive
+	if (process.platform === 'win32') {
+		const executable = path.join(
+			process.env.ProgramFiles ?? 'C:\\Program Files',
+			'7-Zip',
+			'7z.exe',
+		)
+		console.log(`Decompressing ${path.basename(archive)} with 7-Zip`)
+		await run(executable, ['x', '-txz', '-y', `-o${destination}`, archive], {
+			capture: true,
+			timeout: 120_000,
+		})
+		tarball = path.join(destination, path.basename(archive, '.xz'))
+	}
+	try {
+		await tar(['-xf', tarball, '-C', destination], {
+			capture: true,
+			timeout: 120_000,
+		})
+	} finally {
+		if (tarball !== archive) await rm(tarball, { force: true })
 	}
 }
 

@@ -26,7 +26,7 @@ struct Session {
 
 impl Session {
     fn new(columns: u16, rows: u16, plain: bool, no_color: bool) -> Self {
-        Self::launch(columns, rows, plain, no_color, None)
+        Self::launch(columns, rows, plain, no_color, None, None)
     }
 
     fn launch(
@@ -35,6 +35,7 @@ impl Session {
         plain: bool,
         no_color: bool,
         node: Option<&std::path::Path>,
+        test_name: Option<&str>,
     ) -> Self {
         let project = tempfile::tempdir().unwrap();
         let pair = native_pty_system()
@@ -51,7 +52,7 @@ impl Session {
                 command.args([
                     "--ignored",
                     "--exact",
-                    "console::pty::terminal_child",
+                    test_name.unwrap_or("console::pty::terminal_child"),
                     "--nocapture",
                 ]);
                 command
@@ -258,7 +259,7 @@ impl Session {
 fn compiled_cli_startup_failure_restores_the_terminal() {
     assert!(std::env::var_os("BLUINK_CONSOLE_PRELOAD").is_some());
     let node = std::env::var_os("BLUINK_CONSOLE_NODE").unwrap();
-    let mut session = Session::launch(80, 24, false, true, Some(std::path::Path::new(&node)));
+    let mut session = Session::launch(80, 24, false, true, Some(std::path::Path::new(&node)), None);
     session.wait_for("Starting");
     session.finish_outcome(b"", "Controlled startup failure", false);
     session.capture("compiled-cli-80x24-startup-failure");
@@ -270,7 +271,14 @@ fn compiled_cli_startup_failure_restores_the_terminal() {
 fn compiled_cli_console_uses_host_rss_and_orderly_shutdown() {
     let node = std::env::var_os("BLUINK_CONSOLE_NODE")
         .expect("Set BLUINK_CONSOLE_NODE to the Node executable");
-    let mut session = Session::launch(120, 30, false, false, Some(std::path::Path::new(&node)));
+    let mut session = Session::launch(
+        120,
+        30,
+        false,
+        false,
+        Some(std::path::Path::new(&node)),
+        None,
+    );
     session.wait_for("Running");
     session.wait_for("Memory ");
     assert!(!session.parser.screen().contents().contains("Memory —"));
@@ -348,11 +356,27 @@ fn real_terminal_views_navigation_and_quit_work_at_all_supported_sizes() {
 
 #[test]
 fn shutdown_restores_the_terminal_without_a_cursor_report() {
-    let mut session = Session::new(80, 24, false, false);
-    session.wait_for("Running");
-    session.wait_for("Warnings 1");
-    session.answer_cursor_queries = false;
-    session.quit(b"q");
+    for (columns, rows) in [(120, 30), (80, 24), (60, 12)] {
+        // Isolate finalization from the application's ongoing log producer:
+        // insert_before legitimately queries the cursor while rendering logs.
+        let mut session = Session::launch(
+            columns,
+            rows,
+            false,
+            false,
+            None,
+            Some("console::terminal::tests::shutdown_child"),
+        );
+        session.wait_for("READY_FOR_SHUTDOWN");
+        session.answer_cursor_queries = false;
+        let shutdown_start = session.transcript.len();
+        session.quit(b"q");
+        assert!(
+            !session.transcript[shutdown_start..]
+                .windows(4)
+                .any(|bytes| bytes == b"\x1b[6n")
+        );
+    }
 }
 
 #[test]

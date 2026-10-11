@@ -569,6 +569,31 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
 
+    /// A quiescent renderer lets the parent disable cursor reports at shutdown.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "PTY child process invoked by the shutdown acceptance test"]
+    fn shutdown_child() {
+        let mut renderer = Renderer::new(4, size().unwrap()).unwrap();
+        renderer
+            .terminal
+            .draw(|frame| {
+                frame.render_widget(Paragraph::new("READY_FOR_SHUTDOWN"), frame.area());
+            })
+            .unwrap();
+        loop {
+            if let Event::Key(event) = event::read().unwrap()
+                && event.code == KeyCode::Char('q')
+                && event.kind != KeyEventKind::Release
+            {
+                break;
+            }
+        }
+        renderer.finish("Bluink stopped").unwrap();
+        drop(renderer);
+        println!("TERMINAL_SESSION_CLOSED");
+    }
+
     #[test]
     fn footer_keeps_address_counts_memory_and_controls_visible_at_supported_widths() {
         let (core, _) = super::super::tests::fixture();
