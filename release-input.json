@@ -1,7 +1,7 @@
 {
   "format": "bluink.release-input",
   "formatVersion": 1,
-  "version": "26.10.1-alpha",
+  "version": "26.10.2-alpha",
   "publicRepository": "https://github.com/BluInkTech/bluink",
   "dependencies": [
     {
@@ -18,9 +18,9 @@
     },
     {
       "name": "@bluink/web",
-      "version": "26.10.1-alpha",
-      "integrity": "sha512-hBUJ8n3i1JLAVnrvXMg0xE8ouaBacg86plmiYfac+pvtC+TlbvJoXD9uzpHt0YqDR/23p72Rz/QcnVquDafwFg==",
-      "sha256": "8a8d481ea1aa59a43005903e893248afddc422658493e1d3e0ca50d5bf9e94e0"
+      "version": "26.10.2-alpha",
+      "integrity": "sha512-pP5zOVXyAzQqT3Yyaecjg+HNkjUm1UGS+cDJQ7Q/t8QlZ6/z65rFh5n68fJNvuIc6Pz5Nb/qd2pfHadCgIrDeg==",
+      "sha256": "d8eba0f041f88cd157f1b1a0ec4643f4d68355c68320d4f2585d176c4d9f5abe"
     }
   ]
 }
