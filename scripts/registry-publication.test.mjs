@@ -101,6 +101,20 @@ test('registry delay is bounded and integrity conflicts stop recovery', async ()
 	)
 })
 
+test('first publication can remain processing beyond the old thirty-second window', async () => {
+	let lookups = 0
+	let uploads = 0
+	await publishRecords([records[0]], {
+		lookup: async () => (++lookups < 21 ? undefined : registry(records[0])),
+		upload: async () => {
+			uploads++
+		},
+		pause: async () => {},
+	})
+	assert.equal(lookups, 21)
+	assert.equal(uploads, 1)
+})
+
 function reportFor(record) {
 	const statement = {
 		predicateType: 'https://slsa.dev/provenance/v1',

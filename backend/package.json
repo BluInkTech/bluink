@@ -1,6 +1,6 @@
 {
 	"name": "@bluink/cli",
-	"version": "26.10.2-alpha",
+	"version": "26.10.3-alpha",
 	"description": "Structured writing & self-publishing application",
 	"private": true,
 	"type": "module",
@@ -25,7 +25,7 @@
 	"dependencies": {
 		"@bluink/fonts": "26.10.1-alpha",
 		"@bluink/typst": "26.10.1-alpha",
-		"@bluink/web": "26.10.2-alpha"
+		"@bluink/web": "26.10.3-alpha"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.1",

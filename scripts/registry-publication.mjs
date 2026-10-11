@@ -46,8 +46,8 @@ export async function publishRecords(
 				'--ignore-scripts',
 			]),
 		verifyExisting = async () => {},
-		pause = () => new Promise((resolve) => setTimeout(resolve, 2000)),
-		attempts = 15,
+		pause = () => new Promise((resolve) => setTimeout(resolve, 5000)),
+		attempts = 121,
 	} = {},
 ) {
 	const existing = await Promise.all(
@@ -203,6 +203,8 @@ export async function verifyRegistryProvenance(records, identity) {
 				'attestation',
 				'verify',
 				record.archive,
+				'--digest-alg',
+				'sha512',
 				'--bundle',
 				bundle,
 				'--repo',
