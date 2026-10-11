@@ -35,13 +35,14 @@ export const targets = [
 export function run(
 	command,
 	args,
-	{ cwd = root, env = process.env, capture = false } = {},
+	{ cwd = root, env = process.env, capture = false, timeout = 0 } = {},
 ) {
 	return new Promise((resolve, reject) => {
 		let output = ''
 		const child = spawn(command, args, {
 			cwd,
 			env,
+			timeout,
 			stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
 		})
 		let errors = ''
@@ -53,11 +54,11 @@ export function run(
 		})
 		child.once('error', reject)
 		child.once('close', (code) =>
-			code === 0
+			code === 0 && !child.killed
 				? resolve(output)
 				: reject(
 						new Error(
-							`${command} ${args.join(' ')} failed (${code}). ${errors.trim()}`,
+							`${command} ${args.join(' ')} ${child.killed ? `timed out after ${timeout} ms` : `failed (${code})`}. ${errors.trim()}`,
 						),
 					),
 		)

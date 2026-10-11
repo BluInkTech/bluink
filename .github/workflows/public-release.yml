@@ -49,7 +49,9 @@ jobs:
       - run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt,clippy
       - run: node scripts/public-release.mjs context --target '${{ matrix.target }}'
       - run: npm ci
-      - run: npm run build:resources
+      - name: Build pinned font and Typst resources
+        run: npm run build:resources
+        timeout-minutes: 10
       - run: npm run build:native -- --target '${{ matrix.target }}'
         env:
           BLUINK_PUBLIC_COMMIT: ${{ github.sha }}

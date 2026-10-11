@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { tar } from '../../scripts/release-utils.mjs'
+import { run, tar } from '../../scripts/release-utils.mjs'
 
 // A synthetic USTAR/XZ archive containing only sample.txt, with fixed metadata.
 const fixture = Buffer.from(
@@ -52,4 +52,18 @@ test('failed archive extraction reports the tool diagnostic', async () => {
 	} finally {
 		await rm(folder, { recursive: true, force: true })
 	}
+})
+
+test('a stalled build subprocess is terminated with a timeout diagnostic', async () => {
+	await assert.rejects(
+		run(
+			process.execPath,
+			[
+				'-e',
+				"process.on('SIGTERM', () => process.exit(0)); setTimeout(() => {}, 10000)",
+			],
+			{ capture: true, timeout: 100 },
+		),
+		/timed out after 100 ms/,
+	)
 })

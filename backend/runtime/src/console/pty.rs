@@ -20,6 +20,7 @@ struct Session {
     incoming: Receiver<Vec<u8>>,
     parser: vt100::Parser,
     transcript: Vec<u8>,
+    answer_cursor_queries: bool,
     project: tempfile::TempDir,
 }
 
@@ -122,6 +123,7 @@ impl Session {
             incoming,
             parser: vt100::Parser::new(rows, columns, 2000),
             transcript: Vec::new(),
+            answer_cursor_queries: true,
             project,
         }
     }
@@ -133,7 +135,7 @@ impl Session {
                 self.transcript.push(byte);
                 // A real emulator answers cursor-position reports requested by
                 // Crossterm. Respond even when a query crosses read boundaries.
-                if self.transcript.ends_with(b"\x1b[6n") {
+                if self.answer_cursor_queries && self.transcript.ends_with(b"\x1b[6n") {
                     let (row, column) = self.parser.screen().cursor_position();
                     write!(self.writer, "\x1b[{};{}R", row + 1, column + 1).unwrap();
                     self.writer.flush().unwrap();
@@ -342,6 +344,15 @@ fn real_terminal_views_navigation_and_quit_work_at_all_supported_sizes() {
         session.wait_for("q Stop");
         session.quit(b"q");
     }
+}
+
+#[test]
+fn shutdown_restores_the_terminal_without_a_cursor_report() {
+    let mut session = Session::new(80, 24, false, false);
+    session.wait_for("Running");
+    session.wait_for("Warnings 1");
+    session.answer_cursor_queries = false;
+    session.quit(b"q");
 }
 
 #[test]

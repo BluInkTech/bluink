@@ -30,6 +30,7 @@ export async function prepareTypst(requested = Object.keys(targets)) {
 	for (const target of requested) {
 		const spec = targets[target]
 		if (!spec) throw new Error(`Unsupported Typst target: ${target}`)
+		console.log(`Preparing Typst ${version} for ${target}`)
 		const archivePath = path.join(cache, spec.archive)
 		let bytes
 		try {
@@ -43,6 +44,7 @@ export async function prepareTypst(requested = Object.keys(targets)) {
 		}
 		if (!bytes) {
 			const url = `https://github.com/typst/typst/releases/download/v${version}/${spec.archive}`
+			console.log(`Downloading ${spec.archive}`)
 			const response = await fetch(url, { signal: AbortSignal.timeout(90_000) })
 			if (!response.ok)
 				throw new Error(
@@ -69,9 +71,15 @@ export async function prepareTypst(requested = Object.keys(targets)) {
 			path.join(os.tmpdir(), 'bluink-typst-stage-'),
 		)
 		try {
+			console.log(`Extracting ${spec.archive}`)
 			if (spec.archive.endsWith('.zip'))
 				await extractZipFiles(bytes, spec.directory, temporary)
-			else await tar(['-xf', archivePath, '-C', temporary], { capture: true })
+			else
+				await tar(['-xf', archivePath, '-C', temporary], {
+					capture: true,
+					timeout: 120_000,
+				})
+			console.log(`Verifying Typst ${target} executable`)
 			const source = path.join(temporary, spec.directory)
 			await rm(destination, { recursive: true, force: true })
 			await mkdir(destination, { recursive: true })

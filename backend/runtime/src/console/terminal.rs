@@ -13,7 +13,7 @@ use ratatui::crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     style::ResetColor,
-    terminal::{disable_raw_mode, enable_raw_mode, size},
+    terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode, size},
 };
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -131,11 +131,14 @@ impl Renderer {
         })
     }
 
-    fn finish(&mut self, message: &str) -> io::Result<()> {
-        self.terminal.clear()?;
+    fn finish(&self, message: &str) -> io::Result<()> {
+        // The viewport origin is already known and its buffer will not be reused.
+        // Terminal::clear queries the cursor first, which can time out during
+        // shutdown and prevent otherwise successful work from exiting cleanly.
         execute!(
             io::stderr(),
             cursor::MoveTo(0, self.dimensions.1.saturating_sub(self.height)),
+            Clear(ClearType::FromCursorDown),
             cursor::Show
         )?;
         write!(io::stderr(), "{message}\r\n")?;
@@ -553,7 +556,7 @@ pub(super) fn run(core: &Core, incoming: &Receiver<DiagnosticEvent>) -> io::Resu
             handle_key(core, &mut model, &status, renderer, event);
         }
     }
-    if let Some(mut renderer) = renderer {
+    if let Some(renderer) = renderer {
         renderer.finish("Bluink stopped")?;
     } else {
         writeln!(output, "Bluink stopped")?;
