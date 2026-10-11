@@ -2,7 +2,6 @@
 // Copyright (c) 2023–2026 BluInk
 
 import sources from '../sources.json' with { type: 'json' }
-import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
 	chmod,
@@ -17,6 +16,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { inflateRawSync } from 'node:zlib'
+import { tar } from '../../scripts/release-utils.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const cache = path.join(root, '.cache')
@@ -71,7 +71,7 @@ export async function prepareTypst(requested = Object.keys(targets)) {
 		try {
 			if (spec.archive.endsWith('.zip'))
 				await extractZipFiles(bytes, spec.directory, temporary)
-			else await untar(archivePath, temporary)
+			else await tar(['-xf', archivePath, '-C', temporary], { capture: true })
 			const source = path.join(temporary, spec.directory)
 			await rm(destination, { recursive: true, force: true })
 			await mkdir(destination, { recursive: true })
@@ -93,18 +93,6 @@ export async function prepareTypst(requested = Object.keys(targets)) {
 
 function sha256(bytes) {
 	return createHash('sha256').update(bytes).digest('hex')
-}
-
-function untar(archive, destination) {
-	return new Promise((resolve, reject) => {
-		const child = spawn('tar', ['-xJf', archive, '-C', destination], {
-			stdio: 'ignore',
-		})
-		child.once('error', reject)
-		child.once('close', (code) =>
-			code === 0 ? resolve() : reject(new Error(`Cannot extract ${archive}.`)),
-		)
-	})
 }
 
 async function extractZipFiles(bytes, directory, destination) {

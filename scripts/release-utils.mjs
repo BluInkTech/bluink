@@ -64,6 +64,19 @@ export function run(
 	})
 }
 
+/** Use Windows' libarchive tar, regardless of Git/MSYS tools on PATH. */
+export function tar(args, options) {
+	const command =
+		process.platform === 'win32'
+			? path.join(
+					process.env.SystemRoot ?? 'C:\\Windows',
+					'System32',
+					'tar.exe',
+				)
+			: 'tar'
+	return run(command, args, options)
+}
+
 export function npm(args, options) {
 	const cli = [
 		process.env.npm_execpath,

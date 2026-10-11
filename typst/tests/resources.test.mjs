@@ -25,7 +25,9 @@ test('all packaged targets include executable bytes and upstream licence notices
 		assert.ok(binary.endsWith(relative.replaceAll('/', path.sep)))
 		const bytes = await readFile(binary)
 		assert.ok(bytes.length > 1_000_000)
-		if (platform !== 'win32') assert.ok((await stat(binary)).mode & 0o111)
+		// Windows cannot represent Unix executable permission bits.
+		if (process.platform !== 'win32' && platform !== 'win32')
+			assert.ok((await stat(binary)).mode & 0o111)
 		const folder = new URL(
 			`../assets/${relative.substring(0, relative.lastIndexOf('/'))}/`,
 			import.meta.url,

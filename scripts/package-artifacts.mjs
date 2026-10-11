@@ -7,7 +7,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { auditDirectory } from './package-audit.mjs'
 import { writeCliArchive } from './cli-archive.mjs'
-import { json, npm, run, sha256 } from './release-utils.mjs'
+import { json, npm, sha256, tar } from './release-utils.mjs'
 
 /** Validate the supplied bytes rather than trusting a dependency record. */
 export async function verifyArchive(record, options) {
@@ -28,7 +28,7 @@ export async function inspectArchive(archive, options) {
 	const temporary = await mkdtemp(path.join(os.tmpdir(), 'bluink-archive-'))
 	try {
 		const listing = (
-			await run('tar', ['-tzf', path.resolve(archive)], { capture: true })
+			await tar(['-tzf', path.resolve(archive)], { capture: true })
 		)
 			.trim()
 			.split('\n')
@@ -42,7 +42,7 @@ export async function inspectArchive(archive, options) {
 		)
 			throw new Error('Unsafe path in package archive.')
 		const types = (
-			await run('tar', ['-tvzf', path.resolve(archive)], { capture: true })
+			await tar(['-tvzf', path.resolve(archive)], { capture: true })
 		)
 			.trim()
 			.split('\n')
@@ -50,7 +50,9 @@ export async function inspectArchive(archive, options) {
 			throw new Error(
 				'Links and special files are not allowed in package archives.',
 			)
-		await run('tar', ['-xzf', path.resolve(archive), '-C', temporary])
+		await tar(['-xzf', path.resolve(archive), '-C', temporary], {
+			capture: true,
+		})
 		const directory = path.join(temporary, 'package')
 		const { onInspect, ...auditOptions } = options
 		const files = await auditDirectory(directory, auditOptions)
