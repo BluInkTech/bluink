@@ -2,7 +2,7 @@
 // Copyright (c) 2023–2026 BluInk
 
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { BluinkApplication } from '../../runtime/index.js'
@@ -13,7 +13,9 @@ export async function withTempDir<T>(
 ): Promise<T> {
 	const directory = await mkdtemp(join(tmpdir(), 'bluink-test-'))
 	try {
-		return await run(directory)
+		// macOS temporary paths can traverse /var -> /private/var. Match the
+		// physical cwd used by child processes when asserting their output paths.
+		return await run(await realpath(directory))
 	} finally {
 		await rm(directory, {
 			recursive: true,
