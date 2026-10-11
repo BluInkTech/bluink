@@ -63,6 +63,24 @@ pub(crate) fn remove_facet(root: &Path, kind: &str, key: &str) -> Result<(), Mut
     let _lock = facets_lock(root, false).map_err(MutationError::Unexpected)?;
     fs::remove_file(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
+            // Windows also reports NotFound when an ancestor is a file. Only
+            // classify an absent declaration as a user error after checking
+            // the nearest existing ancestor, including missing nested paths.
+            for parent in path.ancestors().skip(1) {
+                match fs::metadata(parent) {
+                    Ok(metadata) if metadata.is_dir() => break,
+                    Ok(_) => {
+                        return MutationError::Unexpected(format!(
+                            "{} is not a directory.",
+                            parent.display()
+                        ));
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return MutationError::Unexpected(format!("{}: {error}", parent.display()));
+                    }
+                }
+            }
             MutationError::Expected(format!("Facet {key}.{kind} does not exist."))
         } else {
             MutationError::Unexpected(format!("{}: {error}", path.display()))
@@ -228,6 +246,7 @@ fn scan_facets(
 #[cfg(test)]
 mod tests {
     use super::{create_facet, list_facets, remove_facet};
+    use crate::engine::project::write::MutationError;
     use serde_json::json;
 
     #[test]
@@ -283,6 +302,35 @@ mod tests {
                 .contains("does not exist")
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn removal_distinguishes_absent_nested_tags_from_blocked_parent_paths() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("facets/valid")).unwrap();
+        std::fs::create_dir_all(root.path().join("items")).unwrap();
+        for key in ["absent", "valid/absent", "missing/nested/absent"] {
+            assert!(
+                matches!(
+                    remove_facet(root.path(), "tag", key),
+                    Err(MutationError::Expected(_))
+                ),
+                "An absent tag is a user error: {key}"
+            );
+        }
+        std::fs::write(root.path().join("facets/blocker"), "not a directory").unwrap();
+        for key in ["blocker/child", "blocker/missing/child"] {
+            let result = remove_facet(root.path(), "tag", key);
+            assert!(
+                matches!(result, Err(MutationError::Unexpected(_))),
+                "A blocked parent is a filesystem error: {key}: {result:?}"
+            );
+        }
+        // Failed removal must not delete the blocking file.
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("facets/blocker")).unwrap(),
+            "not a directory"
+        );
     }
 
     #[test]
