@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "id": "editorial",
+  "version": "1.0.0",
+  "name": "Editorial",
+  "settings": {
+    "colors": {
+      "ink": "#202b38",
+      "muted": "#4e5a68",
+      "link": "#164d84",
+      "accent": "#a2453a",
+      "surface": "#f1efe9",
+      "paper": "#fffaf2"
+    },
+    "typography": {
+      "bodyFamily": "source-serif-4",
+      "headingFamily": "inter",
+      "bodyScale": 1.05,
+      "leading": 1.65
+    },
+    "layout": {
+      "measureCh": 68,
+      "spacing": 1.15
+    }
+  },
+  "templates": {
+    "pdf": "pdf/document.typ",
+    "html": "html/article.html",
+    "site": "site/page.html",
+    "siteRoles": {
+      "listing": "site/listing.html",
+      "archive": "site/listing.html"
+    }
+  },
+  "macros": {},
+  "controls": [
+    {
+      "id": "sidebar",
+      "label": "Show site navigation",
+      "kind": "toggle",
+      "default": true,
+      "choices": []
+    }
+  ]
+}

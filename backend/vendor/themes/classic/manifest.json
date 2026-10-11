@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "id": "classic",
+  "version": "1.0.0",
+  "name": "Classic",
+  "settings": {
+    "colors": {
+      "ink": "#222222",
+      "muted": "#555b66",
+      "link": "#174aaf",
+      "accent": "#174aaf",
+      "surface": "#f2f4f8",
+      "paper": "#ffffff"
+    },
+    "typography": {
+      "bodyFamily": "source-serif-4",
+      "headingFamily": "source-serif-4",
+      "bodyScale": 1,
+      "leading": 1.6
+    },
+    "layout": {
+      "measureCh": 72,
+      "spacing": 1
+    }
+  },
+  "templates": {
+    "pdf": "pdf/document.typ",
+    "html": "html/article.html",
+    "site": "site/page.html",
+    "siteRoles": {
+      "listing": "site/listing.html",
+      "archive": "site/listing.html"
+    }
+  },
+  "macros": {},
+  "controls": [
+    {
+      "id": "sidebar",
+      "label": "Show site navigation",
+      "kind": "toggle",
+      "default": true,
+      "choices": []
+    }
+  ]
+}

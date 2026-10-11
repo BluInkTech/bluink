@@ -1,0 +1,59 @@
+{
+	"name": "@bluink/cli",
+	"version": "26.10.1-alpha",
+	"description": "Structured writing & self-publishing application",
+	"private": true,
+	"type": "module",
+	"license": "MPL-2.0",
+	"main": "./dist/index.js",
+	"bin": {
+		"bluink": "./bluink"
+	},
+	"files": [
+		"bluink",
+		"dist",
+		"runtime",
+		"vendor",
+		"LICENSE",
+		"README.md",
+		"npm-shrinkwrap.json",
+		"THIRD_PARTY_NOTICES.txt"
+	],
+	"engines": {
+		"node": ">=25.0.0"
+	},
+	"dependencies": {
+		"@bluink/fonts": "26.10.1-alpha",
+		"@bluink/typst": "26.10.1-alpha",
+		"@bluink/web": "26.10.1-alpha"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.1",
+		"@napi-rs/cli": "^3.10.4",
+		"@types/node": "^26.0.1",
+		"tsx": "4.22.4",
+		"typescript": "6.0.3"
+	},
+	"napi": {
+		"binaryName": "bluink_runtime",
+		"targets": [
+			"x86_64-pc-windows-msvc",
+			"x86_64-unknown-linux-gnu",
+			"aarch64-apple-darwin"
+		]
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json",
+		"pretest": "npm run build",
+		"test": "node --import tsx --test \"src/**/*.test.ts\"",
+		"lint": "biome lint ./src",
+		"format": "biome format --write ./src",
+		"type-check": "tsc --noEmit"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/BluInkTech/bluink.git",
+		"directory": "backend"
+	},
+	"homepage": "https://bluink.app"
+}

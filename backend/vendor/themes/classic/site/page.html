@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="{{ language }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self' data:; script-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>{{ title }}</title>
+  <style>{{ theme_css }}</style>
+</head>
+<body class="publication publication--classic publication--site{% if not theme_options.sidebar %} publication--no-sidebar{% endif %}">
+  <a href="#main-content" class="skip-link">Skip to content</a>
+  {% if theme_options.sidebar %}<nav aria-label="Site navigation">{{ navigation }}</nav>{% endif %}
+  <main id="main-content">{{ contents }}{{ body }}</main>
+</body>
+</html>

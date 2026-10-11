@@ -1,0 +1,20 @@
+[
+  {"name":"formatted terminal paragraph","externalOnly":true,"valid":true,"paragraph":{"type":"paragraph","content":[{"type":"text","text":"A title","marks":[{"type":"emphasis"}]}]}},
+  {"name":"external private URL is syntax-only","externalOnly":true,"valid":true,"paragraph":{"type":"paragraph","content":[{"type":"text","text":"Source","marks":[{"type":"link","attrs":{"href":"https://private.corporate.example/source"}}]}]}},
+  {"name":"canonical page link in local reference","externalOnly":false,"valid":true,"paragraph":{"type":"paragraph","content":[{"type":"text","text":"Page","marks":[{"type":"link","attrs":{"href":"/?note=01a0e2a0-0000-7000-8000-000000000001"}}]}]}},
+  {"name":"page link in snippet","externalOnly":true,"valid":false,"paragraph":{"type":"paragraph","content":[{"type":"text","text":"Page","marks":[{"type":"link","attrs":{"href":"/?note=01a0e2a0-0000-7000-8000-000000000001"}}]}]}},
+  {"name":"malformed local target","externalOnly":false,"valid":false,"paragraph":{"type":"paragraph","content":[{"type":"text","text":"Page","marks":[{"type":"link","attrs":{"href":"/?note=missing"}}]}]}},
+  {"name":"classification is not snippet identity","externalOnly":true,"valid":false,"paragraph":{"type":"paragraph","attrs":{"labels":["source"]}}},
+  {"name":"paragraph cannot nest a citation","externalOnly":true,"valid":false,"paragraph":{"type":"paragraph","content":[{"type":"citation","attrs":{"source":"snippet","snippetId":"source"}}]}},
+  {"name":"manual line break","externalOnly":false,"valid":false,"paragraph":{"type":"paragraph","content":[{"type":"hard_break"}]}},
+  {"name":"mutually exclusive emphasis","externalOnly":true,"valid":false,"paragraph":{"type":"paragraph","content":[{"type":"text","text":"Title","marks":[{"type":"strong"},{"type":"emphasis"}]}]}},
+  {"name":"mark metadata is unsupported","externalOnly":true,"valid":false,"paragraph":{"type":"paragraph","content":[{"type":"text","text":"Title","marks":[{"type":"strong","attrs":{"meta":{}}}]}]}},
+  {"name":"semantic super in snippet","externalOnly":true,"valid":true,"paragraph":{"type":"paragraph","content":[{"type":"text","text":"Title","marks":[{"type":"superscript"},{"type":"emphasis"}]}]}},
+  {"name":"semantic sub in snippet","externalOnly":true,"valid":true,"paragraph":{"type":"paragraph","content":[{"type":"text","text":"Title","marks":[{"type":"subscript"}]}]}},
+  {"name":"conflicting scripts in snippet","externalOnly":true,"valid":false,"paragraph":{"type":"paragraph","content":[{"type":"text","text":"Title","marks":[{"type":"superscript"},{"type":"subscript"}]}]}},
+  {"name":"script plus code in snippet","externalOnly":true,"valid":false,"paragraph":{"type":"paragraph","content":[{"type":"text","text":"Title","marks":[{"type":"subscript"},{"type":"code"}]}]}},
+  {"name":"semantic super in local reference","externalOnly":false,"valid":true,"paragraph":{"type":"paragraph","content":[{"type":"text","text":"Title","marks":[{"type":"superscript"},{"type":"emphasis"}]}]}},
+  {"name":"semantic sub in local reference","externalOnly":false,"valid":true,"paragraph":{"type":"paragraph","content":[{"type":"text","text":"Title","marks":[{"type":"subscript"}]}]}},
+  {"name":"conflicting scripts in local reference","externalOnly":false,"valid":false,"paragraph":{"type":"paragraph","content":[{"type":"text","text":"Title","marks":[{"type":"superscript"},{"type":"subscript"}]}]}},
+  {"name":"script plus code in local reference","externalOnly":false,"valid":false,"paragraph":{"type":"paragraph","content":[{"type":"text","text":"Title","marks":[{"type":"subscript"},{"type":"code"}]}]}}
+]

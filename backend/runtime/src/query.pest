@@ -1,0 +1,16 @@
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+
+query = { SOI ~ (selection_clause | sort_clause)* ~ EOI }
+selection_clause = { !("sort:") ~ prefix? ~ (tag | label | has_clause | is_clause | field_clause | phrase | bare) }
+sort_clause = { "sort:" ~ sort_entry ~ ("," ~ sort_entry)* }
+sort_entry = { identifier ~ "-" ~ ("asc" | "desc") }
+prefix = { "+" | "-" }
+tag = @{ "#" ~ (!WHITESPACE ~ ANY)+ }
+label = @{ "@" ~ (!WHITESPACE ~ ANY)+ }
+has_clause = { "has:" ~ identifier }
+is_clause = { "is:" ~ identifier }
+field_clause = { identifier ~ ":" ~ value }
+value = { phrase | bare }
+phrase = @{ "\"" ~ ("\\\"" | "\\\\" | (!"\"" ~ ANY))* ~ "\"" }
+bare = @{ (!WHITESPACE ~ !"\"" ~ ANY)+ }
+identifier = @{ (ASCII_ALPHANUMERIC | "_")+ }

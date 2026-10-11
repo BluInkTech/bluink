@@ -1,0 +1,8 @@
+node_modules/
+dist/
+target/
+.cache/
+.demo*/
+uploads/
+*.node
+*.node.json

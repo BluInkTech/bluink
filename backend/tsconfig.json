@@ -1,0 +1,30 @@
+{
+    "compilerOptions": {
+        "target": "es2023",
+        "module": "nodenext",
+        "moduleResolution": "nodenext",
+        "types": [
+            "node"
+        ],
+        "skipLibCheck": true,
+        "exactOptionalPropertyTypes": true,
+        "skipDefaultLibCheck": true,
+        /* Linting */
+        "strict": true,
+        "allowUnreachableCode": false,
+        "allowUnusedLabels": false,
+        "erasableSyntaxOnly": true,
+        "noFallthroughCasesInSwitch": true,
+        "noImplicitAny": true,
+        "noImplicitReturns": true,
+        "noImplicitThis": true,
+        "noPropertyAccessFromIndexSignature": true,
+        "noUncheckedIndexedAccess": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
+    },
+    "exclude": [
+        "./node_modules/",
+        "./dist/",
+    ],
+}

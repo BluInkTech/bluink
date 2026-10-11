@@ -1,0 +1,27 @@
+{
+  "name": "bluink-public-build",
+  "version": "26.10.1-alpha",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "backend",
+    "fonts",
+    "typst"
+  ],
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14",
+    "typescript": "6.0.3"
+  },
+  "scripts": {
+    "build:resources": "npm run build --workspace @bluink/fonts && npm run build --workspace @bluink/typst",
+    "build:native": "node scripts/build-native.mjs",
+    "build": "npm run build:resources && npm run build:native && npm run build --workspace backend",
+    "contracts:check": "cargo test --manifest-path backend/Cargo.toml --locked contracts::generated_contracts_match_rust_and_wire_examples -- --exact && tsc --noEmit --strict --target es2023 --module nodenext --moduleResolution nodenext --skipLibCheck backend/contracts/generated/wire.ts backend/contracts/contract.test-d.ts",
+    "contracts:generate": "cargo test --manifest-path backend/Cargo.toml --locked contracts::regenerate -- --ignored --exact",
+    "format": "biome format --config-path backend --write scripts && npm run format --workspaces --if-present",
+    "lint": "biome lint --config-path backend scripts && npm run lint --workspaces --if-present",
+    "typecheck": "npm run type-check --workspace backend && npm run contracts:check",
+    "test": "node --test scripts/*.test.mjs && npm run test --workspaces --if-present && cargo test --manifest-path backend/Cargo.toml --locked",
+    "assemble": "node scripts/public-release.mjs assemble"
+  }
+}

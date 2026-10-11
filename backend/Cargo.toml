@@ -1,0 +1,96 @@
+[package]
+name = "bluink_runtime"
+version = "0.0.0"
+edition = "2024"
+license = "MPL-2.0"
+publish = false
+build = "runtime/build.rs"
+
+[workspace]
+resolver = "3"
+
+[lib]
+path = "runtime/src/lib.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "validate_items"
+path = "runtime/examples/validate_items.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "now"] }
+uuid = { version = "1.26.1", features = ["v4", "v7"] }
+fs4 = "0.13.1"
+rayon = "1.11"
+tracing = "0.1.44"
+regex = "1.12"
+sha2 = "0.11"
+url = "2.5"
+minijinja = { version = "2.24.0", features = ["fuel"] }
+base64 = "0.22.1"
+napi = { version = "3.12.6", default-features = false, features = ["napi10", "async"] }
+napi-derive = "3.6.7"
+tantivy = { version = "0.26.2", default-features = false, features = ["mmap", "stopwords", "stemmer", "lz4-compression"] }
+crossbeam-channel = "0.5"
+chrono-tz = "0.10"
+iana-time-zone = "0.1.65"
+hostname = "0.4"
+tempfile = "3.27"
+percent-encoding = "2.3"
+zip = { version = "8.6", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "multipart"] }
+http-body-util = "0.1"
+pest = "2.8"
+pest_derive = "2.8"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
+
+[dev-dependencies]
+ts-rs = { version = "12.0.1", features = ["serde-json-impl", "no-serde-warnings"] }
+tower = { version = "0.5", features = ["util"] }
+# Rust tests resolve N-API symbols dynamically outside Node.
+napi = { version = "3.12.6", default-features = false, features = ["napi10", "async", "dyn-symbols"] }
+
+[build-dependencies]
+napi-build = "2.4.3"
+
+[target.'cfg(unix)'.dev-dependencies]
+portable-pty = "0.9"
+vt100 = "0.16"
+tokio = { version = "1", features = ["signal", "macros"] }
+
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libc = "0.2"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+# Documentation backlog is deferred at the user's request.
+missing_docs = "allow"
+unused_crate_dependencies = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+wildcard_imports = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.dev]
+opt-level = 0
+debug = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

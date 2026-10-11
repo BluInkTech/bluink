@@ -1,0 +1,44 @@
+{
+	"name": "@bluink/fonts",
+	"version": "26.10.1-alpha",
+	"description": "Bluink's shared offline web and PDF font catalogue",
+	"private": true,
+	"type": "module",
+	"license": "MPL-2.0",
+	"exports": {
+		".": {
+			"types": "./index.d.ts",
+			"default": "./index.js"
+		},
+		"./catalogue": {
+			"types": "./catalogue.d.ts",
+			"default": "./catalogue.js"
+		}
+	},
+	"files": [
+		"index.js",
+		"index.d.ts",
+		"catalogue.js",
+		"catalogue.d.ts",
+		"assets",
+		"sources.json",
+		"LICENSE",
+		"README.md",
+		"catalogue.json"
+	],
+	"devDependencies": {
+		"wawoff2": "2.0.1"
+	},
+	"scripts": {
+		"build": "node scripts/build.mjs",
+		"test": "node --test tests/*.test.mjs",
+		"lint": "biome lint --config-path ../backend .",
+		"format": "biome format --config-path ../backend --write ."
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/BluInkTech/bluink.git",
+		"directory": "fonts"
+	},
+	"homepage": "https://bluink.app"
+}

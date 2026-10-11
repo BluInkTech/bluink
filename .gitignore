@@ -1,0 +1,17 @@
+node_modules/
+dist/
+release/
+.resource-packages/
+.releases/
+backend/target/
+backend/runtime/*.node
+backend/runtime/*.node.json
+fonts/assets/
+fonts/.cache/
+typst/assets/
+typst/.cache/
+*.log
+*.tgz
+package-out/
+verification/
+smoke-results/

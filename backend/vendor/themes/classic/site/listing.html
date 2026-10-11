@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="{{ language }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self' data:; script-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>{{ title }}</title>
+  <style>{{ theme_css }}</style>
+</head>
+<body class="publication publication--classic publication--site{% if not theme_options.sidebar %} publication--no-sidebar{% endif %}">
+  <a href="#main-content" class="skip-link">Skip to content</a>
+  {% if theme_options.sidebar %}<nav aria-label="Site navigation">{{ navigation }}</nav>{% endif %}
+  <main id="main-content">{{ contents }}<section class="publication-listing"><h1>{{ page.title }}</h1>
+    {% if page.entries %}<ol class="publication-card-list">
+    {% for entry in page.entries %}<li><article><h2><a href="{{ entry.href }}">{{ entry.title }}</a></h2>
+      {% if entry.publishedOn %}<time datetime="{{ entry.publishedOn }}">{{ entry.publishedOn }}</time>{% endif %}
+      {% if entry.summary %}<p>{{ entry.summary }}</p>{% endif %}
+      {% if entry.tags %}<ul class="publication-card-tags">{% for tag in entry.tags %}<li><a href="{{ tag.href }}">{{ tag.name }}</a></li>{% endfor %}</ul>{% endif %}
+    </article></li>{% endfor %}</ol>{% else %}<p>No pages match this collection yet.</p>{% endif %}
+    {% if page.pagination | length > 1 %}<nav class="publication-pagination" aria-label="Listing pages">{% for link in page.pagination %}<a href="{{ link.href }}"{% if link.current %} aria-current="page"{% endif %}>{{ link.number }}</a>{% endfor %}</nav>{% endif %}
+    {% if page.archives %}<aside class="publication-archive-links"><h2>Archives</h2><ul>{% for archive in page.archives %}<li><a href="{{ archive.href }}">{{ archive.title }}</a></li>{% endfor %}</ul></aside>{% endif %}
+  </section></main>
+</body>
+</html>

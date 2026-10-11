@@ -1,0 +1,26 @@
+{
+  "format": "bluink.release-input",
+  "formatVersion": 1,
+  "version": "26.10.1-alpha",
+  "publicRepository": "https://github.com/BluInkTech/bluink",
+  "dependencies": [
+    {
+      "name": "@bluink/fonts",
+      "version": "26.10.1-alpha",
+      "integrity": "sha512-kd1Ox5oTBu2ZcLVFBUo/pbMNeCR7KWGSL3xwjuXvLAYjhCx2ty6vt2ru7Yfqb1KU96GRWwvW3p1dyJ49LOLBCw==",
+      "sha256": "194cc1e93faef4ab4a93d328b957a9cb08f445e0f89b27e63a1d17a6784b423f"
+    },
+    {
+      "name": "@bluink/typst",
+      "version": "26.10.1-alpha",
+      "integrity": "sha512-6zr7tDLLASjNw/AApsqzaEAeYUk6fYFn31nZcRXk/y7+hyfsT2gRZ0D51QNvtrUpu64akViz/7hh/ISbyQKk4A==",
+      "sha256": "2106fec123f2289fab09c9edf66bb40e306db60228ec25b165c4b6f8cf5a687f"
+    },
+    {
+      "name": "@bluink/web",
+      "version": "26.10.1-alpha",
+      "integrity": "sha512-hBUJ8n3i1JLAVnrvXMg0xE8ouaBacg86plmiYfac+pvtC+TlbvJoXD9uzpHt0YqDR/23p72Rz/QcnVquDafwFg==",
+      "sha256": "8a8d481ea1aa59a43005903e893248afddc422658493e1d3e0ca50d5bf9e94e0"
+    }
+  ]
+}

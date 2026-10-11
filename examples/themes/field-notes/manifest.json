@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "field-notes",
+  "version": "1.0.0",
+  "name": "Field Notes",
+  "settings": {
+    "colors": {
+      "ink": "#222222",
+      "muted": "#555b66",
+      "link": "#174aaf",
+      "accent": "#174aaf",
+      "surface": "#f2f4f8",
+      "paper": "#ffffff"
+    },
+    "typography": {
+      "bodyFamily": "inter",
+      "headingFamily": "source-serif-4",
+      "bodyScale": 1.0,
+      "leading": 1.6
+    },
+    "layout": {
+      "measureCh": 68,
+      "spacing": 1.0
+    }
+  },
+  "templates": {
+    "pdf": "pdf/document.typ",
+    "html": "html/article.html",
+    "site": "site/page.html"
+  },
+  "macros": {
+    "pdf": "pdf/macros.j2",
+    "html": "html/macros.html"
+  }
+}

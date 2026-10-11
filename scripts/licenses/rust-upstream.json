@@ -1,0 +1,167 @@
+{
+	"napi@3.12.6": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215.txt",
+				"url": "https://raw.githubusercontent.com/napi-rs/napi-rs/e2f21c67da882a0221e3c6fc59170d4e6c367c68/LICENSE",
+				"sha256": "3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215"
+			}
+		]
+	},
+	"napi-sys@3.3.1": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215.txt",
+				"url": "https://raw.githubusercontent.com/napi-rs/napi-rs/31c27a1676a7c4b317f4e144e0a9cb94e8354143/LICENSE",
+				"sha256": "3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215"
+			}
+		]
+	},
+	"napi-derive@3.6.7": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215.txt",
+				"url": "https://raw.githubusercontent.com/napi-rs/napi-rs/e2f21c67da882a0221e3c6fc59170d4e6c367c68/LICENSE",
+				"sha256": "3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215"
+			}
+		]
+	},
+	"napi-derive-backend@6.1.3": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215.txt",
+				"url": "https://raw.githubusercontent.com/napi-rs/napi-rs/31c27a1676a7c4b317f4e144e0a9cb94e8354143/LICENSE",
+				"sha256": "3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215"
+			}
+		]
+	},
+	"winapi-i686-pc-windows-gnu@0.4.0": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/ce7bc3499fee93d5022ef430d5e4201e79a6d9154f3974e42f41349f0569e09b.txt",
+				"url": "https://raw.githubusercontent.com/retep998/winapi-rs/796a8e6c2971dc2ff1bcff166e6671284f9b5b6b/LICENSE-MIT",
+				"sha256": "ce7bc3499fee93d5022ef430d5e4201e79a6d9154f3974e42f41349f0569e09b"
+			}
+		]
+	},
+	"winapi-x86_64-pc-windows-gnu@0.4.0": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/ce7bc3499fee93d5022ef430d5e4201e79a6d9154f3974e42f41349f0569e09b.txt",
+				"url": "https://raw.githubusercontent.com/retep998/winapi-rs/796a8e6c2971dc2ff1bcff166e6671284f9b5b6b/LICENSE-MIT",
+				"sha256": "ce7bc3499fee93d5022ef430d5e4201e79a6d9154f3974e42f41349f0569e09b"
+			}
+		]
+	},
+	"datasketches@0.2.0": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/2a93522cc3e0d15510a70e0e7aaf33dc6a1588c39ca4a5c60c4b0121ed25eaf4.txt",
+				"url": "https://raw.githubusercontent.com/apache/datasketches-rust/fdb38b85d22e6549ab283bf3b9b133659267d19f/LICENSE",
+				"sha256": "2a93522cc3e0d15510a70e0e7aaf33dc6a1588c39ca4a5c60c4b0121ed25eaf4"
+			},
+			{
+				"file": "rust/624b424b930d7ce49f8856323c6aa5ffbcaa71a474d60bf8f60852f8aa20bcfa.txt",
+				"url": "https://raw.githubusercontent.com/apache/datasketches-rust/fdb38b85d22e6549ab283bf3b9b133659267d19f/NOTICE",
+				"sha256": "624b424b930d7ce49f8856323c6aa5ffbcaa71a474d60bf8f60852f8aa20bcfa"
+			}
+		]
+	},
+	"htmlescape@0.3.1": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt",
+				"url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+				"sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+			}
+		]
+	},
+	"tantivy-bitpacker@0.10.0": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a.txt",
+				"url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE",
+				"sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a"
+			}
+		]
+	},
+	"tantivy-columnar@0.7.0": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a.txt",
+				"url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE",
+				"sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a"
+			}
+		]
+	},
+	"tantivy-common@0.11.0": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a.txt",
+				"url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE",
+				"sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a"
+			}
+		]
+	},
+	"ownedbytes@0.9.0": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a.txt",
+				"url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/c6e77d27c605cb3cea1a933fa7d68632aeb7865e/LICENSE",
+				"sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a"
+			}
+		]
+	},
+	"tantivy-sstable@0.7.0": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a.txt",
+				"url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE",
+				"sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a"
+			}
+		]
+	},
+	"tantivy-stacker@0.7.0": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a.txt",
+				"url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE",
+				"sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a"
+			}
+		]
+	},
+	"tantivy-query-grammar@0.26.0": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a.txt",
+				"url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE",
+				"sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a"
+			}
+		]
+	},
+	"tantivy-tokenizer-api@0.7.0": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a.txt",
+				"url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE",
+				"sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a"
+			}
+		]
+	}
+}

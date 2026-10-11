@@ -1,0 +1,72 @@
+[
+	{
+		"id": "source-serif-4",
+		"family": "Source Serif 4",
+		"category": "Serif"
+	},
+	{
+		"id": "literata",
+		"family": "Literata",
+		"category": "Serif"
+	},
+	{
+		"id": "libre-baskerville",
+		"family": "Libre Baskerville",
+		"category": "Serif"
+	},
+	{
+		"id": "ibm-plex-serif",
+		"family": "IBM Plex Serif",
+		"category": "Serif"
+	},
+	{
+		"id": "merriweather",
+		"family": "Merriweather",
+		"category": "Serif"
+	},
+	{
+		"id": "eb-garamond",
+		"family": "EB Garamond",
+		"category": "Serif"
+	},
+	{
+		"id": "source-sans-3",
+		"family": "Source Sans 3",
+		"category": "Sans"
+	},
+	{
+		"id": "atkinson-hyperlegible",
+		"family": "Atkinson Hyperlegible",
+		"category": "Sans"
+	},
+	{
+		"id": "ibm-plex-sans",
+		"family": "IBM Plex Sans",
+		"category": "Sans"
+	},
+	{
+		"id": "inter",
+		"family": "Inter",
+		"category": "Sans"
+	},
+	{
+		"id": "jetbrains-mono",
+		"family": "JetBrains Mono",
+		"category": "Mono"
+	},
+	{
+		"id": "ibm-plex-mono",
+		"family": "IBM Plex Mono",
+		"category": "Mono"
+	},
+	{
+		"id": "noto-sans",
+		"family": "Noto Sans",
+		"category": "International"
+	},
+	{
+		"id": "noto-serif",
+		"family": "Noto Serif",
+		"category": "International"
+	}
+]

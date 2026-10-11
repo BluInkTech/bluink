@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+# Ubuntu packages suffix LLVM executable names (for example llvm-lib-18), while
+# cargo-xwin invokes the canonical llvm-lib command. Keep the compatibility
+# shim in the project rather than requiring a privileged system-wide symlink.
+set -eu
+
+for candidate in llvm-lib-20 llvm-lib-19 llvm-lib-18 llvm-lib-17 llvm-lib-16; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    exec "$candidate" "$@"
+  fi
+done
+
+echo "Unable to find a versioned llvm-lib executable. Install the LLVM package for your distribution." >&2
+exit 127

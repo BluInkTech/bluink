@@ -1,0 +1,32 @@
+{
+	"version": "0.15.1",
+	"targets": {
+		"linux-x64": {
+			"archive": "typst-x86_64-unknown-linux-musl.tar.xz",
+			"directory": "typst-x86_64-unknown-linux-musl",
+			"sha256": "a6d077d0a95eed5a2eba715b2dae06be954f624ccbf85758a03f389ded33118c",
+			"binary": "typst",
+			"binarySha256": "29273eaa04f6d00edd0c2bec578f565fc9c65be856bfbffc894567c68ed0b237"
+		},
+		"windows-x64": {
+			"archive": "typst-x86_64-pc-windows-msvc.zip",
+			"directory": "typst-x86_64-pc-windows-msvc",
+			"sha256": "19ce3551153c2fe7ee9fa2f95208310c8f4d3209fedb699e0333faf8913f6736",
+			"binary": "typst.exe",
+			"binarySha256": "081217a463adb006f8894b44227fe4b9c9e91fc85f5463d5948e8370db9bb31e"
+		},
+		"macos-arm64": {
+			"archive": "typst-aarch64-apple-darwin.tar.xz",
+			"directory": "typst-aarch64-apple-darwin",
+			"sha256": "48f62ed034aa3a7978309579ac6ca00045e2ef0da73114e8af27cfd8e74dc05a",
+			"binary": "typst",
+			"binarySha256": "7c4a136b377f3689400afe37b4f0fe3528d50faaa55cbb1106ac8a128f86ba1a"
+		}
+	},
+	"assetsNotice": {
+		"url": "https://static.crates.io/crates/typst-assets/typst-assets-0.15.1.crate",
+		"sha256": "bcee505dac6702dd1c5e65aa2e94a6179d19ee09e2e5637d7313db91765dc4e0",
+		"file": "typst-assets-0.15.1/NOTICE",
+		"noticeSha256": "80ac46fb7d70f1c30bf0c14d3408e6a6f0f9cc9997a00b592aa0d2c8a5243a9d"
+	}
+}
