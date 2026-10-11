@@ -1,12 +1,23 @@
 // SPDX-License-Identifier: MPL-2.0
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { chmod, mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises'
+import {
+	appendFile,
+	chmod,
+	copyFile,
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	utimes,
+	writeFile,
+} from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { contractHash } from './assemble-cli.mjs'
 import { packDirectory, productionLock } from './package-artifacts.mjs'
 import { cliFileAllowed } from './package-audit.mjs'
+import { readPreparedResources, resourceSummary } from './resource-packages.mjs'
 import {
 	validateContext,
 	validateInput,
@@ -19,6 +30,100 @@ import {
 	verifyNativeArtifacts,
 	writeJson,
 } from './release-utils.mjs'
+
+test('shared resources relocate across runners, verify all archives before staging and reject tampering', async () => {
+	const temporary = await mkdtemp(
+		path.join(os.tmpdir(), 'bluink-shared-resources-'),
+	)
+	try {
+		const entries = []
+		const shared = path.join(temporary, 'downloaded')
+		await mkdir(shared)
+		for (const kind of ['fonts', 'typst', 'web']) {
+			const source = path.join(temporary, kind)
+			const file =
+				kind === 'web'
+					? 'assets/index.html'
+					: kind === 'fonts'
+						? 'assets/web/inter.css'
+						: 'assets/windows-x64/LICENSE'
+			await mkdir(path.dirname(path.join(source, file)), { recursive: true })
+			await writeJson(path.join(source, 'package.json'), {
+				name: `@bluink/${kind}`,
+				version: '26.10.7-alpha',
+				files: ['assets'],
+			})
+			await writeFile(path.join(source, file), 'Shared resource fixture.\n')
+			const record = await packDirectory(
+				source,
+				path.join(temporary, 'prepared'),
+				{ allowed: () => true },
+			)
+			await copyFile(record.archive, path.join(shared, record.filename))
+			entries.push(resourceSummary(record))
+		}
+		const input = {
+			dependencies: entries.map(({ filename: _, ...identity }) => identity),
+		}
+		const metadata = path.join(shared, 'dependencies.json')
+		await writeJson(metadata, entries)
+		const installed = path.join(temporary, 'workspace')
+		const records = await readPreparedResources(input, shared, installed)
+		assert.equal(records.length, 3)
+		assert.ok(
+			records.every((record) => path.dirname(record.archive) === shared),
+		)
+		assert.equal(
+			await readFile(
+				path.join(installed, 'fonts/assets/web/inter.css'),
+				'utf8',
+			),
+			'Shared resource fixture.\n',
+		)
+		assert.equal(
+			await readFile(
+				path.join(installed, 'typst/assets/windows-x64/LICENSE'),
+				'utf8',
+			),
+			'Shared resource fixture.\n',
+		)
+		for (const invalid of [
+			entries.slice(1),
+			[entries[0], entries[0], entries[2]],
+			entries.map((entry) => ({
+				...entry,
+				archive: 'C:\\runner\\absolute.tgz',
+			})),
+			entries.map((entry) => ({ ...entry, filename: '../outside.tgz' })),
+			entries.map((entry) => ({ ...entry, sha256: 'f'.repeat(64) })),
+		]) {
+			await writeJson(metadata, invalid)
+			await assert.rejects(
+				readPreparedResources(input, shared),
+				/shared resource|Shared resource/,
+			)
+		}
+		await writeJson(metadata, entries)
+		await writeFile(
+			path.join(installed, 'fonts/assets/web/inter.css'),
+			'Preserve until all archives verify.',
+		)
+		await appendFile(path.join(shared, entries[2].filename), 'tampered')
+		await assert.rejects(
+			readPreparedResources(input, shared, installed),
+			/integrity mismatch/,
+		)
+		assert.equal(
+			await readFile(
+				path.join(installed, 'fonts/assets/web/inter.css'),
+				'utf8',
+			),
+			'Preserve until all archives verify.',
+		)
+	} finally {
+		await rm(temporary, { recursive: true, force: true })
+	}
+})
 
 test('public release context binds version, repository, tag and protected OIDC publication', () => {
 	const input = {

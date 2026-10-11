@@ -28,7 +28,12 @@ import {
 	verifyNativeArtifacts,
 	writeJson,
 } from './release-utils.mjs'
-import { packResources, resourceFileAllowed } from './resource-packages.mjs'
+import {
+	packResources,
+	readPreparedResources,
+	resourceFileAllowed,
+	resourceSummary,
+} from './resource-packages.mjs'
 import { smokePackage } from './smoke-package.mjs'
 
 export function validateInput(input) {
@@ -199,7 +204,10 @@ async function dependencies(input) {
 			{ allowed: webFileAllowed, frontend: true },
 		),
 	)
-	await writeJson(path.join(destination, 'dependencies.json'), records)
+	await writeJson(
+		path.join(destination, 'dependencies.json'),
+		records.map(resourceSummary),
+	)
 	return records
 }
 
@@ -296,7 +304,10 @@ export async function verifyCliArchive(archive, identity, records) {
 
 async function assemble() {
 	const { input, identity } = await context()
-	const records = await dependencies(input)
+	const records = await readPreparedResources(
+		input,
+		path.join(root, '.resource-packages'),
+	)
 	const metadata = { ...identity }
 	delete metadata.version
 	metadata.toolchain = {
@@ -558,7 +569,7 @@ if (
 	})
 	if (positionals.length !== 1)
 		throw new Error(
-			'Choose context, native-report, assemble, smoke, verify or publish.',
+			'Choose context, resources, resources-install, native-report, assemble, smoke, verify or publish.',
 		)
 	if (positionals[0] === 'context') {
 		await context()
@@ -574,6 +585,16 @@ if (
 			throw new Error(
 				'Runner platform/architecture does not match the requested target.',
 			)
+	} else if (positionals[0] === 'resources') {
+		const { input } = await context()
+		await dependencies(input)
+	} else if (positionals[0] === 'resources-install') {
+		const { input } = await context()
+		await readPreparedResources(
+			input,
+			path.join(root, '.resource-packages'),
+			root,
+		)
 	} else if (positionals[0] === 'native-report') await nativeReport()
 	else if (positionals[0] === 'assemble') await assemble()
 	else if (positionals[0] === 'smoke') await smoke()

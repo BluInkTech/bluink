@@ -4,8 +4,95 @@
 import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { packDirectory } from './package-artifacts.mjs'
+import { packDirectory, verifyArchive } from './package-artifacts.mjs'
+import { webFileAllowed } from './package-audit.mjs'
 import { json, root, writeJson } from './release-utils.mjs'
+
+/** Portable artifact metadata: never transmit runner-specific absolute paths. */
+export function resourceSummary({
+	name,
+	version,
+	filename,
+	integrity,
+	sha256,
+}) {
+	return { name, version, filename, integrity, sha256 }
+}
+
+/** Consume the exact shared archives prepared by the single resource job. */
+export async function readPreparedResources(input, directory, installRoot) {
+	const entries = await json(path.join(directory, 'dependencies.json'))
+	if (
+		!Array.isArray(entries) ||
+		entries.length !== 3 ||
+		new Set(entries.map((entry) => entry.name)).size !== 3
+	)
+		throw new Error('Incomplete shared resource archive set.')
+	const records = []
+	const options = new Map()
+	for (const entry of entries) {
+		const expected = input.dependencies.find(
+			(dependency) => dependency.name === entry.name,
+		)
+		if (
+			!expected ||
+			entry.filename !==
+				`${entry.name.replace('@', '').replace('/', '-')}-${entry.version}.tgz` ||
+			Object.keys(entry).some(
+				(key) =>
+					!['name', 'version', 'filename', 'integrity', 'sha256'].includes(key),
+			) ||
+			['name', 'version', 'integrity', 'sha256'].some(
+				(key) => entry[key] !== expected[key],
+			)
+		)
+			throw new Error(
+				'Shared resource differs from frozen input or has unsafe metadata.',
+			)
+		const kind = entry.name.split('/')[1]
+		const pins =
+			kind === 'typst'
+				? await json(path.join(root, 'typst/sources.json'))
+				: undefined
+		const audit = {
+			allowed:
+				kind === 'web'
+					? webFileAllowed
+					: (file) => resourceFileAllowed(kind, file),
+			frontend: kind === 'web',
+			trustedUpstream: Object.fromEntries(
+				Object.entries(pins?.targets ?? {}).map(([target, spec]) => [
+					`assets/${target}/${spec.binary}`,
+					spec.binarySha256,
+				]),
+			),
+		}
+		const record = { ...entry, archive: path.join(directory, entry.filename) }
+		records.push(await verifyArchive(record, audit))
+		options.set(entry.name, audit)
+	}
+	// Verify every frozen archive before changing workspace assets. Workspace
+	// links keep fonts/Typst source tests pointed at these exact shared bytes.
+	if (installRoot)
+		for (const record of records.filter(
+			(entry) => entry.name !== '@bluink/web',
+		))
+			await verifyArchive(record, {
+				...options.get(record.name),
+				onInspect: async (directory) => {
+					const destination = path.join(
+						installRoot,
+						record.name.split('/')[1],
+						'assets',
+					)
+					await rm(destination, { recursive: true, force: true })
+					await cp(path.join(directory, 'assets'), destination, {
+						recursive: true,
+					})
+				},
+			})
+	return records
+}
 
 export function resourceFileAllowed(kind, file) {
 	if (

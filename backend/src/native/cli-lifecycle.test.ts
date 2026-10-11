@@ -8,7 +8,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import path from 'node:path'
 import test from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { seedPages, withTempDir } from '../test-utils/fixtures.js'
 import { nativeAddon } from './addon.js'
 
@@ -18,9 +18,23 @@ const nativePath = fileURLToPath(
 )
 
 function launch(root: string, args: string[], preload?: string) {
+	// Windows child.kill() force-terminates instead of delivering POSIX signals.
+	// Exercise the real registered handlers through a test-only IPC preload there.
+	const signalBridge = `data:text/javascript,${encodeURIComponent(`
+process.on('message', (signals) => {
+  for (const signal of signals) process.emit(signal);
+  process.disconnect();
+});
+process.channel.unref();
+`)}`
 	const child = spawn(
 		process.execPath,
-		[...(preload ? ['--import', preload] : []), cli, ...args],
+		[
+			...(process.platform === 'win32' ? ['--import', signalBridge] : []),
+			...(preload ? ['--import', pathToFileURL(preload).href] : []),
+			cli,
+			...args,
+		],
 		{
 			cwd: root,
 			env: {
@@ -30,21 +44,28 @@ function launch(root: string, args: string[], preload?: string) {
 				BLUINK_DIAGNOSTICS_FILE: path.join(root, 'diagnostics.jsonl'),
 				NO_COLOR: '1',
 			},
-			stdio: ['ignore', 'pipe', 'pipe'],
+			stdio:
+				process.platform === 'win32'
+					? ['ignore', 'pipe', 'pipe', 'ipc']
+					: ['ignore', 'pipe', 'pipe'],
 		},
 	)
 	let stdout = ''
 	let stderr = ''
-	child.stdout.on('data', (data) => {
+	child.stdout!.on('data', (data) => {
 		stdout += data.toString()
 	})
-	child.stderr.on('data', (data) => {
+	child.stderr!.on('data', (data) => {
 		stderr += data.toString()
 	})
-	const exited = once(child, 'exit')
+	const exited = once(child, 'close')
 	return {
 		child,
 		exited,
+		stop(...signals: NodeJS.Signals[]) {
+			if (process.platform === 'win32') child.send(signals)
+			else for (const signal of signals) child.kill(signal)
+		},
 		get stdout() {
 			return stdout
 		},
@@ -174,7 +195,7 @@ test('compiled CLI plain mode displays real Rust startup counters without termin
 			assert.equal(running.stdout, '')
 			assert.match(running.stderr, /1\/1 \(100%\)/)
 			assert.equal(running.stderr.includes('\u001b'), false)
-			running.child.kill('SIGTERM')
+			running.stop('SIGTERM')
 			assert.deepEqual(await running.exited, [0, null], running.stderr)
 		} finally {
 			await running.dispose()
@@ -194,8 +215,7 @@ test('compiled CLI remains alive, coalesces signals and flushes before releasing
 			const response = await fetch(`${url}/api/cache_status`)
 			assert.equal(response.status, 200)
 			await response.arrayBuffer()
-			running.child.kill('SIGTERM')
-			running.child.kill('SIGINT')
+			running.stop('SIGTERM', 'SIGINT')
 			assert.deepEqual(await running.exited, [0, null], running.stderr)
 			assert.equal(
 				(
@@ -375,7 +395,7 @@ BluinkApplication.prototype.stop = async function (...args) {
 		const running = launch(directory, ['server', '--port', '0'], preload)
 		try {
 			await running.ready()
-			running.child.kill('SIGTERM')
+			running.stop('SIGTERM')
 			assert.deepEqual(await running.exited, [1, null], running.stderr)
 			assert.match(running.stderr, /Backend cleanup failed/)
 			assert.equal(
