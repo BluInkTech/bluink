@@ -1,6 +1,6 @@
 {
 	"name": "@bluink/fonts",
-	"version": "26.10.1-alpha",
+	"version": "26.10.2",
 	"description": "Bluink's shared offline web and PDF font catalogue",
 	"private": true,
 	"type": "module",
@@ -27,6 +27,8 @@
 		"catalogue.json"
 	],
 	"devDependencies": {
+		"@biomejs/biome": "2.5.1",
+		"@bluink/typst": "26.10.1-alpha",
 		"wawoff2": "2.0.1"
 	},
 	"scripts": {

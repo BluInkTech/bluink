@@ -9,7 +9,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fonts, fontDirectory, fontStylesheet } from '../index.js'
-import { typstBinary } from '../../typst/index.js'
+import { typstBinary } from '@bluink/typst'
 
 test('every catalogue family has paired assets, declared faces and upstream notices', async () => {
 	const source = JSON.parse(
