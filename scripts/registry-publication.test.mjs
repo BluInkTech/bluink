@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtemp, rm, writeFile, access } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, access, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import {
 	installRegistryPackages,
+	auditRegistrySignatures,
 	provenanceStatement,
 	provenancePolicy,
 	publishRecords,
 } from './registry-publication.mjs'
+import { run } from './release-utils.mjs'
 
 const identity = {
 	publicRepository: 'https://github.com/example/cli',
@@ -28,6 +30,93 @@ const registry = (record, integrity = record.integrity) => ({
 		integrity,
 		attestations: { url: 'https://registry.npmjs.org/attestations' },
 	},
+})
+
+test('real npm subprocess diagnostics drive install and signature catalogue retries', async () => {
+	const directory = await mkdtemp(path.join(os.tmpdir(), 'bluink-npm-process-'))
+	try {
+		const cli = path.join(directory, 'npm-fixture.mjs')
+		const calls = path.join(directory, 'calls.json')
+		await writeFile(
+			cli,
+			`import { readFileSync, writeFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+const calls = JSON.parse(readFileSync(process.env.BLUINK_TEST_NPM_CALLS, 'utf8'));
+calls.push(args);
+writeFileSync(process.env.BLUINK_TEST_NPM_CALLS, JSON.stringify(calls));
+if (calls.filter(call => call[0] === args[0]).length === 1) {
+ console.error('npm error code ETARGET');
+ console.error('npm error notarget No matching version found for @bluink/cli@26.10.7-alpha.');
+ process.exit(1);
+}
+if (args[0] === 'audit') console.log(JSON.stringify({ invalid: [], missing: [], verified: [] }));
+`,
+		)
+		await writeFile(calls, '[]')
+		const moduleUrl = new URL('./registry-publication.mjs', import.meta.url)
+			.href
+		await run(
+			process.execPath,
+			[
+				'--input-type=module',
+				'-e',
+				`import { installRegistryPackages, auditRegistrySignatures } from ${JSON.stringify(moduleUrl)};
+const directory = process.env.BLUINK_TEST_NPM_DIRECTORY;
+const records = [{ name: '@bluink/cli', version: '26.10.7-alpha' }];
+const options = { pause: async () => {}, attempts: 2 };
+await installRegistryPackages(directory, records, options);
+await auditRegistrySignatures(directory, records, options);`,
+			],
+			{
+				env: {
+					...process.env,
+					npm_execpath: cli,
+					BLUINK_TEST_NPM_CALLS: calls,
+					BLUINK_TEST_NPM_DIRECTORY: directory,
+				},
+				capture: true,
+			},
+		)
+		const actual = JSON.parse(await readFile(calls, 'utf8'))
+		assert.deepEqual(
+			actual.map((args) => args[0]),
+			['install', 'install', 'audit', 'audit'],
+		)
+		for (const args of actual) {
+			assert.ok(args.includes('--prefer-online'))
+			assert.equal(
+				args[args.indexOf('--cache') + 1],
+				path.join(directory, 'cache'),
+			)
+		}
+	} finally {
+		await rm(directory, { recursive: true, force: true })
+	}
+})
+
+test('signature verification does not retry invalid signatures or unrelated registry errors', async () => {
+	for (const error of [
+		new Error('npm error code E401'),
+		new Error('npm error code EINTEGRITY'),
+		new Error('npm error code EATTESTATIONVERIFY'),
+		new Error(
+			'npm error code ETARGET\nNo matching version found for unrelated@1.0.0.',
+		),
+	]) {
+		let audits = 0
+		await assert.rejects(
+			auditRegistrySignatures(os.tmpdir(), records, {
+				audit: async () => {
+					audits++
+					throw error
+				},
+				pause: async () => {},
+				attempts: 2,
+			}),
+			(actual) => actual === error,
+		)
+		assert.equal(audits, 1)
+	}
 })
 
 test('installation waits for catalogue propagation without retrying unrelated failures', async () => {

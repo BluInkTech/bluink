@@ -37,36 +37,6 @@ pub struct BluinkApplication {
 
 #[napi]
 impl BluinkApplication {
-    #[napi]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "Keep application state guarded throughout admission checks and related operations."
-    )]
-    pub fn notify_file_change(&self, filename: Option<String>) -> napi::Result<()> {
-        self.inner
-            .check_running()
-            .map_err(bridge_error::native_error)?;
-        let state = self.inner.state().map_err(bridge_error::native_error)?;
-        let index = state.index.as_ref().ok_or_else(|| {
-            bridge_error::native_error("Initialize the search index before subscribing to changes.")
-        })?;
-        index.events.notify(filename);
-        Ok(())
-    }
-
-    #[napi]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "Keep application state guarded throughout admission checks and related operations."
-    )]
-    pub fn report_watcher_error(&self) -> napi::Result<()> {
-        let state = self.inner.state().map_err(bridge_error::native_error)?;
-        if let Some(index) = state.index.as_ref() {
-            index.events.report_failure();
-        }
-        Ok(())
-    }
-
     #[napi(constructor)]
     pub fn new(options: ApplicationOptions) -> napi::Result<Self> {
         Ok(Self {

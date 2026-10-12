@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2023–2026 BluInk
 
-//! Node delivers OS events. Rust owns their meaning, batching and reconciliation.
+//! Bounded native subscriptions, batching and canonical-file reconciliation.
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,30 +10,113 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, bounded};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use super::error::{ApplicationError, Result};
 
 const QUIET: Duration = Duration::from_millis(250);
 const MAX_WAIT: Duration = Duration::from_secs(2);
 const RESCAN_INTERVAL: Duration = Duration::from_mins(5);
+const ROOTS: [&str; 4] = ["items", "properties", "facets", "analytics/events"];
+const SUBSCRIPTION_FAILURE: &str =
+    "Filesystem subscription unavailable; external changes use the periodic rescan.";
 
-#[derive(serde::Serialize)]
-pub(super) struct SubscriptionRoot {
-    path: PathBuf,
-    prefix: &'static str,
+#[derive(Clone)]
+struct Ingress {
+    root: PathBuf,
+    sender: Sender<Option<String>>,
+    full: Arc<AtomicBool>,
+    stopping: Arc<AtomicBool>,
+    failure: Arc<Mutex<Option<String>>>,
 }
 
-pub(super) fn subscription_roots(root: &Path) -> Result<Vec<SubscriptionRoot>> {
-    // Watch only canonical input trees. A project can contain unrelated tools,
-    // caches or dependencies that must not acquire thousands of subscriptions.
-    ["items", "properties", "facets", "analytics/events"]
-        .into_iter()
-        .map(|prefix| {
-            let path = root.join(prefix);
-            std::fs::create_dir_all(&path)?;
-            Ok(SubscriptionRoot { path, prefix })
-        })
-        .collect()
+impl Ingress {
+    fn enqueue(&self, filename: Option<String>) {
+        if !self.stopping.load(Ordering::Acquire) && self.sender.try_send(filename).is_err() {
+            self.full.store(true, Ordering::Release);
+        }
+    }
+
+    fn receive(&self, event: notify::Result<Event>) {
+        if self.stopping.load(Ordering::Acquire) {
+            return;
+        }
+        let Ok(event) = event else {
+            self.subscription_failed();
+            return;
+        };
+        // Reconciliation reads must never trigger another reconciliation.
+        if matches!(event.kind, EventKind::Access(_)) {
+            return;
+        }
+        if event.need_rescan() || event.paths.is_empty() {
+            self.enqueue(None);
+            return;
+        }
+        for path in event.paths {
+            let Ok(relative) = path.strip_prefix(&self.root) else {
+                continue;
+            };
+            if let Some(filename) = relative.to_str() {
+                if !matches!(classify(Some(filename)), Change::Ignore) {
+                    self.enqueue(Some(filename.to_owned()));
+                }
+            } else {
+                self.enqueue(None);
+            }
+        }
+    }
+
+    fn subscription_failed(&self) {
+        if let Ok(mut failure) = self.failure.lock() {
+            if failure.as_deref() != Some(SUBSCRIPTION_FAILURE) {
+                tracing::warn!(
+                    operation = "watcher.subscription",
+                    error_class = "filesystem_subscription_unavailable"
+                );
+            }
+            *failure = Some(SUBSCRIPTION_FAILURE.to_owned());
+        }
+        self.full.store(true, Ordering::Release);
+    }
+}
+
+struct Subscriptions {
+    ingress: Ingress,
+    watcher: Option<RecommendedWatcher>,
+}
+
+impl Subscriptions {
+    fn refresh(&mut self) {
+        // Reconnect four roots at each periodic scan, including replaced roots
+        // whose old native subscriptions may no longer report any events.
+        self.watcher.take();
+        let ingress = self.ingress.clone();
+        let Ok(mut watcher) = notify::recommended_watcher(move |event| ingress.receive(event))
+        else {
+            self.ingress.subscription_failed();
+            return;
+        };
+        let mut healthy = true;
+        for prefix in ROOTS {
+            if watcher
+                .watch(&self.ingress.root.join(prefix), RecursiveMode::NonRecursive)
+                .is_err()
+            {
+                healthy = false;
+            }
+        }
+        self.watcher = Some(watcher);
+        if healthy {
+            if let Ok(mut failure) = self.ingress.failure.lock()
+                && failure.as_deref() == Some(SUBSCRIPTION_FAILURE)
+            {
+                *failure = None;
+            }
+        } else {
+            self.ingress.subscription_failed();
+        }
+    }
 }
 
 enum Change {
@@ -73,8 +156,8 @@ fn classify(filename: Option<&str>) -> Change {
 }
 
 pub(super) struct Coordinator {
-    sender: Sender<Option<String>>,
-    full: Arc<AtomicBool>,
+    #[cfg(test)]
+    ingress: Ingress,
     stopping: Arc<AtomicBool>,
     failure: Arc<Mutex<Option<String>>>,
     worker: Option<JoinHandle<()>>,
@@ -94,44 +177,46 @@ impl Coordinator {
         let full = Arc::new(AtomicBool::new(false));
         let stopping = Arc::new(AtomicBool::new(false));
         let failure = Arc::new(Mutex::new(None));
-        let events = EventWorker {
-            root,
-            index,
+        for prefix in ROOTS {
+            std::fs::create_dir_all(root.join(prefix))?;
+        }
+        let ingress = Ingress {
+            root: std::fs::canonicalize(&root)?,
+            sender,
             full: full.clone(),
             stopping: stopping.clone(),
             failure: failure.clone(),
+        };
+        #[cfg(test)]
+        let test_ingress = ingress.clone();
+        let mut subscriptions = Subscriptions {
+            ingress,
+            watcher: None,
+        };
+        subscriptions.refresh();
+        let events = EventWorker {
+            root,
+            index,
+            full,
+            stopping: stopping.clone(),
+            failure: failure.clone(),
+            subscriptions,
         };
         let worker = std::thread::Builder::new()
             .name("bluink-reconcile-events".to_owned())
             .spawn(move || events.run(receiver, interval))?;
         Ok(Self {
-            sender,
-            full,
+            #[cfg(test)]
+            ingress: test_ingress,
             stopping,
             failure,
             worker: Some(worker),
         })
     }
 
-    pub(super) fn notify(&self, filename: Option<String>) {
-        if self.sender.try_send(filename).is_err() {
-            // A bounded subscription queue must not silently lose changes.
-            self.full.store(true, Ordering::Release);
-        }
-    }
-
-    pub(super) fn report_failure(&self) {
-        if let Ok(mut failure) = self.failure.lock() {
-            *failure = Some(
-                "Filesystem subscription unavailable; external changes use the periodic rescan."
-                    .to_owned(),
-            );
-        }
-        self.full.store(true, Ordering::Release);
-        tracing::warn!(
-            operation = "watcher.subscription",
-            error_class = "filesystem_subscription_unavailable"
-        );
+    #[cfg(test)]
+    pub(super) fn enqueue_for_test(&self, filename: Option<String>) {
+        self.ingress.enqueue(filename);
     }
 
     pub(super) fn failure(&self) -> Option<String> {
@@ -155,6 +240,7 @@ struct EventWorker {
     full: Arc<AtomicBool>,
     stopping: Arc<AtomicBool>,
     failure: Arc<Mutex<Option<String>>>,
+    subscriptions: Subscriptions,
 }
 
 impl EventWorker {
@@ -162,7 +248,7 @@ impl EventWorker {
         clippy::needless_pass_by_value,
         reason = "The worker owns its receiver and lifetime until shutdown."
     )]
-    fn run(self, receiver: Receiver<Option<String>>, interval: Duration) {
+    fn run(mut self, receiver: Receiver<Option<String>>, interval: Duration) {
         let mut pending = Pending::default();
         let mut first = Instant::now();
         let mut last = first;
@@ -183,11 +269,17 @@ impl EventWorker {
                 pending.full = true;
             }
             let stopping = self.stopping.load(Ordering::Acquire);
+            if stopping {
+                // Stop native callbacks before draining the accepted queue.
+                self.subscriptions.watcher.take();
+                pending.full |= self.full.swap(false, Ordering::AcqRel);
+            }
             if !stopping && Instant::now() >= next_release {
                 crate::memory::release_unused();
                 next_release = Instant::now() + Duration::from_secs(5);
             }
             if !stopping && Instant::now() >= next_rescan {
+                self.subscriptions.refresh();
                 pending.full = true;
                 next_rescan = Instant::now() + interval;
             }
@@ -312,7 +404,137 @@ fn reconcile(root: &Path, index: &str, mut pending: Pending) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notify::event::{AccessKind, ModifyKind, RenameMode};
     const ID: &str = "00000000-0000-7000-8000-000000000099";
+
+    fn ingress(root: &Path, capacity: usize) -> (Ingress, Receiver<Option<String>>) {
+        let (sender, receiver) = bounded(capacity);
+        (
+            Ingress {
+                root: root.to_owned(),
+                sender,
+                full: Arc::new(AtomicBool::new(false)),
+                stopping: Arc::new(AtomicBool::new(false)),
+                failure: Arc::new(Mutex::new(None)),
+            },
+            receiver,
+        )
+    }
+
+    #[test]
+    fn native_events_normalize_both_rename_paths_and_ignore_reads_and_unrelated_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let (ingress, received) = ingress(directory.path(), 16);
+        ingress.receive(Ok(Event::new(EventKind::Modify(ModifyKind::Name(
+            RenameMode::Both,
+        )))
+        .add_path(directory.path().join("properties/old.string.property"))
+        .add_path(directory.path().join("properties/new.string.property"))));
+        let names: Vec<_> = received.try_iter().collect();
+        assert_eq!(names.len(), 2);
+        assert!(
+            names
+                .iter()
+                .all(|name| matches!(classify(name.as_deref()), Change::Schema))
+        );
+        for path in [
+            directory.path().join(".cache/file"),
+            directory.path().join("../properties/outside"),
+            directory
+                .path()
+                .join(format!("items/00/{ID}/assets/image.png")),
+        ] {
+            ingress.receive(Ok(Event::new(EventKind::Any).add_path(path)));
+        }
+        ingress.receive(Ok(Event::new(EventKind::Access(AccessKind::Any))
+            .add_path(directory.path().join("properties/field"))));
+        assert!(received.is_empty());
+        ingress.receive(Ok(Event::new(EventKind::Any)));
+        assert_eq!(received.try_recv().unwrap(), None);
+        ingress.receive(Err(notify::Error::generic("subscription failure")));
+        assert!(ingress.full.load(Ordering::Acquire));
+        assert_eq!(
+            ingress.failure.lock().unwrap().as_deref(),
+            Some(SUBSCRIPTION_FAILURE)
+        );
+        ingress.stopping.store(true, Ordering::Release);
+        ingress.receive(Ok(Event::new(EventKind::Any)));
+        assert!(received.is_empty());
+    }
+
+    #[test]
+    fn native_subscriptions_deliver_all_four_roots_and_stop_without_node() {
+        let directory = tempfile::tempdir().unwrap();
+        for prefix in ROOTS {
+            std::fs::create_dir_all(directory.path().join(prefix).join("nested/deep")).unwrap();
+        }
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        let (ingress, received) = ingress(&root, 1024);
+        let mut subscriptions = Subscriptions {
+            ingress: ingress.clone(),
+            watcher: None,
+        };
+        subscriptions.refresh();
+        assert!(ingress.failure.lock().unwrap().is_none());
+        let mut observed = HashSet::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut probe = 0;
+        while observed.len() != ROOTS.len() {
+            for prefix in ROOTS {
+                std::fs::write(root.join(prefix).join(format!("probe-{probe}")), "external")
+                    .unwrap();
+            }
+            probe += 1;
+            std::thread::sleep(Duration::from_millis(50));
+            for filename in received.try_iter().flatten() {
+                for prefix in ROOTS {
+                    if filename
+                        .replace('\\', "/")
+                        .starts_with(&format!("{prefix}/"))
+                    {
+                        observed.insert(prefix);
+                    }
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Missing native events: {observed:?}"
+            );
+        }
+        ingress.stopping.store(true, Ordering::Release);
+        subscriptions.watcher.take();
+        received.try_iter().for_each(drop);
+        std::fs::write(root.join("properties/after-stop"), "ignored").unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(received.is_empty());
+    }
+
+    #[test]
+    fn unavailable_roots_recover_on_refresh_and_replaced_roots_are_reconnected() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        let (ingress, _) = ingress(&root, 1024);
+        let mut subscriptions = Subscriptions {
+            ingress: ingress.clone(),
+            watcher: None,
+        };
+        subscriptions.refresh();
+        assert_eq!(
+            ingress.failure.lock().unwrap().as_deref(),
+            Some(SUBSCRIPTION_FAILURE)
+        );
+        for prefix in ROOTS {
+            std::fs::create_dir_all(root.join(prefix)).unwrap();
+        }
+        subscriptions.refresh();
+        assert!(ingress.failure.lock().unwrap().is_none());
+        std::fs::remove_dir(root.join("facets")).unwrap();
+        subscriptions.refresh();
+        assert!(ingress.failure.lock().unwrap().is_some());
+        std::fs::create_dir(root.join("facets")).unwrap();
+        subscriptions.refresh();
+        assert!(ingress.failure.lock().unwrap().is_none());
+    }
     #[test]
     fn events_only_target_canonical_files_and_unnamed_events_reconcile() {
         assert!(matches!(classify(None), Change::Full));
@@ -348,15 +570,15 @@ mod tests {
     #[test]
     fn a_full_event_queue_requests_reconciliation_instead_of_losing_changes() {
         let (sender, _receiver) = bounded(1);
-        let coordinator = Coordinator {
+        let ingress = Ingress {
+            root: PathBuf::from("/project"),
             sender,
             full: Arc::new(AtomicBool::new(false)),
             stopping: Arc::new(AtomicBool::new(false)),
             failure: Arc::new(Mutex::new(None)),
-            worker: None,
         };
-        coordinator.notify(Some("first".to_owned()));
-        coordinator.notify(Some("second".to_owned()));
-        assert!(coordinator.full.load(Ordering::Acquire));
+        ingress.enqueue(Some("first".to_owned()));
+        ingress.enqueue(Some("second".to_owned()));
+        assert!(ingress.full.load(Ordering::Acquire));
     }
 }

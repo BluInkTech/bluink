@@ -31,6 +31,31 @@ fn wait_for_commit(index: &str, previous: Option<u64>) -> Option<u64> {
 }
 
 #[test]
+fn native_root_events_reconcile_external_content_without_waiting_for_periodic_scan() {
+    let app = application("native-root-events");
+    app.initialize_sync(true).unwrap();
+    let id = "ABCDEF02-2345-7000-ABCD-EF0123456789";
+    crate::engine::project::write::write_item_input(
+        &app.root,
+        json!({"id": id, "meta": {"type": "page", "title": "nativewatchsentinel"},
+            "content": {"type": "doc", "content": [{"type": "paragraph"}]}}),
+        None,
+        &app.activity_date().unwrap(),
+    )
+    .unwrap();
+    // Creating/removing a shard is visible to the shallow OS subscription;
+    // these assertions finish well before the production five-minute scan.
+    wait_for_count(&app, "nativewatchsentinel", 1);
+    let item = crate::project::item_path(&app.root, id);
+    let shard = item.parent().unwrap().parent().unwrap();
+    std::fs::rename(shard, app.root.join("removed-shard")).unwrap();
+    wait_for_count(&app, "nativewatchsentinel", 0);
+    assert!(app.status().unwrap()["watcherError"].is_null());
+    app.stop_sync().unwrap();
+    std::fs::remove_dir_all(&app.root).unwrap();
+}
+
+#[test]
 fn periodic_scan_discovers_deep_external_creates_updates_and_deletions() {
     let app = application("periodic-scan");
     app.initialize_sync(true).unwrap();

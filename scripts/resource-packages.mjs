@@ -3,6 +3,7 @@
 
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { packDirectory, verifyArchive } from './package-artifacts.mjs'
@@ -112,10 +113,13 @@ export async function stageInstalledResources({
 	installRoot = root,
 	packageRoots,
 } = {}) {
+	const cliRequire = createRequire(
+		path.join(installRoot, 'backend/package.json'),
+	)
 	for (const kind of ['fonts', 'typst']) {
 		const source =
 			packageRoots?.[kind] ??
-			path.dirname(fileURLToPath(import.meta.resolve(`@bluink/${kind}`)))
+			path.dirname(cliRequire.resolve(`@bluink/${kind}`))
 		await stageResourceDirectory(kind, source, installRoot)
 	}
 }

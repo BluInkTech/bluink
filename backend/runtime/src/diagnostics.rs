@@ -280,7 +280,7 @@ pub fn configure_native_diagnostics() -> Result<()> {
     }
 }
 
-/// One-way delivery for the few remaining Node bootstrap/watcher events.
+/// One-way delivery for the few remaining Node bootstrap events.
 /// Normal backend events never cross the JavaScript boundary.
 #[napi]
 #[allow(

@@ -37,6 +37,7 @@ napi = { version = "3.12.6", default-features = false, features = ["napi10", "as
 napi-derive = "3.6.7"
 tantivy = { version = "0.26.2", default-features = false, features = ["mmap", "stopwords", "stemmer", "lz4-compression"] }
 crossbeam-channel = "0.5"
+notify = "=8.2.0"
 chrono-tz = "0.10"
 iana-time-zone = "0.1.65"
 hostname = "0.4"

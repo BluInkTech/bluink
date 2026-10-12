@@ -212,12 +212,18 @@ test('source builds stage installed resources and fail on catalogue drift or cha
 		const packageRoots = Object.fromEntries(
 			['fonts', 'typst'].map((kind) => [
 				kind,
-				path.join(temporary, 'packages', kind),
+				path.join(installRoot, 'backend/node_modules/@bluink', kind),
 			]),
 		)
 		for (const kind of ['fonts', 'typst']) {
 			await mkdir(path.join(installRoot, kind), { recursive: true })
 			await mkdir(path.join(packageRoots[kind], 'assets'), { recursive: true })
+			await writeJson(path.join(packageRoots[kind], 'package.json'), {
+				name: `@bluink/${kind}`,
+				type: 'module',
+				exports: './index.js',
+			})
+			await writeFile(path.join(packageRoots[kind], 'index.js'), 'export {}\n')
 		}
 		const catalogue = '[{"id":"fixture"}]\n'
 		await writeFile(path.join(installRoot, 'fonts/catalogue.json'), catalogue)
@@ -239,7 +245,7 @@ test('source builds stage installed resources and fail on catalogue drift or cha
 		}
 		for (const folder of [packageRoots.typst, path.join(installRoot, 'typst')])
 			await writeJson(path.join(folder, 'sources.json'), { targets })
-		await stageInstalledResources({ installRoot, packageRoots })
+		await stageInstalledResources({ installRoot })
 		assert.equal(
 			await readFile(path.join(installRoot, 'fonts/assets/font.woff2'), 'utf8'),
 			'paired assets',

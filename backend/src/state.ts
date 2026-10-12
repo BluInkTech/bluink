@@ -9,9 +9,8 @@ import type { BluinkApplication } from '../runtime/index.js'
 import { nativeAddon, publicationRuntime } from './native/addon.js'
 import { startServerConsole } from './native/console.js'
 import { hostLifecycle } from './native/lifecycle.js'
-import { subscribeProject } from './native/watcher.js'
 
-/** Installed resources and OS subscriptions; project/index state stays in Rust. */
+/** Resolve installed resources; Rust owns project/index state and subscriptions. */
 export async function createAppState(consoleMode?: 'auto' | 'plain'): Promise<{
 	application: BluinkApplication
 }> {
@@ -28,28 +27,18 @@ export async function createAppState(consoleMode?: 'auto' | 'plain'): Promise<{
 		pdfFontFolder: runtime.fontFolder,
 		typstBinary: runtime.typstBinary,
 	})
-	let stopSubscription = () => {}
 	let stop: Promise<void> | undefined
 	const cleanup = () => {
 		if (!stop) {
-			stop = (async () => {
-				try {
-					stopSubscription()
-				} finally {
-					await application.stop()
-				}
-			})()
+			stop = application.stop()
 		}
 		return stop
 	}
 	hostLifecycle.register(cleanup)
 	try {
 		if (consoleMode) startServerConsole(application, consoleMode)
-		const opened = JSON.parse(await application.initialize(true)) as {
-			watchRoots: Array<{ path: string; prefix: string }>
-		}
+		await application.initialize(true)
 		hostLifecycle.checkRunning()
-		stopSubscription = subscribeProject(application, opened.watchRoots)
 		return { application }
 	} catch (error) {
 		try {

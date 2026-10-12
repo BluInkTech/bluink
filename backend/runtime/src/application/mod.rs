@@ -162,10 +162,6 @@ impl Application {
         }
         result
     }
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "Keep application state guarded throughout admission checks and related operations."
-    )]
     fn open_sync(&self, with_index: bool, deadline: Option<Instant>) -> Result<Value> {
         let config =
             crate::engine::project::config::open_or_create_project(&self.root, &self.timezone)
@@ -235,11 +231,6 @@ impl Application {
         }
         self.check_running()?;
         crate::memory::release_unused();
-        let watch_roots = if with_index {
-            watch::subscription_roots(&self.root)?
-        } else {
-            Vec::new()
-        };
         let mut state = self.state()?;
         state.ready = true;
         state.error = None;
@@ -248,7 +239,6 @@ impl Application {
             "projectRoot": self.root,
             "config": config,
             "indexPath": state.index.as_ref().map(|index| &index.path),
-            "watchRoots": watch_roots,
         }))
     }
     #[expect(

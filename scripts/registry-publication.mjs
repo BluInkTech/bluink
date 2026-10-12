@@ -122,16 +122,28 @@ export async function installRegistryPackages(
 					path.join(directory, 'cache'),
 					'--registry=https://registry.npmjs.org/',
 				],
-				{ cwd: directory },
+				{ cwd: directory, capture: true },
 			),
 		pause = registryPause,
 		attempts = 121,
 	} = {},
 ) {
+	return retryRegistryMetadata(records, install, {
+		pause,
+		attempts,
+		beforeRetry: () =>
+			rm(path.join(directory, 'package-lock.json'), { force: true }),
+	})
+}
+
+async function retryRegistryMetadata(
+	records,
+	operation,
+	{ pause, attempts, beforeRetry = async () => {} },
+) {
 	for (let attempt = 0; attempt < attempts; attempt++) {
 		try {
-			await install()
-			return
+			return await operation()
 		} catch (error) {
 			if (
 				!error.message.includes('npm error code ETARGET') ||
@@ -144,12 +156,39 @@ export async function installRegistryPackages(
 			)
 				throw error
 			console.log(
-				'Waiting for the published version to reach the npm installation catalogue…',
+				'Waiting for the published version to reach the npm catalogue…',
 			)
-			await rm(path.join(directory, 'package-lock.json'), { force: true })
+			await beforeRetry()
 			await pause()
 		}
 	}
+}
+
+export async function auditRegistrySignatures(
+	directory,
+	records,
+	{
+		audit = () =>
+			npm(
+				[
+					'audit',
+					'signatures',
+					'--json',
+					'--include-attestations',
+					'--prefer-online',
+					'--cache',
+					path.join(directory, 'cache'),
+					'--registry=https://registry.npmjs.org/',
+				],
+				{ cwd: directory, capture: true },
+			),
+		pause = registryPause,
+		attempts = 121,
+	} = {},
+) {
+	return JSON.parse(
+		await retryRegistryMetadata(records, audit, { pause, attempts }),
+	)
 }
 
 /** Apply identity policy only to bundles already verified by npm audit. */
@@ -234,18 +273,7 @@ export async function verifyRegistryProvenance(records, identity) {
 				throw new Error(
 					`Registry installation differs from prepared bytes: ${record.name}`,
 				)
-		const report = JSON.parse(
-			await npm(
-				[
-					'audit',
-					'signatures',
-					'--json',
-					'--include-attestations',
-					'--registry=https://registry.npmjs.org/',
-				],
-				{ cwd: directory, capture: true },
-			),
-		)
+		const report = await auditRegistrySignatures(directory, records)
 		for (const record of records.filter(
 			(entry) => entry.name !== '@bluink/web',
 		)) {

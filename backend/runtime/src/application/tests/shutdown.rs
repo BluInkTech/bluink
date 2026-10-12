@@ -39,7 +39,7 @@ fn stop_drains_accepted_external_changes_before_joining_the_index_worker() {
         .as_ref()
         .unwrap()
         .events
-        .notify(Some(format!("items/{}/{id}/item.json", &id[..2])));
+        .enqueue_for_test(Some(format!("items/{}/{id}/item.json", &id[..2])));
     app.stop_sync().unwrap();
     // Inspect the committed index directly, without startup reconciliation
     // concealing an event lost during stop.

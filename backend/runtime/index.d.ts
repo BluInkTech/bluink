@@ -3,8 +3,6 @@
 
 /** Process-local application handle shared by the CLI and the Rust HTTP adapter. */
 export declare class BluinkApplication {
-  notifyFileChange(filename?: string | undefined | null): void
-  reportWatcherError(): void
   constructor(options: ApplicationOptions)
   initialize(withIndex: boolean): Promise<string>
   status(): string
@@ -63,7 +61,7 @@ export interface HttpAddress {
 export declare function nativeBuildInfo(): string
 
 /**
- * One-way delivery for the few remaining Node bootstrap/watcher events.
+ * One-way delivery for the few remaining Node bootstrap events.
  * Normal backend events never cross the JavaScript boundary.
  */
 export declare function recordNativeDiagnostic(source: string): void
