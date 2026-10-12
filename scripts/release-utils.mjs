@@ -125,7 +125,6 @@ async function sourceFiles(folder) {
 export async function nativeSourceDigest() {
 	const files = [
 		...(await sourceFiles(path.join(root, 'backend/runtime/src'))),
-		...(await sourceFiles(path.join(root, 'backend/runtime/scripts'))),
 		...(await sourceFiles(path.join(root, 'backend/vendor'))),
 		...[
 			'rust-toolchain.toml',

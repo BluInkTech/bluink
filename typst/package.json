@@ -1,6 +1,6 @@
 {
 	"name": "@bluink/typst",
-	"version": "26.10.1-alpha",
+	"version": "26.10.2",
 	"description": "Pinned offline Typst binaries for Bluink PDF generation",
 	"private": true,
 	"type": "module",
@@ -20,6 +20,9 @@
 		"README.md",
 		"licenses"
 	],
+	"devDependencies": {
+		"@biomejs/biome": "2.5.1"
+	},
 	"scripts": {
 		"build": "node scripts/build.mjs",
 		"test": "node --test tests/*.test.mjs",

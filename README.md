@@ -17,11 +17,10 @@ npm run build
 npm test
 ```
 
-Resource preparation downloads checksum-pinned upstream inputs. The included
-synthetic tests do not represent the complete product verification suite.
-Windows source builds use 7-Zip installed at `%ProgramFiles%\7-Zip\7z.exe`
-to decompress upstream XZ archives. GitHub's Windows runner includes it;
-installed Bluink packages do not require it.
+CLI builds consume exact published Web, Fonts and Typst dependencies. They do
+not regenerate fonts or download upstream Typst archives. Fonts and Typst have
+independent release workflows. The included synthetic tests do not represent
+the complete product verification suite.
 
 ## Feedback and contributions
 

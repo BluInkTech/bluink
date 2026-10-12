@@ -1,0 +1,152 @@
+name: Fonts release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['fonts/v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fonts-release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  BLUINK_PUBLIC_REPOSITORY: ${{ github.event.repository.private == false }}
+  BLUINK_RESOURCE_PUBLISH_ENABLED: ${{ vars.BLUINK_RESOURCE_PUBLISH_ENABLED }}
+
+jobs:
+  build:
+    if: github.event.repository.private == false
+    name: Build one Fonts archive
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.9.0
+          package-manager-cache: false
+      - name: Install pinned npm
+        run: npm install --global npm@12.2.0 --ignore-scripts --no-audit --no-fund
+      - name: Verify npm version
+        run: test "$(npm --version)" = '12.2.0'
+      - run: node scripts/resource-release.mjs context --package fonts
+      - name: Install only this package's locked build tools
+        run: npm ci --prefix fonts --workspaces=false --ignore-scripts --no-audit --no-fund
+      - name: Build and audit the frozen candidate
+        run: node scripts/resource-release.mjs prepare --package fonts
+        timeout-minutes: 15
+      - name: Check selected resource source and assets
+        run: |
+          npm run format --prefix fonts --workspaces=false
+          git diff --exit-code
+          npm run lint --prefix fonts --workspaces=false
+          npm test --prefix fonts --workspaces=false
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fonts-candidate
+          path: .resource-out/fonts/
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+
+  smoke:
+    needs: build
+    name: Installed Fonts on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022, macos-15]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.9.0
+          package-manager-cache: false
+      - name: Install pinned npm
+        run: npm install --global npm@12.2.0 --ignore-scripts --no-audit --no-fund
+      - name: Verify npm version
+        run: test "$(npm --version)" = '12.2.0'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: fonts-candidate
+          path: .resource-out/fonts
+      - run: node scripts/resource-release.mjs smoke --package fonts
+        timeout-minutes: 10
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fonts-smoke-${{ matrix.os }}
+          path: .resource-smoke/fonts/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  publish:
+    needs: [build, smoke]
+    if: github.event_name == 'push' && github.event.repository.private == false && vars.BLUINK_RESOURCE_PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-22.04
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.9.0
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Install pinned npm
+        run: npm install --global npm@12.2.0 --ignore-scripts --no-audit --no-fund
+      - name: Verify npm version
+        run: test "$(npm --version)" = '12.2.0'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: fonts-candidate
+          path: .resource-out/fonts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: fonts-smoke-*
+          merge-multiple: true
+          path: .resource-smoke/fonts
+      - run: node scripts/resource-release.mjs verify --package fonts
+      - name: Install pinned GitHub attestation verifier
+        run: |
+          mkdir -p "$RUNNER_TEMP/bluink-gh"
+          curl --fail --location --retry 3 'https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_amd64.tar.gz' --output "$RUNNER_TEMP/bluink-gh.tgz"
+          echo "bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386  $RUNNER_TEMP/bluink-gh.tgz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/bluink-gh.tgz" --strip-components=1 -C "$RUNNER_TEMP/bluink-gh"
+          echo "$RUNNER_TEMP/bluink-gh/bin" >> "$GITHUB_PATH"
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: |
+            .resource-out/fonts/*.tgz
+            .resource-out/fonts/manifest.json
+            .resource-out/fonts/verification.json
+      - name: Verify attested workflow identity
+        run: |
+          for artifact in .resource-out/fonts/*.tgz .resource-out/fonts/manifest.json .resource-out/fonts/verification.json; do
+            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/fonts-release.yml" --source-ref "$GITHUB_REF" --source-digest "$GITHUB_SHA" --deny-self-hosted-runners
+          done
+      - run: node scripts/resource-release.mjs publish --package fonts
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: fonts-release-verification
+          path: .resource-out/fonts/*.json
+          include-hidden-files: true
+          if-no-files-found: error

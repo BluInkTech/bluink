@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2023–2026 BluInk
 
-import { copyFile, mkdir, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
-import { buildPackage, contractHash } from './assemble-cli.mjs'
+import { buildPackage } from './assemble-cli.mjs'
+import { contractHash, prepareCliBuild } from './cli-build.mjs'
 import {
 	inspectArchive,
 	packDirectory,
@@ -21,7 +22,6 @@ import {
 import {
 	fileHash,
 	json,
-	npm,
 	root,
 	run,
 	targets,
@@ -29,10 +29,11 @@ import {
 	writeJson,
 } from './release-utils.mjs'
 import {
-	packResources,
+	downloadResources,
 	readPreparedResources,
 	resourceFileAllowed,
 	resourceSummary,
+	stageInstalledResources,
 } from './resource-packages.mjs'
 import { smokePackage } from './smoke-package.mjs'
 
@@ -177,33 +178,8 @@ function frozenMatch(actual, expected) {
 }
 
 async function dependencies(input) {
-	await npm(['run', 'build:resources'])
 	const destination = path.join(root, '.resource-packages')
-	const records = await packResources(destination, true)
-	for (const record of records)
-		frozenMatch(
-			record,
-			input.dependencies.find((entry) => entry.name === record.name),
-		)
-	const web = input.dependencies.find((entry) => entry.name === '@bluink/web')
-	const filename = `bluink-web-${web.version}.tgz`
-	await mkdir(destination, { recursive: true })
-	const archive = path.join(destination, filename)
-	const response = await fetch(
-		`https://registry.npmjs.org/@bluink/web/-/web-${web.version}.tgz`,
-		{ signal: AbortSignal.timeout(120_000) },
-	)
-	if (!response.ok)
-		throw new Error(
-			`The exact Web package must be published first: HTTP ${response.status}`,
-		)
-	await writeFile(archive, Buffer.from(await response.arrayBuffer()))
-	records.push(
-		await verifyArchive(
-			{ ...web, filename, archive },
-			{ allowed: webFileAllowed, frontend: true },
-		),
-	)
+	const records = await downloadResources(input.dependencies, destination)
 	await writeJson(
 		path.join(destination, 'dependencies.json'),
 		records.map(resourceSummary),
@@ -304,21 +280,28 @@ export async function verifyCliArchive(archive, identity, records) {
 
 async function assemble() {
 	const { input, identity } = await context()
+	const native = await verifyNativeArtifacts(
+		path.join(root, 'backend/runtime'),
+		undefined,
+		false,
+		{ ...identity, version: input.version },
+	)
+	validateNativeReports(
+		{ ...identity, version: input.version },
+		native,
+		await readNativeReports(),
+	)
 	const records = await readPreparedResources(
 		input,
 		path.join(root, '.resource-packages'),
 	)
 	const metadata = { ...identity }
 	delete metadata.version
-	metadata.toolchain = {
-		node: process.version,
-		npm: (await npm(['--version'], { capture: true })).trim(),
-		rust: (await run('rustc', ['--version'], { capture: true })).trim(),
-	}
 	const directory = await buildPackage({
 		version: input.version,
 		metadata,
 		dependencies: records,
+		preparedDirectory: path.join(root, '.cli-build'),
 	})
 	const output = path.join(root, 'package-out')
 	const cli = await packDirectory(directory, output, {
@@ -362,6 +345,35 @@ async function nativeReport() {
 		version: input.version,
 		...native[0],
 	})
+}
+
+async function readNativeReports() {
+	return Object.fromEntries(
+		await Promise.all(
+			targets.map(async (target) => [
+				target.rust,
+				await json(path.join(root, 'verification', `${target.rust}.json`)),
+			]),
+		),
+	)
+}
+
+/** Assembly must consume successful native checks from the same source and bytes. */
+export function validateNativeReports(identity, artifacts, reports) {
+	for (const target of targets) {
+		const native = reports[target.rust]
+		const artifact = artifacts.find((entry) => entry.target === target.rust)
+		if (
+			!artifact ||
+			native?.status !== 'passed' ||
+			native.version !== identity.version ||
+			native.publicCommit !== identity.publicCommit ||
+			native.target !== target.rust ||
+			native.sha256 !== artifact.sha256 ||
+			native.sourceDigest !== artifact.sourceDigest
+		)
+			throw new Error(`Missing matching native verification: ${target.rust}`)
+	}
 }
 
 async function bundle() {
@@ -476,8 +488,18 @@ export function validateReports(
 	{ input, manifest, cli, nativeArtifacts },
 	reports,
 ) {
+	validateNativeReports(
+		{ version: input.version, publicCommit: manifest.publicCommit },
+		nativeArtifacts,
+		Object.fromEntries(
+			Object.entries(reports).map(([target, report]) => [
+				target,
+				report.native,
+			]),
+		),
+	)
 	return targets.map((target) => {
-		const { smoke: report, native } = reports[target.rust] ?? {}
+		const { smoke: report } = reports[target.rust] ?? {}
 		const artifact = nativeArtifacts.find(
 			(entry) => entry.target === target.rust,
 		)
@@ -488,13 +510,7 @@ export function validateReports(
 			report.arch !== target.arch ||
 			report.version !== input.version ||
 			report.publicCommit !== manifest.publicCommit ||
-			report.archiveSha256 !== cli.sha256 ||
-			native?.status !== 'passed' ||
-			native.version !== input.version ||
-			native.publicCommit !== manifest.publicCommit ||
-			native.target !== target.rust ||
-			native.sha256 !== artifact.sha256 ||
-			native.sourceDigest !== artifact.sourceDigest
+			report.archiveSha256 !== cli.sha256
 		)
 			throw new Error(`Missing matching verification: ${target.rust}`)
 		return {
@@ -547,12 +563,10 @@ async function verifiedBundle() {
 async function publish() {
 	await context(true)
 	const { identity, cli, dependencies } = await verifiedBundle()
-	await publishRecords(
-		[...dependencies.filter((entry) => entry.name !== '@bluink/web'), cli],
-		{
-			verifyExisting: (records) => verifyRegistryProvenance(records, identity),
-		},
-	)
+	await verifyRegistryProvenance(dependencies, identity)
+	await publishRecords([cli], {
+		verifyExisting: (records) => verifyRegistryProvenance(records, identity),
+	})
 	await writeJson(
 		path.join(root, 'package-out/registry-verification.json'),
 		await verifyRegistryProvenance([...dependencies, cli], identity),
@@ -569,7 +583,7 @@ if (
 	})
 	if (positionals.length !== 1)
 		throw new Error(
-			'Choose context, resources, resources-install, native-report, assemble, smoke, verify or publish.',
+			'Choose context, resources, resources-install, native-report, cli-build, assemble, smoke, verify or publish.',
 		)
 	if (positionals[0] === 'context') {
 		await context()
@@ -586,8 +600,8 @@ if (
 				'Runner platform/architecture does not match the requested target.',
 			)
 	} else if (positionals[0] === 'resources') {
-		const { input } = await context()
-		await dependencies(input)
+		const { input, identity } = await context()
+		await verifyRegistryProvenance(await dependencies(input), identity)
 	} else if (positionals[0] === 'resources-install') {
 		const { input } = await context()
 		await readPreparedResources(
@@ -595,8 +609,15 @@ if (
 			path.join(root, '.resource-packages'),
 			root,
 		)
+		await stageInstalledResources()
 	} else if (positionals[0] === 'native-report') await nativeReport()
-	else if (positionals[0] === 'assemble') await assemble()
+	else if (positionals[0] === 'cli-build') {
+		const { input, identity } = await context()
+		await prepareCliBuild(path.join(root, '.cli-build'), {
+			...identity,
+			version: input.version,
+		})
+	} else if (positionals[0] === 'assemble') await assemble()
 	else if (positionals[0] === 'smoke') await smoke()
 	else if (positionals[0] === 'verify') await verifiedBundle()
 	else if (positionals[0] === 'publish') await publish()

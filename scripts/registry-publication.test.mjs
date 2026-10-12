@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { provenanceStatement, publishRecords } from './registry-publication.mjs'
+import { mkdtemp, rm, writeFile, access } from 'node:fs/promises'
+import path from 'node:path'
+import os from 'node:os'
+import {
+	installRegistryPackages,
+	provenanceStatement,
+	provenancePolicy,
+	publishRecords,
+} from './registry-publication.mjs'
 
 const identity = {
 	publicRepository: 'https://github.com/example/cli',
@@ -20,6 +28,54 @@ const registry = (record, integrity = record.integrity) => ({
 		integrity,
 		attestations: { url: 'https://registry.npmjs.org/attestations' },
 	},
+})
+
+test('installation waits for catalogue propagation without retrying unrelated failures', async () => {
+	const directory = await mkdtemp(path.join(os.tmpdir(), 'bluink-catalogue-'))
+	try {
+		const delayed = new Error(
+			`npm error code ETARGET\nnpm error notarget No matching version found for ${records[2].name}@${records[2].version}.`,
+		)
+		let installs = 0
+		let pauses = 0
+		await writeFile(path.join(directory, 'package-lock.json'), '{}')
+		await installRegistryPackages(directory, records, {
+			install: async () => {
+				if (++installs < 3) throw delayed
+			},
+			pause: async () => {
+				pauses++
+				await assert.rejects(access(path.join(directory, 'package-lock.json')))
+			},
+			attempts: 3,
+		})
+		assert.equal(installs, 3)
+		assert.equal(pauses, 2)
+		for (const error of [
+			delayed,
+			new Error('npm error code E401'),
+			new Error('npm error code EINTEGRITY'),
+			new Error(
+				'npm error code ETARGET\nNo matching version found for unrelated@1.0.0.',
+			),
+		]) {
+			installs = 0
+			await assert.rejects(
+				installRegistryPackages(directory, records, {
+					install: async () => {
+						installs++
+						throw error
+					},
+					pause: async () => {},
+					attempts: 2,
+				}),
+				(actual) => actual === error,
+			)
+			assert.equal(installs, error === delayed ? 2 : 1)
+		}
+	} finally {
+		await rm(directory, { recursive: true, force: true })
+	}
 })
 
 test('all versions and existing provenance are checked before any upload', async () => {
@@ -116,6 +172,7 @@ test('first publication can remain processing beyond the old thirty-second windo
 })
 
 function reportFor(record) {
+	const policy = provenancePolicy(record)
 	const statement = {
 		predicateType: 'https://slsa.dev/provenance/v1',
 		subject: [
@@ -129,13 +186,13 @@ function reportFor(record) {
 				externalParameters: {
 					workflow: {
 						repository: identity.publicRepository,
-						path: '.github/workflows/public-release.yml',
-						ref: `refs/tags/v${record.version}`,
+						path: policy.workflow,
+						ref: policy.ref,
 					},
 				},
 				resolvedDependencies: [
 					{
-						uri: `git+${identity.publicRepository}@refs/tags/v${record.version}`,
+						uri: `git+${identity.publicRepository}@${policy.ref}`,
 						digest: { gitCommit: identity.publicCommit },
 					},
 				],
@@ -212,5 +269,49 @@ test('verified npm provenance must bind the exact package, bytes, public workflo
 	assert.throws(
 		() => provenanceStatement({ ...report, invalid: [{}] }, record, identity),
 		/did not pass/,
+	)
+})
+
+test('resources bind their own workflow and tag, and their source commit is independent of CLI', () => {
+	for (const record of records.slice(0, 2)) {
+		const { statement, report } = reportFor(record)
+		statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit =
+			'b'.repeat(40)
+		const update = () => {
+			report.verified[0].attestationBundles[0].bundle.dsseEnvelope.payload =
+				Buffer.from(JSON.stringify(statement)).toString('base64')
+		}
+		update()
+		assert.equal(
+			provenanceStatement(report, record, identity).commit,
+			'b'.repeat(40),
+		)
+		assert.throws(
+			() =>
+				provenanceStatement(report, record, {
+					...identity,
+					packageName: record.name,
+				}),
+			/wrong workflow/,
+		)
+		statement.predicate.buildDefinition.externalParameters.workflow.path =
+			'.github/workflows/public-release.yml'
+		update()
+		assert.throws(
+			() => provenanceStatement(report, record, identity),
+			/wrong workflow/,
+		)
+		statement.predicate.buildDefinition.externalParameters.workflow.path =
+			provenancePolicy(record).workflow
+		statement.predicate.buildDefinition.externalParameters.workflow.ref = `refs/tags/v${record.version}`
+		update()
+		assert.throws(
+			() => provenanceStatement(report, record, identity),
+			/wrong workflow/,
+		)
+	}
+	assert.throws(
+		() => provenancePolicy({ name: '@bluink/unknown', version: '26.10.1' }),
+		/Unknown/,
 	)
 })

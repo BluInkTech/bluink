@@ -5,6 +5,16 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { targets, verifyNativeArtifacts } from './release-utils.mjs'
+import { buildNative } from './build-native.mjs'
+
+test('foreign local builds fail before running a compiler or reading artifacts', async () => {
+	const target = targets.find(
+		(value) =>
+			value.platform !== process.platform || value.arch !== process.arch,
+	)
+	await assert.rejects(buildNative(target.rust), /native platform.*CI runner/)
+	await assert.rejects(buildNative('unsupported-target'), /Unsupported native/)
+})
 
 test('native verification checks every target, release version and public commit', async () => {
 	const directory = await mkdtemp(path.join(os.tmpdir(), 'bluink-native-'))

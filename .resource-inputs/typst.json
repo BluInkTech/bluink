@@ -1,0 +1,14 @@
+{
+  "format": "bluink.resource-input",
+  "formatVersion": 1,
+  "kind": "typst",
+  "version": "26.10.2",
+  "publicRepository": "https://github.com/BluInkTech/bluink",
+  "artifact": {
+    "name": "@bluink/typst",
+    "version": "26.10.2",
+    "filename": "bluink-typst-26.10.2.tgz",
+    "integrity": "sha512-NuzijdHbZfTKq76frj/Kx1bsLG+UGogc8i807pYYNFK5L6rd68rkR5ACN6KA8h6296FHjmgVXevfGRaATcndKA==",
+    "sha256": "657df1039faf67fce1c232f00657fb5da38e42a9560a43924f210504d5443034"
+  }
+}

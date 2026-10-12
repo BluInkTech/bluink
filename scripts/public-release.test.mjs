@@ -14,13 +14,14 @@ import {
 } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { contractHash } from './assemble-cli.mjs'
+import { contractHash } from './cli-build.mjs'
 import { packDirectory, productionLock } from './package-artifacts.mjs'
 import { cliFileAllowed } from './package-audit.mjs'
 import { readPreparedResources, resourceSummary } from './resource-packages.mjs'
 import {
 	validateContext,
 	validateInput,
+	validateNativeReports,
 	validateReports,
 	verifyCliArchive,
 } from './public-release.mjs'
@@ -389,4 +390,47 @@ test('publication requires all three reports bound to this exact archive and nat
 		assert.throws(() => validateReports(prepared, modified), /Missing matching/)
 	}
 	assert.throws(() => validateReports(prepared, {}), /Missing matching/)
+})
+
+test('assembly refuses missing, stale or altered native verification before packaging', () => {
+	const identity = { version: '26.10.7-alpha', publicCommit: 'a'.repeat(40) }
+	const artifacts = targets.map((target) => ({
+		target: target.rust,
+		sha256: 'b'.repeat(64),
+		sourceDigest: 'c'.repeat(64),
+	}))
+	const reports = Object.fromEntries(
+		artifacts.map((artifact) => [
+			artifact.target,
+			{ ...identity, ...artifact, status: 'passed' },
+		]),
+	)
+	validateNativeReports(identity, artifacts, reports)
+	for (const change of [
+		(value) => {
+			delete value[targets[0].rust]
+		},
+		(value) => {
+			value[targets[0].rust].version = '26.10.8-alpha'
+		},
+		(value) => {
+			value[targets[0].rust].publicCommit = 'd'.repeat(40)
+		},
+		(value) => {
+			value[targets[0].rust].sha256 = 'e'.repeat(64)
+		},
+		(value) => {
+			value[targets[0].rust].sourceDigest = 'f'.repeat(64)
+		},
+		(value) => {
+			value[targets[0].rust].status = 'failed'
+		},
+	]) {
+		const modified = structuredClone(reports)
+		change(modified)
+		assert.throws(
+			() => validateNativeReports(identity, artifacts, modified),
+			/Missing matching native/,
+		)
+	}
 })

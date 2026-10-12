@@ -4,6 +4,7 @@
 import { chmod, cp, mkdir, readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { contractHash, prepareCliBuild, verifyCliBuild } from './cli-build.mjs'
 import { productionLock, verifyArchive } from './package-artifacts.mjs'
 import { publicIdentity } from './release-identity.mjs'
 import { resourceFileAllowed } from './resource-packages.mjs'
@@ -20,24 +21,6 @@ import {
 	verifyNativeArtifacts,
 	writeJson,
 } from './release-utils.mjs'
-import { rustNotices } from './rust-notices.mjs'
-
-export async function contractHash() {
-	return sha256(
-		Buffer.concat(
-			await Promise.all(
-				['types.ts', 'runtime.ts', 'wire.ts'].map(async (name) =>
-					Buffer.concat([
-						Buffer.from(`${name}\0`),
-						await readFile(
-							path.join(root, 'backend/contracts/generated', name),
-						),
-					]),
-				),
-			),
-		),
-	)
-}
 
 /** Public assembly consumes fixed archives; it never compiles frontend source. */
 export async function buildPackage({
@@ -46,15 +29,29 @@ export async function buildPackage({
 	nativeDirectory = path.join(root, 'backend/runtime'),
 	dependencies,
 	hostOnly = false,
+	preparedDirectory,
+	destination = path.join(root, 'release'),
 } = {}) {
 	if (!dependencies?.length)
 		throw new Error(
 			'CLI assembly requires verified Web, Fonts and Typst archives. Use npm run build in the private workspace or pass --dependencies in a public checkout.',
 		)
-	await npm(['run', 'contracts:check'])
 	const source = await json(path.join(root, 'backend/package.json'))
 	const productVersion = version ?? source.version
 	const identity = publicIdentity(productVersion, metadata, !hostOnly)
+	const buildDirectory = preparedDirectory ?? path.join(root, '.cli-build')
+	if (!preparedDirectory) {
+		await npm(['run', 'contracts:check'])
+		await prepareCliBuild(buildDirectory, {
+			...identity,
+			version: productVersion,
+		})
+	}
+	const build = await verifyCliBuild(buildDirectory, {
+		...identity,
+		version: productVersion,
+	})
+	identity.toolchain = build.toolchain
 	const native = await verifyNativeArtifacts(
 		nativeDirectory,
 		undefined,
@@ -105,13 +102,10 @@ export async function buildPackage({
 		throw new Error(
 			'Web contract or font catalogue identity does not match this backend.',
 		)
-	await rm(path.join(root, 'backend/dist'), { recursive: true, force: true })
-	await npm(['--workspace', 'backend', 'run', 'build'])
-	const directory = path.join(root, 'release')
+	const directory = destination
 	await rm(directory, { recursive: true, force: true })
 	await mkdir(path.join(directory, 'runtime'), { recursive: true })
 	for (const [from, to] of [
-		['backend/dist', 'dist'],
 		['backend/bluink', 'bluink'],
 		['backend/LICENSE', 'LICENSE'],
 		['backend/PACKAGE-README.md', 'README.md'],
@@ -120,6 +114,13 @@ export async function buildPackage({
 		await cp(path.join(root, from), path.join(directory, to), {
 			recursive: true,
 		})
+	await cp(path.join(buildDirectory, 'dist'), path.join(directory, 'dist'), {
+		recursive: true,
+	})
+	await cp(
+		path.join(buildDirectory, 'THIRD_PARTY_NOTICES.txt'),
+		path.join(directory, 'THIRD_PARTY_NOTICES.txt'),
+	)
 	await cp(
 		path.join(nativeDirectory, 'index.cjs'),
 		path.join(directory, 'runtime/index.cjs'),
@@ -174,7 +175,6 @@ export async function buildPackage({
 		})),
 		native,
 	})
-	await rustNotices(path.join(directory, 'THIRD_PARTY_NOTICES.txt'))
 	await chmod(path.join(directory, 'bluink'), 0o755)
 	await auditDirectory(directory, {
 		allowed: cliFileAllowed,

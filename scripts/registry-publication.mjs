@@ -5,6 +5,22 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { npm, run, writeJson } from './release-utils.mjs'
+import { versionPattern } from './release-identity.mjs'
+
+const registryPause = () => new Promise((resolve) => setTimeout(resolve, 5000))
+
+export function provenancePolicy(record) {
+	if (
+		!['@bluink/cli', '@bluink/fonts', '@bluink/typst'].includes(record.name) ||
+		!versionPattern.test(record.version)
+	)
+		throw new Error('Unknown package provenance policy.')
+	const kind = record.name.split('/')[1]
+	return {
+		workflow: `.github/workflows/${kind === 'cli' ? 'public' : kind}-release.yml`,
+		ref: `refs/tags/${kind === 'cli' ? '' : `${kind}/`}v${record.version}`,
+	}
+}
 
 export async function registryRecord(name, version) {
 	const response = await fetch(
@@ -46,7 +62,7 @@ export async function publishRecords(
 				'--ignore-scripts',
 			]),
 		verifyExisting = async () => {},
-		pause = () => new Promise((resolve) => setTimeout(resolve, 5000)),
+		pause = registryPause,
 		attempts = 121,
 	} = {},
 ) {
@@ -89,8 +105,56 @@ export async function publishRecords(
 	}
 }
 
+/** The version endpoint can propagate before npm's installation catalogue. */
+export async function installRegistryPackages(
+	directory,
+	records,
+	{
+		install = () =>
+			npm(
+				[
+					'install',
+					'--ignore-scripts',
+					'--no-audit',
+					'--no-fund',
+					'--prefer-online',
+					'--cache',
+					path.join(directory, 'cache'),
+					'--registry=https://registry.npmjs.org/',
+				],
+				{ cwd: directory },
+			),
+		pause = registryPause,
+		attempts = 121,
+	} = {},
+) {
+	for (let attempt = 0; attempt < attempts; attempt++) {
+		try {
+			await install()
+			return
+		} catch (error) {
+			if (
+				!error.message.includes('npm error code ETARGET') ||
+				!records.some((record) =>
+					error.message.includes(
+						`No matching version found for ${record.name}@${record.version}.`,
+					),
+				) ||
+				attempt === attempts - 1
+			)
+				throw error
+			console.log(
+				'Waiting for the published version to reach the npm installation catalogue…',
+			)
+			await rm(path.join(directory, 'package-lock.json'), { force: true })
+			await pause()
+		}
+	}
+}
+
 /** Apply identity policy only to bundles already verified by npm audit. */
 export function provenanceStatement(report, record, identity) {
+	const policy = provenancePolicy(record)
 	if (
 		!Array.isArray(report.invalid) ||
 		report.invalid.length ||
@@ -128,14 +192,11 @@ export function provenanceStatement(report, record, identity) {
 			`pkg:npm/${record.name.replace('@', '%40')}@${record.version}` ||
 		statement.subject[0].digest?.sha512 !== digest ||
 		workflow?.repository !== identity.publicRepository ||
-		workflow?.path !== '.github/workflows/public-release.yml' ||
-		!/^refs\/tags\/v\d+\.\d+\.\d+(?:-(?:alpha|beta|rc))?$/.test(
-			workflow?.ref,
-		) ||
+		workflow?.path !== policy.workflow ||
+		workflow?.ref !== policy.ref ||
 		!/^[a-f0-9]{40}$/.test(dependency?.digest?.gitCommit) ||
-		(record.name === '@bluink/cli' &&
-			(workflow.ref !== `refs/tags/v${record.version}` ||
-				dependency.digest.gitCommit !== identity.publicCommit))
+		((record.name === '@bluink/cli' || identity.packageName === record.name) &&
+			dependency.digest.gitCommit !== identity.publicCommit)
 	)
 		throw new Error(
 			`Registry provenance has the wrong workflow, source or subject: ${record.name}`,
@@ -144,6 +205,7 @@ export function provenanceStatement(report, record, identity) {
 		bundle: attestation.bundle,
 		ref: workflow.ref,
 		commit: dependency.digest.gitCommit,
+		workflow: policy.workflow,
 	}
 }
 
@@ -160,16 +222,7 @@ export async function verifyRegistryProvenance(records, identity) {
 				records.map((record) => [record.name, record.version]),
 			),
 		})
-		await npm(
-			[
-				'install',
-				'--ignore-scripts',
-				'--no-audit',
-				'--no-fund',
-				'--registry=https://registry.npmjs.org/',
-			],
-			{ cwd: directory },
-		)
+		await installRegistryPackages(directory, records)
 		const lock = JSON.parse(
 			await readFile(path.join(directory, 'package-lock.json'), 'utf8'),
 		)
@@ -210,7 +263,7 @@ export async function verifyRegistryProvenance(records, identity) {
 				'--repo',
 				identity.publicRepository.slice('https://github.com/'.length),
 				'--signer-workflow',
-				`${identity.publicRepository.slice('https://github.com/'.length)}/.github/workflows/public-release.yml`,
+				`${identity.publicRepository.slice('https://github.com/'.length)}/${verified.workflow}`,
 				'--source-ref',
 				verified.ref,
 				'--source-digest',

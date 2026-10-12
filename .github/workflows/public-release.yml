@@ -22,8 +22,10 @@ env:
 jobs:
   resources:
     if: github.event.repository.private == false
-    name: Prepare shared fonts, Typst and Web
+    name: Verify published Fonts, Typst and Web
     runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -36,8 +38,14 @@ jobs:
         run: npm install --global npm@12.2.0 --ignore-scripts --no-audit --no-fund
       - name: Verify npm version
         run: test "$(npm --version)" = '12.2.0'
-      - run: npm ci
-      - name: Build and verify shared resources once
+      - name: Install pinned GitHub attestation verifier
+        run: |
+          mkdir -p "$RUNNER_TEMP/bluink-gh"
+          curl --fail --location --retry 3 'https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_amd64.tar.gz' --output "$RUNNER_TEMP/bluink-gh.tgz"
+          echo "bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386  $RUNNER_TEMP/bluink-gh.tgz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/bluink-gh.tgz" --strip-components=1 -C "$RUNNER_TEMP/bluink-gh"
+          echo "$RUNNER_TEMP/bluink-gh/bin" >> "$GITHUB_PATH"
+      - name: Download and verify published resources once
         run: node scripts/public-release.mjs resources
         timeout-minutes: 10
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -93,6 +101,16 @@ jobs:
       - run: cargo fmt --manifest-path backend/Cargo.toml --all --check
       - run: cargo clippy --manifest-path backend/Cargo.toml --all-targets --locked -- -D warnings
       - run: node scripts/public-release.mjs native-report
+      - name: Prepare launcher and licence notices once
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: node scripts/public-release.mjs cli-build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        with:
+          name: cli-build
+          path: .cli-build/
+          include-hidden-files: true
+          if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-${{ matrix.target }}
@@ -117,18 +135,21 @@ jobs:
         run: npm install --global npm@12.2.0 --ignore-scripts --no-audit --no-fund
       - name: Verify npm version
         run: test "$(npm --version)" = '12.2.0'
-      - run: rustup toolchain install 1.99.0 --profile minimal
-      - run: npm ci
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: shared-resources
           path: .resource-packages
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          name: cli-build
+          path: .cli-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
           pattern: native-*
           merge-multiple: true
           path: .
-      - run: node scripts/public-release.mjs assemble
+      - name: Assemble verified artifacts without compiling
+        run: node scripts/public-release.mjs assemble
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: prepared-packages

@@ -13,7 +13,7 @@ import {
 	writeJson,
 } from './release-utils.mjs'
 
-export async function buildNative(targetName, cross = false) {
+export async function buildNative(targetName) {
 	const target = targets.find((value) =>
 		targetName
 			? value.rust === targetName
@@ -22,6 +22,10 @@ export async function buildNative(targetName, cross = false) {
 	if (!target)
 		throw new Error(
 			`Unsupported native build target: ${targetName ?? `${process.platform}/${process.arch}`}`,
+		)
+	if (target.platform !== process.platform || target.arch !== process.arch)
+		throw new Error(
+			`Build ${target.rust} on its native platform using the matching CI runner. Local cross-compilation is not supported.`,
 		)
 	const sourceDigest = await nativeSourceDigest()
 	const version = JSON.parse(
@@ -52,23 +56,6 @@ export async function buildNative(targetName, cross = false) {
 	]
 		.filter(Boolean)
 		.join('\u001f')
-	if (cross && target.platform === 'darwin' && process.platform !== 'darwin') {
-		// Only a link-time declaration: macOS supplies the actual framework.
-		const flags =
-			env.CARGO_ENCODED_RUSTFLAGS ??
-			(env.RUSTFLAGS ?? '').split(/\s+/).filter(Boolean).join('\u001f')
-		env.CARGO_ENCODED_RUSTFLAGS = [
-			flags,
-			'-L',
-			`framework=${path.join(root, 'backend/runtime/scripts/darwin-frameworks')}`,
-		]
-			.filter(Boolean)
-			.join('\u001f')
-	}
-	if (cross && target.platform === 'win32' && process.platform !== 'win32') {
-		env.PATH = `${path.join(root, 'backend/runtime/scripts/llvm-tools')}${path.delimiter}${env.PATH ?? ''}`
-		env.TARGET_CC = 'clang'
-	}
 	await npm(
 		[
 			'exec',
@@ -88,7 +75,6 @@ export async function buildNative(targetName, cross = false) {
 			'--no-js',
 			'--target',
 			target.rust,
-			...(cross ? ['--cross-compile'] : []),
 		],
 		{ env },
 	)
@@ -114,8 +100,7 @@ if (
 	const { values } = parseArgs({
 		options: {
 			target: { type: 'string' },
-			cross: { type: 'boolean', default: false },
 		},
 	})
-	await buildNative(values.target, values.cross)
+	await buildNative(values.target)
 }
