@@ -1,6 +1,6 @@
 {
   "name": "bluink-public-build",
-  "version": "26.10.5-alpha",
+  "version": "26.10.7-alpha",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -12,7 +12,7 @@
   },
   "scripts": {
     "build:native": "node scripts/build-native.mjs",
-    "build": "node scripts/resource-packages.mjs stage-installed && npm run build:native && npm run build --workspace backend",
+    "build": "node scripts/resource-packages.mjs stage-installed && node scripts/frontend-asset.mjs stage && npm run build:native && npm run build --workspace backend",
     "contracts:check": "cargo test --manifest-path backend/Cargo.toml --locked contracts::generated_contracts_match_rust_and_wire_examples -- --exact && tsc --noEmit --strict --target es2023 --module nodenext --moduleResolution nodenext --skipLibCheck backend/contracts/generated/wire.ts backend/contracts/contract.test-d.ts",
     "contracts:generate": "cargo test --manifest-path backend/Cargo.toml --locked contracts::regenerate -- --ignored --exact",
     "format": "biome format --config-path backend --write scripts && npm run format --workspaces --if-present",

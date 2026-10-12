@@ -82,10 +82,11 @@ export async function auditDirectory(
 }
 
 export const webFileAllowed = (file) =>
-	/^(?:package\.json|index\.(?:js|d\.ts)|release\.json|LICENSE|README\.md|THIRD_PARTY_NOTICES\.txt|assets\/(?:[^/]+\.(?:html|svg|webmanifest|ico|png)|assets\/[^/]+\.(?:js|css|wasm)))$/.test(
+	/^(?:package\.json|release\.json|LICENSE|README\.md|THIRD_PARTY_NOTICES\.txt|assets\/(?:[^/]+\.(?:html|svg|webmanifest|ico|png)|assets\/[^/]+\.(?:js|css|wasm)))$/.test(
 		file,
 	)
 export const cliFileAllowed = (file) =>
+	(file.startsWith('web/') && webFileAllowed(file.slice(4))) ||
 	/^(?:bluink|package\.json|npm-shrinkwrap\.json|LICENSE|README\.md|THIRD_PARTY_NOTICES\.txt|release\.json|dist\/(?:package\.json|(?:src\/)?(?:native\/)?[\w-]+\.js)|runtime\/(?:index\.cjs|bluink_runtime\.(?:linux-x64-gnu|win32-x64-msvc|darwin-arm64)\.node)|vendor\/(?:theme-macros\/(?:html\.html|pdf\.j2)|themes\/(?:classic|editorial)\/(?:manifest\.json|html\/article\.html|site\/(?:page|listing)\.html|pdf\/document\.typ)))$/.test(
 		file,
 	)

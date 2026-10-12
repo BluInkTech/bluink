@@ -8,6 +8,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { packDirectory, verifyArchive } from './package-artifacts.mjs'
 import { webFileAllowed } from './package-audit.mjs'
+import { stageFrontend } from './frontend-asset.mjs'
 import { json, root, sha256, writeJson } from './release-utils.mjs'
 import { publicIdentity, versionPattern } from './release-identity.mjs'
 import { registryRecord } from './registry-publication.mjs'
@@ -86,7 +87,7 @@ async function downloadResource(entry, destination, fetchArchive) {
 	const kind = entry.name?.split('/')[1]
 	if (
 		entry.name !== `@bluink/${kind}` ||
-		!['web', 'fonts', 'typst'].includes(kind) ||
+		!['fonts', 'typst'].includes(kind) ||
 		!versionPattern.test(entry.version)
 	)
 		throw new Error('Invalid resource download identity.')
@@ -187,9 +188,12 @@ export async function readPreparedResources(input, directory, installRoot) {
 	const records = []
 	const options = new Map()
 	for (const entry of entries) {
-		const expected = input.dependencies.find(
-			(dependency) => dependency.name === entry.name,
-		)
+		const expected =
+			entry.name === '@bluink/web'
+				? input.frontend
+				: input.dependencies.find(
+						(dependency) => dependency.name === entry.name,
+					)
 		if (
 			!expected ||
 			entry.filename !==
@@ -212,6 +216,11 @@ export async function readPreparedResources(input, directory, installRoot) {
 		options.set(entry.name, audit)
 	}
 	// Verify every archive before staging native test/compile assets.
+	if (installRoot)
+		await stageFrontend(
+			records.find((entry) => entry.name === '@bluink/web'),
+			path.join(installRoot, 'backend/web'),
+		)
 	if (installRoot)
 		for (const record of records.filter(
 			(entry) => entry.name !== '@bluink/web',

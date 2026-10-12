@@ -1,8 +1,8 @@
 # Bluink backend
 
 This repository provides backend source and build tooling for reproducible Bluink
-releases. The frontend is distributed separately as a compiled, proprietary npm
-package. Public builds consume its exact version; they do not rebuild its source.
+releases. Public builds download a compiled, proprietary frontend asset from a
+versioned GitHub Release and bundle it into the CLI. They do not rebuild its source.
 
 For product information, documentation and support, visit [bluink.app](https://bluink.app).
 
@@ -17,7 +17,8 @@ npm run build
 npm test
 ```
 
-CLI builds consume exact published Web, Fonts and Typst dependencies. They do
+CLI builds consume the frontend version and checksums in `release-input.json`,
+plus exact published Fonts and Typst npm dependencies. They do
 not regenerate fonts or download upstream Typst archives. Fonts and Typst have
 independent release workflows. The included synthetic tests do not represent
 the complete product verification suite.
@@ -39,6 +40,7 @@ maintenance. Clear problem reports and thoughtful feedback are especially valuab
 ## Licensing
 
 Backend source and Bluink-owned public build tooling use MPL-2.0. Generated
-browser contracts use MIT. The separately distributed frontend is proprietary.
+browser contracts use MIT. The bundled frontend is proprietary; its licence and
+notices are under `web/` in the installed CLI.
 Third-party components retain their own licences and notices. These contribution
 guidelines do not restrict rights granted by the applicable software licences.

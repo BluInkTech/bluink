@@ -8,6 +8,11 @@ import { parseArgs } from 'node:util'
 import { buildPackage } from './assemble-cli.mjs'
 import { contractHash, prepareCliBuild } from './cli-build.mjs'
 import {
+	downloadFrontend,
+	validateFrontend,
+	verifyBundledFrontend,
+} from './frontend-asset.mjs'
+import {
 	inspectArchive,
 	packDirectory,
 	productionLock,
@@ -52,19 +57,20 @@ export function validateInput(input) {
 					'version',
 					'publicRepository',
 					'dependencies',
+					'frontend',
 				].includes(key),
 		)
 	)
 		throw new Error('Invalid public release input.')
 	publicIdentity(input.version, { publicRepository: input.publicRepository })
 	if (
-		input.dependencies.length !== 3 ||
-		new Set(input.dependencies.map((entry) => entry.name)).size !== 3
+		input.dependencies.length !== 2 ||
+		new Set(input.dependencies.map((entry) => entry.name)).size !== 2
 	)
-		throw new Error('Release input requires exactly three dependencies.')
+		throw new Error('Release input requires exactly two npm dependencies.')
 	for (const entry of input.dependencies)
 		if (
-			!['@bluink/web', '@bluink/fonts', '@bluink/typst'].includes(entry.name) ||
+			!['@bluink/fonts', '@bluink/typst'].includes(entry.name) ||
 			!versionPattern.test(entry.version) ||
 			!/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(entry.integrity) ||
 			!/^[a-f0-9]{64}$/.test(entry.sha256) ||
@@ -73,11 +79,7 @@ export function validateInput(input) {
 			)
 		)
 			throw new Error('Invalid fixed dependency identity.')
-	if (
-		input.dependencies.find((entry) => entry.name === '@bluink/web').version !==
-		input.version
-	)
-		throw new Error('CLI and Web versions must match.')
+	validateFrontend(input.frontend, input.version, input.publicRepository)
 	return input
 }
 
@@ -149,7 +151,7 @@ async function context(publishing = false) {
 	const manifest = await json(path.join(root, 'backend/package.json'))
 	if (
 		manifest.version !== input.version ||
-		Object.keys(manifest.dependencies).length !== 3 ||
+		Object.keys(manifest.dependencies).length !== 2 ||
 		input.dependencies.some(
 			(entry) => manifest.dependencies[entry.name] !== entry.version,
 		)
@@ -180,6 +182,9 @@ function frozenMatch(actual, expected) {
 async function dependencies(input) {
 	const destination = path.join(root, '.resource-packages')
 	const records = await downloadResources(input.dependencies, destination)
+	records.push(
+		await downloadFrontend(input.frontend, input.publicRepository, destination),
+	)
 	await writeJson(
 		path.join(destination, 'dependencies.json'),
 		records.map(resourceSummary),
@@ -199,6 +204,9 @@ export async function verifyCliArchive(archive, identity, records) {
 			'npm-shrinkwrap.json',
 			'THIRD_PARTY_NOTICES.txt',
 			'runtime/index.cjs',
+			'web/assets/index.html',
+			'web/LICENSE',
+			'web/release.json',
 			...targets.map((target) => `runtime/${target.artifact}`),
 		],
 		onInspect: async (directory, { manifest, metadata }) => {
@@ -214,6 +222,7 @@ export async function verifyCliArchive(archive, identity, records) {
 				'distribution',
 				'contractHash',
 				'dependencies',
+				'frontend',
 				'native',
 			])
 			if (
@@ -234,7 +243,16 @@ export async function verifyCliArchive(archive, identity, records) {
 				metadata.contractHash !== (await contractHash())
 			)
 				throw new Error('CLI archive has the wrong public release identity.')
-			const expectedDependencies = records
+			const resources = records.filter((entry) => entry.name !== '@bluink/web')
+			const web = records.find((entry) => entry.name === '@bluink/web')
+			if (
+				JSON.stringify(Object.keys(metadata.frontend ?? {}).sort()) !==
+				JSON.stringify(['integrity', 'name', 'sha256', 'version'])
+			)
+				throw new Error('Unexpected bundled frontend identity metadata.')
+			frozenMatch(metadata.frontend, web)
+			await verifyBundledFrontend(path.join(directory, 'web'), web)
+			const expectedDependencies = resources
 				.map(({ name, version, integrity }) => ({ name, version, integrity }))
 				.sort((left, right) => left.name.localeCompare(right.name))
 			if (
@@ -243,8 +261,8 @@ export async function verifyCliArchive(archive, identity, records) {
 						left.name.localeCompare(right.name),
 					),
 				) !== JSON.stringify(expectedDependencies) ||
-				Object.keys(manifest.dependencies ?? {}).length !== 3 ||
-				records.some(
+				Object.keys(manifest.dependencies ?? {}).length !== 2 ||
+				resources.some(
 					(entry) => manifest.dependencies[entry.name] !== entry.version,
 				)
 			)
@@ -423,7 +441,9 @@ async function bundle() {
 	for (const record of records.filter((entry) => entry !== cli)) {
 		frozenMatch(
 			record,
-			input.dependencies.find((entry) => entry.name === record.name),
+			record.name === '@bluink/web'
+				? input.frontend
+				: input.dependencies.find((entry) => entry.name === record.name),
 		)
 		const inspected = await verifyArchive(record, {
 			allowed:
@@ -466,7 +486,9 @@ async function smoke() {
 	const report = await smokePackage(
 		cli.archive,
 		input.version,
-		dependencies.map((entry) => entry.archive),
+		dependencies
+			.filter((entry) => entry.name !== '@bluink/web')
+			.map((entry) => entry.archive),
 	)
 	await mkdir(path.join(root, 'smoke-results'), { recursive: true })
 	await writeJson(
@@ -563,13 +585,19 @@ async function verifiedBundle() {
 async function publish() {
 	await context(true)
 	const { identity, cli, dependencies } = await verifiedBundle()
-	await verifyRegistryProvenance(dependencies, identity)
+	await verifyRegistryProvenance(
+		dependencies.filter((entry) => entry.name !== '@bluink/web'),
+		identity,
+	)
 	await publishRecords([cli], {
 		verifyExisting: (records) => verifyRegistryProvenance(records, identity),
 	})
 	await writeJson(
 		path.join(root, 'package-out/registry-verification.json'),
-		await verifyRegistryProvenance([...dependencies, cli], identity),
+		await verifyRegistryProvenance(
+			[...dependencies.filter((entry) => entry.name !== '@bluink/web'), cli],
+			identity,
+		),
 	)
 }
 
@@ -601,7 +629,12 @@ if (
 			)
 	} else if (positionals[0] === 'resources') {
 		const { input, identity } = await context()
-		await verifyRegistryProvenance(await dependencies(input), identity)
+		await verifyRegistryProvenance(
+			(await dependencies(input)).filter(
+				(entry) => entry.name !== '@bluink/web',
+			),
+			identity,
+		)
 	} else if (positionals[0] === 'resources-install') {
 		const { input } = await context()
 		await readPreparedResources(

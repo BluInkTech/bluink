@@ -15,6 +15,7 @@ import {
 import os from 'node:os'
 import path from 'node:path'
 import { contractHash } from './cli-build.mjs'
+import { frontendInput, stageFrontend } from './frontend-asset.mjs'
 import { packDirectory, productionLock } from './package-artifacts.mjs'
 import { cliFileAllowed } from './package-audit.mjs'
 import { readPreparedResources, resourceSummary } from './resource-packages.mjs'
@@ -52,9 +53,24 @@ test('shared resources relocate across runners, verify all archives before stagi
 			await writeJson(path.join(source, 'package.json'), {
 				name: `@bluink/${kind}`,
 				version: '26.10.7-alpha',
-				files: ['assets'],
+				files: [
+					'assets',
+					...(kind === 'web'
+						? ['release.json', 'LICENSE', 'THIRD_PARTY_NOTICES.txt']
+						: []),
+				],
 			})
 			await writeFile(path.join(source, file), 'Shared resource fixture.\n')
+			if (kind === 'web') {
+				await writeJson(path.join(source, 'release.json'), {
+					version: '26.10.7-alpha',
+				})
+				for (const name of ['LICENSE', 'THIRD_PARTY_NOTICES.txt'])
+					await writeFile(
+						path.join(source, name),
+						'Frontend fixture licence.\n',
+					)
+			}
 			const record = await packDirectory(
 				source,
 				path.join(temporary, 'prepared'),
@@ -64,7 +80,10 @@ test('shared resources relocate across runners, verify all archives before stagi
 			entries.push(resourceSummary(record))
 		}
 		const input = {
-			dependencies: entries.map(({ filename: _, ...identity }) => identity),
+			dependencies: entries
+				.filter((entry) => entry.name !== '@bluink/web')
+				.map(({ filename: _, ...identity }) => identity),
+			frontend: entries.find((entry) => entry.name === '@bluink/web'),
 		}
 		const metadata = path.join(shared, 'dependencies.json')
 		await writeJson(metadata, entries)
@@ -132,7 +151,15 @@ test('public release context binds version, repository, tag and protected OIDC p
 		formatVersion: 1,
 		version: '26.10.7-alpha',
 		publicRepository: 'https://github.com/example/cli',
-		dependencies: ['web', 'fonts', 'typst'].map((kind) => ({
+		frontend: frontendInput(
+			{
+				version: '26.10.7-alpha',
+				integrity: 'sha512-Ynl0ZXM=',
+				sha256: 'c'.repeat(64),
+			},
+			'https://github.com/example/cli',
+		),
+		dependencies: ['fonts', 'typst'].map((kind) => ({
 			name: `@bluink/${kind}`,
 			version: '26.10.7-alpha',
 			integrity: 'sha512-Ynl0ZXM=',
@@ -165,7 +192,7 @@ test('public release context binds version, repository, tag and protected OIDC p
 	assert.throws(
 		() =>
 			validateInput({ ...input, dependencies: input.dependencies.slice(1) }),
-		/three dependencies/,
+		/two npm dependencies/,
 	)
 	assert.throws(
 		() =>
@@ -182,12 +209,9 @@ test('public release context binds version, repository, tag and protected OIDC p
 		() =>
 			validateInput({
 				...input,
-				dependencies: input.dependencies.map((entry) => ({
-					...entry,
-					version: '26.10.8-alpha',
-				})),
+				frontend: { ...input.frontend, version: '26.10.8-alpha' },
 			}),
-		/versions must match/,
+		/frontend asset identity or version/,
 	)
 	assert.throws(
 		() => validateInput({ ...input, privateRevision: 'b'.repeat(40) }),
@@ -223,7 +247,7 @@ test('official archive verification inspects embedded native identities and depe
 			publicCommit: 'a'.repeat(40),
 			publicRepository: 'https://github.com/example/cli',
 		}
-		const dependencies = ['web', 'fonts', 'typst'].map((kind) => ({
+		const dependencies = ['fonts', 'typst'].map((kind) => ({
 			name: `@bluink/${kind}`,
 			version: identity.version,
 			integrity: 'sha512-Ynl0ZXM=',
@@ -231,6 +255,30 @@ test('official archive verification inspects embedded native identities and depe
 				license: kind === 'web' ? 'SEE LICENSE IN LICENSE' : 'MPL-2.0',
 			},
 		}))
+		const webSource = path.join(directory, 'frontend')
+		await mkdir(path.join(webSource, 'assets'), { recursive: true })
+		await writeJson(path.join(webSource, 'package.json'), {
+			name: '@bluink/web',
+			version: identity.version,
+			private: true,
+			files: ['assets', 'release.json', 'LICENSE', 'THIRD_PARTY_NOTICES.txt'],
+		})
+		await writeJson(path.join(webSource, 'release.json'), {
+			version: identity.version,
+		})
+		for (const file of [
+			'assets/index.html',
+			'LICENSE',
+			'THIRD_PARTY_NOTICES.txt',
+		])
+			await writeFile(path.join(webSource, file), 'Frontend fixture.\n')
+		const web = await packDirectory(
+			webSource,
+			path.join(directory, 'frontend-packed'),
+			{ allowed: () => true },
+		)
+		await stageFrontend(web, path.join(source, 'web'))
+		const records = [...dependencies, web]
 		const manifest = {
 			name: '@bluink/cli',
 			version: identity.version,
@@ -243,6 +291,7 @@ test('official archive verification inspects embedded native identities and depe
 				'bluink',
 				'dist',
 				'runtime',
+				'web',
 				'LICENSE',
 				'README.md',
 				'release.json',
@@ -276,6 +325,12 @@ test('official archive verification inspects embedded native identities and depe
 			name: manifest.name,
 			distribution: 'all-platforms',
 			contractHash: await contractHash(),
+			frontend: {
+				name: web.name,
+				version: web.version,
+				integrity: web.integrity,
+				sha256: web.sha256,
+			},
 			dependencies: dependencies.map(({ name, version, integrity }) => ({
 				name,
 				version,
@@ -304,25 +359,25 @@ test('official archive verification inspects embedded native identities and depe
 		await utimes(path.join(source, 'dist/index.js'), new Date(), new Date())
 		assert.equal((await packed()).sha256, first.sha256)
 		assert.equal(
-			(await verifyCliArchive(first.archive, identity, dependencies)).inspection
+			(await verifyCliArchive(first.archive, identity, records)).inspection
 				.length,
 			3,
 		)
 		metadata.dependencies[0].integrity = 'sha512-Y2hhbmdlZA=='
 		await assert.rejects(
-			verifyCliArchive((await packed()).archive, identity, dependencies),
+			verifyCliArchive((await packed()).archive, identity, records),
 			/dependency identity/,
 		)
 		metadata.dependencies[0].integrity = dependencies[0].integrity
 		metadata.version = '26.10.8-alpha'
 		await assert.rejects(
-			verifyCliArchive((await packed()).archive, identity, dependencies),
+			verifyCliArchive((await packed()).archive, identity, records),
 			/public release identity/,
 		)
 		metadata.version = identity.version
 		metadata.native[0].sha256 = 'f'.repeat(64)
 		await assert.rejects(
-			verifyCliArchive((await packed()).archive, identity, dependencies),
+			verifyCliArchive((await packed()).archive, identity, records),
 			/Native manifest/,
 		)
 	} finally {

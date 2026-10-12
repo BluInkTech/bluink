@@ -6,3 +6,4 @@ target/
 uploads/
 *.node
 *.node.json
+/web/

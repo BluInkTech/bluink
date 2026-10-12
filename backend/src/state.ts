@@ -3,7 +3,7 @@
 
 import path from 'node:path'
 import { fontDirectory, version as fontsVersion } from '@bluink/fonts'
-import { webDirectory } from '@bluink/web'
+import { webDirectory } from './native/web.js'
 import pkg from '../package.json' with { type: 'json' }
 import type { BluinkApplication } from '../runtime/index.js'
 import { nativeAddon, publicationRuntime } from './native/addon.js'

@@ -144,7 +144,9 @@ export async function smokePackage(archive, expectedVersion, resources) {
 			'--no-audit',
 			'--no-fund',
 			'--offline',
-			...resourceArchives,
+			...resourceArchives.filter(
+				(file) => !path.basename(file).startsWith('bluink-web-'),
+			),
 			path.resolve(archive),
 		])
 		const packageRoot = path.join(
@@ -157,6 +159,15 @@ export async function smokePackage(archive, expectedVersion, resources) {
 		const manifest = await json(path.join(packageRoot, 'package.json'))
 		const cliVersion = expectedVersion ?? manifest.version
 		const release = await json(path.join(packageRoot, 'release.json'))
+		const frontend = await json(path.join(packageRoot, 'web/release.json'))
+		if (
+			frontend.version !== cliVersion ||
+			release.frontend?.version !== cliVersion ||
+			manifest.dependencies['@bluink/web']
+		)
+			throw new Error(
+				'CLI frontend must be bundled at the matching version, without an npm Web dependency.',
+			)
 		if (
 			manifest.name !== '@bluink/cli' ||
 			manifest.version !== cliVersion ||
@@ -172,6 +183,8 @@ export async function smokePackage(archive, expectedVersion, resources) {
 			'LICENSE',
 			'README.md',
 			'release.json',
+			'web/LICENSE',
+			'web/assets/index.html',
 			'runtime/index.cjs',
 			'vendor/themes/classic/manifest.json',
 			'vendor/themes/editorial/manifest.json',

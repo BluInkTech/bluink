@@ -18,6 +18,7 @@ struct Session {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     incoming: Receiver<Vec<u8>>,
+    output_closed: bool,
     parser: vt100::Parser,
     transcript: Vec<u8>,
     answer_cursor_queries: bool,
@@ -122,6 +123,7 @@ impl Session {
             child,
             writer,
             incoming,
+            output_closed: false,
             parser: vt100::Parser::new(rows, columns, 2000),
             transcript: Vec::new(),
             answer_cursor_queries: true,
@@ -130,22 +132,28 @@ impl Session {
     }
 
     fn pump(&mut self, timeout: Duration) -> bool {
-        if let Ok(chunk) = self.incoming.recv_timeout(timeout) {
-            for byte in chunk {
-                self.parser.process(&[byte]);
-                self.transcript.push(byte);
-                // A real emulator answers cursor-position reports requested by
-                // Crossterm. Respond even when a query crosses read boundaries.
-                if self.answer_cursor_queries && self.transcript.ends_with(b"\x1b[6n") {
-                    let (row, column) = self.parser.screen().cursor_position();
-                    write!(self.writer, "\x1b[{};{}R", row + 1, column + 1).unwrap();
-                    self.writer.flush().unwrap();
-                }
+        let chunk = match self.incoming.recv_timeout(timeout) {
+            Ok(chunk) => chunk,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // Child exit can precede delivery of the final PTY bytes.
+                // Disconnection means the reader's queued output is drained.
+                self.output_closed = true;
+                return false;
             }
-            true
-        } else {
-            false
+            Err(mpsc::RecvTimeoutError::Timeout) => return false,
+        };
+        for byte in chunk {
+            self.parser.process(&[byte]);
+            self.transcript.push(byte);
+            // A real emulator answers cursor-position reports requested by
+            // Crossterm. Respond even when a query crosses read boundaries.
+            if self.answer_cursor_queries && self.transcript.ends_with(b"\x1b[6n") {
+                let (row, column) = self.parser.screen().cursor_position();
+                write!(self.writer, "\x1b[{};{}R", row + 1, column + 1).unwrap();
+                self.writer.flush().unwrap();
+            }
         }
+        true
     }
 
     fn settle(&mut self) {
@@ -165,7 +173,7 @@ impl Session {
                     return;
                 }
             }
-            if self.child.try_wait().unwrap().is_some() {
+            if self.output_closed {
                 break;
             }
         }
@@ -352,6 +360,50 @@ fn real_terminal_views_navigation_and_quit_work_at_all_supported_sizes() {
         session.wait_for("q Stop");
         session.quit(b"q");
     }
+}
+
+#[test]
+fn exited_child_output_is_drained_before_checking_the_final_marker() {
+    let mut session = Session::launch(
+        80,
+        24,
+        false,
+        false,
+        None,
+        Some("console::terminal::tests::shutdown_child"),
+    );
+    session.wait_for("READY_FOR_SHUTDOWN");
+    session.answer_cursor_queries = false;
+    session.send(b"q");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while session.child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "Console child failed to exit");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    // Reproduce output delivery lag after process exit deterministically. Split
+    // the real child's final output so the first read cannot contain its marker.
+    let (sender, incoming) = mpsc::channel();
+    loop {
+        match session.incoming.recv_timeout(Duration::from_millis(50)) {
+            Ok(chunk) => {
+                for byte in chunk {
+                    sender.send(vec![byte]).unwrap();
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                assert!(Instant::now() < deadline, "PTY reader failed to close");
+            }
+        }
+    }
+    drop(sender);
+    session.incoming = incoming;
+    session.wait_for("TERMINAL_SESSION_CLOSED");
+    assert!(
+        !session.parser.screen().hide_cursor(),
+        "Cursor not restored"
+    );
 }
 
 #[test]

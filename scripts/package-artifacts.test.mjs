@@ -15,32 +15,32 @@ test('published shrinkwrap records exact verified archives and rejects an incomp
 		name: '@bluink/cli',
 		version: '26.10.2-alpha',
 		license: 'MPL-2.0',
-		dependencies: { '@bluink/web': '26.10.2-alpha' },
+		dependencies: { '@bluink/fonts': '26.10.2-alpha' },
 	}
-	const web = {
-		name: '@bluink/web',
+	const fonts = {
+		name: '@bluink/fonts',
 		version: '26.10.2-alpha',
 		integrity: 'sha512-verified',
-		manifest: { license: 'SEE LICENSE IN LICENSE' },
+		manifest: { license: 'MPL-2.0' },
 	}
-	const lock = productionLock(manifest, [web])
+	const lock = productionLock(manifest, [fonts])
 	assert.equal(
-		lock.packages['node_modules/@bluink/web'].integrity,
-		web.integrity,
+		lock.packages['node_modules/@bluink/fonts'].integrity,
+		fonts.integrity,
 	)
 	assert.equal(
-		lock.packages['node_modules/@bluink/web'].resolved,
-		'https://registry.npmjs.org/@bluink/web/-/web-26.10.2-alpha.tgz',
+		lock.packages['node_modules/@bluink/fonts'].resolved,
+		'https://registry.npmjs.org/@bluink/fonts/-/fonts-26.10.2-alpha.tgz',
 	)
 	assert.throws(() => productionLock(manifest, []), /Missing exact dependency/)
 	assert.throws(
-		() => productionLock(manifest, [{ ...web, version: '26.10.1-alpha' }]),
+		() => productionLock(manifest, [{ ...fonts, version: '26.10.1-alpha' }]),
 		/Missing exact dependency/,
 	)
 	assert.throws(
 		() =>
 			productionLock(manifest, [
-				{ ...web, manifest: { dependencies: { unknown: '1.0.0' } } },
+				{ ...fonts, manifest: { dependencies: { unknown: '1.0.0' } } },
 			]),
 		/transitive dependencies/,
 	)

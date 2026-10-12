@@ -7,6 +7,7 @@ release/
 .cli-build/
 .releases/
 backend/target/
+backend/web/
 backend/runtime/*.node
 backend/runtime/*.node.json
 fonts/assets/

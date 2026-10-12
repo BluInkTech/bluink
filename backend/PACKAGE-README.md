@@ -9,7 +9,8 @@ bluink server --project ./my-writing
 ```
 
 The package supports Windows x64, Linux x64 with glibc, and macOS arm64.
-Its exact dependencies provide the compiled interface, fonts and PDF engine.
+The compiled interface is bundled in this package. Its exact npm dependencies
+provide fonts and the PDF engine.
 Installation requires network access; ordinary offline use needs no resource
 downloads or compiler. Calendar versions use YY.M.BUILD with an optional
 prerelease suffix.

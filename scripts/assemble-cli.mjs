@@ -5,6 +5,7 @@ import { chmod, cp, mkdir, readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { contractHash, prepareCliBuild, verifyCliBuild } from './cli-build.mjs'
+import { stageFrontend } from './frontend-asset.mjs'
 import { productionLock, verifyArchive } from './package-artifacts.mjs'
 import { publicIdentity } from './release-identity.mjs'
 import { resourceFileAllowed } from './resource-packages.mjs'
@@ -105,6 +106,7 @@ export async function buildPackage({
 	const directory = destination
 	await rm(directory, { recursive: true, force: true })
 	await mkdir(path.join(directory, 'runtime'), { recursive: true })
+	await stageFrontend(web, path.join(directory, 'web'))
 	for (const [from, to] of [
 		['backend/bluink', 'bluink'],
 		['backend/LICENSE', 'LICENSE'],
@@ -147,7 +149,11 @@ export async function buildPackage({
 				directory: 'backend',
 			},
 		}),
-		dependencies: { ...source.dependencies, '@bluink/web': productVersion },
+		dependencies: Object.fromEntries(
+			dependencies
+				.filter((entry) => entry.name !== '@bluink/web')
+				.map((entry) => [entry.name, entry.version]),
+		),
 		publishConfig: {
 			access: 'public',
 			tag: identity.channel === 'stable' ? 'latest' : identity.channel,
@@ -168,11 +174,19 @@ export async function buildPackage({
 		version: manifest.version,
 		distribution: hostOnly ? 'host-test' : 'all-platforms',
 		contractHash: inspected.metadata.contractHash,
-		dependencies: dependencies.map(({ name, version, integrity }) => ({
-			name,
-			version,
-			integrity,
-		})),
+		frontend: {
+			name: web.name,
+			version: web.version,
+			integrity: web.integrity,
+			sha256: web.sha256,
+		},
+		dependencies: dependencies
+			.filter((entry) => entry.name !== '@bluink/web')
+			.map(({ name, version, integrity }) => ({
+				name,
+				version,
+				integrity,
+			})),
 		native,
 	})
 	await chmod(path.join(directory, 'bluink'), 0o755)
