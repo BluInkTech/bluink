@@ -2,6 +2,11 @@ name: Public release
 
 on:
   workflow_dispatch:
+    inputs:
+      promote_latest:
+        description: Point latest to the current alpha while no stable CLI exists
+        type: boolean
+        default: false
   push:
     tags: ['v*']
 
@@ -21,7 +26,7 @@ env:
 
 jobs:
   resources:
-    if: github.event.repository.private == false
+    if: github.event.repository.private == false && !inputs.promote_latest
     name: Verify published Fonts, Typst and Web
     runs-on: ubuntu-22.04
     env:
@@ -258,3 +263,34 @@ jobs:
             package-out/verification.json
             package-out/registry-verification.json
           if-no-files-found: error
+
+  promote_latest:
+    if: github.event_name == 'workflow_dispatch' && inputs.promote_latest && github.event.repository.private == false
+    runs-on: ubuntu-22.04
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.9.0
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Install pinned npm
+        run: npm install --global npm@12.2.0 --ignore-scripts --no-audit --no-fund
+      - name: Verify npm version
+        run: test "$(npm --version)" = '12.2.0'
+      - name: Promote current alpha only while latest is a prerelease
+        run: |
+          alpha="$(npm view @bluink/cli dist-tags.alpha)"
+          latest="$(npm view @bluink/cli dist-tags.latest)"
+          [[ "$alpha" == *-alpha ]] || { echo 'alpha tag does not point to an alpha release'; exit 1; }
+          [[ "$latest" == *-alpha || "$latest" == *-beta || "$latest" == *-rc ]] || { echo 'latest points to a stable release'; exit 1; }
+          npm dist-tag add "@bluink/cli@$alpha" latest
+          for attempt in {1..12}; do
+            if [[ "$(npm view @bluink/cli dist-tags.latest --prefer-online)" == "$alpha" ]]; then exit 0; fi
+            sleep 5
+          done
+          echo 'latest tag did not propagate to npm' >&2
+          exit 1
