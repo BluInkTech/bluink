@@ -2,6 +2,7 @@
 // Copyright (c) 2023–2026 BluInk
 
 mod listings;
+pub(crate) mod reading;
 
 use listings::*;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -18,7 +19,7 @@ use crate::engine::publication::preflight::{
 use crate::engine::publication::selection::excluded_block_ids;
 use crate::engine::publication::source::{document, parse_language};
 use crate::engine::publication::theme::{
-    ThemeOrigin, ThemeSnapshot, apply_theme_options, apply_theme_settings, assert_theme_fresh,
+    ThemeOrigin, ThemeSnapshot, apply_theme_options, apply_theme_overrides, assert_theme_fresh,
     capture_theme,
 };
 use crate::engine::publication::{
@@ -31,6 +32,8 @@ use crate::engine::publication::{
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub(crate) enum PublicationFormat {
     Pdf,
+    Docx,
+    Epub,
     Html,
     Site,
 }
@@ -44,15 +47,26 @@ pub(crate) enum PublicationSourceKind {
 }
 
 impl PublicationFormat {
-    pub(crate) fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "pdf" => Ok(Self::Pdf),
-            "html" => Ok(Self::Html),
-            "site" => Ok(Self::Site),
-            _ => Err(format!(
-                "Unsupported Publication format: {value}. Use pdf, html, or site."
-            )),
+    pub(crate) const ALL: [Self; 5] = [Self::Pdf, Self::Docx, Self::Epub, Self::Html, Self::Site];
+
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Pdf => "pdf",
+            Self::Docx => "docx",
+            Self::Epub => "epub",
+            Self::Html => "html",
+            Self::Site => "site",
         }
+    }
+    pub(crate) fn parse(value: &str) -> Result<Self, String> {
+        Self::ALL
+            .into_iter()
+            .find(|format| format.name() == value)
+            .ok_or_else(|| {
+                format!(
+                    "Unsupported Publication format: {value}. Use pdf, docx, epub, html, or site."
+                )
+            })
     }
 }
 
@@ -137,7 +151,7 @@ pub(crate) enum PlannedStructureNode {
 pub(crate) struct PlannedCollection {
     pub(crate) id: String,
     pub(crate) title: String,
-    pub(crate) query: String,
+    pub(crate) query: crate::engine::project::query::QueryDocument,
     /// Raw query membership before selection rules. Used to detect a stale
     /// dynamic collection without repeating the complete Publication plan.
     pub(crate) resolved_ids: Vec<String>,
@@ -185,7 +199,8 @@ pub(crate) fn plan_publication_resolved(
     format: PublicationFormat,
     resolved_collections: &HashMap<String, Vec<String>>,
 ) -> Result<PublicationPlan, String> {
-    let item = read_project_item(root, publication_id)?
+    let item = read_project_item(root, publication_id)
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Publication {publication_id} does not exist."))?;
     plan_publication_item(
         root,
@@ -196,31 +211,7 @@ pub(crate) fn plan_publication_resolved(
     )
 }
 
-/// Build a Publication plan from the transitive internal-link graph without
-/// creating a saved Publication item. Discovery is breadth first in document
-/// order, so a cycle never duplicates a page and repeated plans are stable.
-#[cfg(test)]
-pub(crate) fn plan_linked_pages(
-    root: &Path,
-    page_id: &str,
-    format: PublicationFormat,
-    theme_id: &str,
-    outside_links: OutsideLinks,
-    profile: PdfProfile,
-) -> Result<PublicationPlan, String> {
-    plan_linked_pages_with_graph(
-        root,
-        page_id,
-        format,
-        theme_id,
-        outside_links,
-        profile,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-#[tracing::instrument(level = "debug", skip_all, fields(format = ?format, outside_links = ?outside_links, profile = ?profile, has_cached_graph = graph.is_some()))]
+#[tracing::instrument(level = "debug", skip_all, fields(format = ?format, outside_links = ?outside_links, profile = ?profile))]
 #[expect(
     clippy::too_many_lines,
     reason = "Keep the complete format or operation dispatch together for contract review."
@@ -233,14 +224,13 @@ pub(crate) fn plan_linked_pages(
     clippy::needless_collect,
     reason = "Collect all worker handles before joining so work remains concurrent."
 )]
-pub(crate) fn plan_linked_pages_with_graph(
+pub(crate) fn plan_linked_pages(
     root: &Path,
     page_id: &str,
     format: PublicationFormat,
     theme_id: &str,
     outside_links: OutsideLinks,
     profile: PdfProfile,
-    graph: Option<&HashMap<String, Vec<String>>>,
 ) -> Result<PublicationPlan, String> {
     let root_page = read_active_page(root, page_id)?;
     let content = validate_publication(&serde_json::json!({
@@ -253,7 +243,7 @@ pub(crate) fn plan_linked_pages_with_graph(
         "themeId": theme_id,
         "targets": {
             "pdf": {"profile": profile, "outsideLinks": outside_links},
-            "html": {"outsideLinks": outside_links},
+            "html": {"outsideLinks": outside_links},"docx": {"outsideLinks": outside_links},"epub":{"outsideLinks": outside_links},
             "site": {"layout": "documentation", "outsideLinks": outside_links},
         },
     }))?;
@@ -318,21 +308,6 @@ pub(crate) fn plan_linked_pages_with_graph(
         }
         let mut links = Vec::new();
         collect_internal_links(document(&page), &mut links);
-        // A canonical edit racing the snapshot must still discover its new
-        // targets. Preserve authored ordering while checking the snapshot set.
-        if let Some(indexed) = graph.and_then(|graph| graph.get(id)) {
-            let authored: HashSet<_> = links.iter().collect();
-            let indexed_set: HashSet<_> = indexed.iter().collect();
-            if authored == indexed_set {
-                let order: HashMap<_, _> = links
-                    .iter()
-                    .enumerate()
-                    .map(|(position, target)| (target.clone(), position))
-                    .collect();
-                links.clone_from(indexed);
-                links.sort_by_key(|target| order[target]);
-            }
-        }
         for target in links {
             if seen.insert(target.clone()) {
                 queue.push_back(target);
@@ -432,16 +407,13 @@ fn plan_publication_item(
     }
     let content = validate_publication(&item["content"])?;
     let mut theme = capture_theme(root, &content.theme_id, format)?;
-    if let Some(settings) = &content.theme_settings {
-        apply_theme_settings(
-            &mut theme,
-            &serde_json::to_value(settings).map_err(|error| error.to_string())?,
-        )?;
+    if let Some(settings) = &content.theme_overrides {
+        apply_theme_overrides(&mut theme, settings)?;
     }
     apply_theme_options(&mut theme, &content.theme_options)?;
     if matches!(format, PublicationFormat::Pdf)
         && matches!(content.targets.pdf.profile, PdfProfile::Accessible)
-        && (!matches!(theme.origin, ThemeOrigin::Builtin) || content.theme_settings.is_some())
+        && (!matches!(theme.origin, ThemeOrigin::Builtin) || content.theme_overrides.is_some())
     {
         return Err(
             "Accessible PDF currently supports unmodified reviewed built-in themes only."
@@ -559,7 +531,8 @@ fn require_table_headers(node: &Value, exclusions: &[String], id: &str) -> Resul
 }
 
 pub(crate) fn assert_plan_fresh(root: &Path, plan: &PublicationPlan) -> Result<(), String> {
-    let current = read_project_item(root, &plan.publication_id)?;
+    let current =
+        read_project_item(root, &plan.publication_id).map_err(|error| error.to_string())?;
     if current.as_ref().and_then(|item| item["revision"].as_str())
         != Some(&plan.publication_revision)
     {
@@ -569,7 +542,7 @@ pub(crate) fn assert_plan_fresh(root: &Path, plan: &PublicationPlan) -> Result<(
         ));
     }
     for page in &plan.pages {
-        let current = read_project_item(root, &page.id)?;
+        let current = read_project_item(root, &page.id).map_err(|error| error.to_string())?;
         if current.as_ref().and_then(|item| item["revision"].as_str()) != Some(&page.revision) {
             return Err(format!(
                 "Page {} changed during Publication planning.",
@@ -739,8 +712,9 @@ fn capture_outline(
 }
 
 fn read_active_page(root: &Path, id: &str) -> Result<Value, String> {
-    let item =
-        read_project_item(root, id)?.ok_or_else(|| format!("Publication page {id} is missing."))?;
+    let item = read_project_item(root, id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Publication page {id} is missing."))?;
     if item["meta"]["type"] != "page" || item["meta"]["state"] != "active" {
         return Err(format!("Publication page {id} must be an active page."));
     }
@@ -749,7 +723,7 @@ fn read_active_page(root: &Path, id: &str) -> Result<Value, String> {
 }
 
 fn read_linked_page(root: &Path, id: &str, policy: &OutsideLinks) -> Result<Option<Value>, String> {
-    let item = read_project_item(root, id)?;
+    let item = read_project_item(root, id).map_err(|error| error.to_string())?;
     let active = item
         .as_ref()
         .is_some_and(|item| item["meta"]["type"] == "page" && item["meta"]["state"] == "active");
@@ -774,10 +748,7 @@ fn planned_page(
     parent_id: Option<String>,
     content: &PublicationContent,
 ) -> Result<PlannedPage, String> {
-    let document = item["content"]
-        .get("content")
-        .filter(|value| value.is_object())
-        .unwrap_or_else(|| &item["content"]);
+    let document = document(item);
     Ok(PlannedPage {
         id: item["id"].as_str().ok_or("Page has no ID")?.to_owned(),
         revision: revision(item)?.to_owned(),
@@ -834,13 +805,13 @@ mod tests {
         reason = "Keep each end-to-end scenario together so setup, failure checks and cleanup remain visible."
     )]
     fn linked_pages_follow_transitive_links_once_and_reject_missing_targets() {
-        let root =
-            std::env::temp_dir().join(format!("bluink-linked-plan-{}", uuid::Uuid::now_v7()));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
         let config: Value =
             serde_json::from_slice(&std::fs::read(fixture.join("bluink.json")).unwrap()).unwrap();
         create_project_config(&root, config).unwrap();
-        std::fs::create_dir_all(root.join("properties")).unwrap();
+        crate::engine::project::properties::initialize(&root).unwrap();
         let ids: Vec<_> = (0..3).map(|_| uuid::Uuid::now_v7().to_string()).collect();
         for (index, target) in [1, 2, 0].into_iter().enumerate() {
             write_item_input(
@@ -948,18 +919,18 @@ mod tests {
             assert_eq!(omitted.destination, None);
             assert_plan_fresh(&root, &plan).unwrap();
         }
-        std::fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 
     #[test]
     fn linked_discovery_keeps_breadth_first_order_and_checks_content_before_later_pages() {
-        let root =
-            std::env::temp_dir().join(format!("bluink-linked-batch-{}", uuid::Uuid::now_v7()));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
         let config =
             serde_json::from_slice(&std::fs::read(fixture.join("bluink.json")).unwrap()).unwrap();
         create_project_config(&root, config).unwrap();
-        std::fs::create_dir_all(root.join("properties")).unwrap();
+        crate::engine::project::properties::initialize(&root).unwrap();
         let ids: Vec<_> = (0..12).map(|_| uuid::Uuid::now_v7().to_string()).collect();
         for (index, id) in ids.iter().enumerate() {
             let targets: Vec<_> = if index == 0 {
@@ -1049,7 +1020,7 @@ mod tests {
                 "{error}"
             );
         }
-        std::fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 
     #[test]
@@ -1080,21 +1051,16 @@ mod tests {
         reason = "Keep each end-to-end scenario together so setup, failure checks and cleanup remain visible."
     )]
     fn captures_authored_order_and_rejects_stale_or_missing_pages() {
-        let root =
-            std::env::temp_dir().join(format!("bluink-publication-plan-{}", uuid::Uuid::now_v7()));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
         let config: Value =
             serde_json::from_slice(&std::fs::read(fixture.join("bluink.json")).unwrap()).unwrap();
         create_project_config(&root, config).unwrap();
-        std::fs::create_dir_all(root.join("properties")).unwrap();
+        crate::engine::project::properties::initialize(&root).unwrap();
         let ids: Vec<_> = (0..4).map(|_| uuid::Uuid::now_v7().to_string()).collect();
         let omitted_block = uuid::Uuid::now_v7().to_string();
-        let mut settings: Value = serde_json::from_str(include_str!(
-            "../../../../vendor/themes/classic/manifest.json"
-        ))
-        .unwrap();
-        settings = settings["settings"].clone();
-        settings["typography"]["bodyScale"] = json!(1.2);
+        let settings = json!({"shared":{"root":{"fontSize":"14.4pt"}},"targets":{}});
         for (index, id) in ids.iter().take(3).enumerate() {
             let paragraph = if index == 1 {
                 json!({"type":"paragraph","attrs":{"id":omitted_block,"labels":["draft"]}})
@@ -1116,22 +1082,21 @@ mod tests {
                 "outline":[{"kind":"page","pageId":ids[2],"children":[{"kind":"page","pageId":ids[1],"children":[]}]}],
                 "selectionRules":[{"id":uuid::Uuid::now_v7().to_string(),"effect":"exclude",
                     "target":"block","matcher":{"kind":"block_label","value":"draft"}}],
-                "themeId":"classic", "themeSettings": settings,
+                "themeId":"classic", "themeOverrides": settings,
                 "targets":{"pdf":{"profile":"default","outsideLinks":"error"},
-                    "html":{"outsideLinks":"error"},
+                    "html":{"outsideLinks":"error"},"docx":{"outsideLinks":"error"},"epub":{"outsideLinks":"error"},
                     "site":{"layout":"documentation","outsideLinks":"error"}}}
         });
         write_item_input(&root, publication, None, "2026-09-28").unwrap();
         let plan = plan_publication(&root, &ids[3], PublicationFormat::Pdf).unwrap();
-        assert_eq!(plan.theme.settings.typography.body_scale, 1.2);
+        assert_eq!(plan.theme.resolved.root_font_size_pt, 14.4);
         assert_eq!(
             plan_publication(&root, &ids[3], PublicationFormat::Site)
                 .unwrap()
                 .theme
-                .settings
-                .typography
-                .body_scale,
-            1.2
+                .resolved
+                .root_font_size_pt,
+            14.4
         );
         let strict_id = uuid::Uuid::now_v7().to_string();
         write_item_input(
@@ -1139,9 +1104,9 @@ mod tests {
             json!({"id":strict_id,"meta":{"type":"publication","title":"Strict book"},
                 "content":{"kind":"publication","preset":"book","selectedOutput":"pdf","rootPageId":ids[0],
                 "outline":[{"kind":"page","pageId":ids[1],"children":[]}],"selectionRules":[],
-                "themeId":"classic","themeSettings":plan.theme.settings,
+                "themeId":"classic","themeOverrides":plan.theme.overrides,
                 "targets":{"pdf":{"profile":"accessible","outsideLinks":"error"},
-                    "html":{"outsideLinks":"error"},
+                    "html":{"outsideLinks":"error"},"docx":{"outsideLinks":"error"},"epub":{"outsideLinks":"error"},
                     "site":{"layout":"documentation","outsideLinks":"error"}}}}),
             None,
             "2026-09-28",
@@ -1261,18 +1226,18 @@ mod tests {
         )
         .unwrap_err();
         assert!(invalid_reference.contains("text"), "{invalid_reference}");
-        std::fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 
     #[test]
     fn resolves_outside_links_only_under_the_selected_format_policy() {
-        let root =
-            std::env::temp_dir().join(format!("bluink-publication-links-{}", uuid::Uuid::now_v7()));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
         let config: Value =
             serde_json::from_slice(&std::fs::read(fixture.join("bluink.json")).unwrap()).unwrap();
         create_project_config(&root, config).unwrap();
-        std::fs::create_dir_all(root.join("properties")).unwrap();
+        crate::engine::project::properties::initialize(&root).unwrap();
         create_property(&root, json!({"key":"source_url","valueType":"text"})).unwrap();
         let ids: Vec<_> = (0..4).map(|_| uuid::Uuid::now_v7().to_string()).collect();
         let root_doc = json!({"type":"doc","content":[{"type":"paragraph","content":[
@@ -1307,7 +1272,7 @@ mod tests {
         let mut content = json!({"kind":"publication","preset":"book","selectedOutput":"pdf","rootPageId":ids[0],
             "outline":[{"kind":"page","pageId":ids[1],"children":[]}],"selectionRules":[],"themeId":"classic",
             "targets":{"pdf":{"profile":"default","outsideLinks":"error"},
-                "html":{"outsideLinks":"error"},
+                "html":{"outsideLinks":"error"},"docx":{"outsideLinks":"error"},"epub":{"outsideLinks":"error"},
                 "site":{"layout":"documentation","outsideLinks":"text-only"}}});
         let publication = write_item_input(
             &root,
@@ -1355,13 +1320,13 @@ mod tests {
         )
         .unwrap();
         assert!(plan_publication(&root, &ids[3], PublicationFormat::Pdf).is_ok());
-        std::fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 
     #[test]
     fn captures_named_snippets_and_rejects_changed_or_missing_dependencies() {
-        let root =
-            std::env::temp_dir().join(format!("bluink-snippet-plan-{}", uuid::Uuid::now_v7()));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         crate::engine::project::config::open_or_create_project(&root, "UTC").unwrap();
         let paragraph =
             json!({"type":"paragraph","content":[{"type":"text","text":"Quoted source"}]});
@@ -1427,7 +1392,8 @@ mod tests {
             PdfProfile::Default,
         )
         .unwrap();
-        std::fs::remove_file(root.join("snippets/snippet_shared.json")).unwrap();
+        std::fs::remove_file(crate::engine::project::snippets::path(&root, "shared").unwrap())
+            .unwrap();
         assert!(
             assert_plan_fresh(&root, &refreshed)
                 .unwrap_err()
@@ -1445,6 +1411,6 @@ mod tests {
             .unwrap_err()
             .contains("unresolved")
         );
-        std::fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 }

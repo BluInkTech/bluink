@@ -115,9 +115,23 @@ pub(crate) fn collect_fast_sorted(
             .into_iter()
             .map(|(_, address)| address)
             .collect(),
+        [first, second, third, fourth, fifth] => searcher
+            .search(
+                query,
+                &TopDocs::with_limit(limit).order_by((
+                    fast_sort(first),
+                    (
+                        fast_sort(second),
+                        (fast_sort(third), (fast_sort(fourth), fast_sort(fifth))),
+                    ),
+                )),
+            )?
+            .into_iter()
+            .map(|(_, address)| address)
+            .collect(),
         _ => {
             return Err(tantivy::TantivyError::InvalidArgument(
-                "At most four sort fields are supported".to_owned(),
+                "At most five fast sort fields are supported".to_owned(),
             ));
         }
     };

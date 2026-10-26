@@ -4,16 +4,19 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::query::document::QueryDocument;
 use crate::search;
 
 pub(crate) fn selected_ids(
     index_path: &str,
-    query: Option<&str>,
+    query: Option<&QueryDocument>,
+    pin_scope_id: Option<&str>,
 ) -> crate::application::error::Result<Option<HashSet<String>>> {
     let Some(query) = query.filter(|query| !query.is_empty()) else {
         return Ok(None);
     };
-    let ids = search::matching_item_ids_service_sync(index_path.to_owned(), query.to_owned())?;
+    let ids =
+        search::matching_item_ids_service_sync(index_path.to_owned(), query.clone(), pin_scope_id)?;
     Ok(Some(ids.into_iter().collect()))
 }
 
@@ -23,9 +26,10 @@ pub(crate) fn completed_calendar(
     start_date: &str,
     end_date: &str,
     granularity: &str,
-    query: Option<&str>,
+    query: Option<&QueryDocument>,
+    pin_scope_id: Option<&str>,
 ) -> crate::application::error::Result<crate::model::CalendarResults> {
-    let selected = selected_ids(index_path, query)?;
+    let selected = selected_ids(index_path, query, pin_scope_id)?;
     let value = crate::engine::project::reports::completed_calendar_buckets(
         root,
         start_date,

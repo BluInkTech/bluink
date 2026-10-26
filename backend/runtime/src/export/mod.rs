@@ -11,14 +11,14 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::engine::publication::{self, OutlineNode, OutsideLinks, PdfProfile};
-use publication::article::ArticlePlan;
-use publication::note_pdf::NotePdfPlan;
+use publication::page::PagePlan;
 use publication::plan::{PublicationFormat, PublicationPlan};
-use publication::theme::{ThemeOrigin, ThemeSnapshot};
+use publication::theme::ThemeSnapshot;
 use serde::Serialize;
 
 use crate::application::error::{Result, internal_error, invalid_request};
-use crate::{document_graph, query, search, service};
+use crate::indexing::service;
+use crate::{query, search};
 
 pub(crate) struct ResolvedInputs {
     pub(crate) publication_revision: String,
@@ -56,6 +56,7 @@ pub(crate) struct NoteGeneration {
 pub(crate) struct Resources<'a> {
     pub(crate) web_fonts: Option<&'a str>,
     pub(crate) pdf_fonts: Option<&'a str>,
+    pub(crate) docx_fonts: Option<&'a str>,
     pub(crate) typst: Option<&'a str>,
 }
 
@@ -65,7 +66,10 @@ fn resource<'a>(value: Option<&'a str>, name: &str) -> Result<&'a Path> {
         .ok_or_else(|| internal_error(format!("The installed {name} resource is unavailable.")))
 }
 
-fn collection_queries<'a>(nodes: &'a [OutlineNode], output: &mut Vec<(&'a str, &'a str)>) {
+fn collection_queries<'a>(
+    nodes: &'a [OutlineNode],
+    output: &mut Vec<(&'a str, &'a query::document::QueryDocument)>,
+) {
     for node in nodes {
         match node {
             OutlineNode::Page { children, .. } | OutlineNode::Section { children, .. } => {
@@ -77,11 +81,10 @@ fn collection_queries<'a>(nodes: &'a [OutlineNode], output: &mut Vec<(&'a str, &
 }
 
 fn publication_source(root: &Path, id: &str) -> Result<(String, publication::PublicationContent)> {
-    if !crate::engine::project::item::is_item_id(id) {
+    if !crate::engine::project::identity::is_item_id(id) {
         return Err(invalid_request(format!("Invalid Bluink item id: {id}")));
     }
-    let item = crate::engine::project::item::read_project_item(root, id)
-        .map_err(internal_error)?
+    let item = crate::engine::project::item::read_project_item(root, id)?
         .filter(|item| item["meta"]["type"] == "publication")
         .ok_or_else(|| invalid_request(format!("Publication {id} does not exist.")))?;
     let revision = item["revision"]
@@ -107,30 +110,22 @@ pub(crate) fn resolve_inputs(root: &Path, id: &str, index: Option<&str>) -> Resu
     if !queries.is_empty() {
         let index = index
             .ok_or_else(|| invalid_request("Publication collections need a ready search index."))?;
-        let status = service::index_service_status_typed(index)?;
-        if status.state != "ready" || status.pending != 0 {
-            return Err(invalid_request(
-                "The search index must finish reconciling before Publication planning.",
-            ));
-        }
-        let (_, reader, _) = service::service_index(index)?;
-        let limit = u32::try_from(reader.searcher().num_docs())
+        let (snapshot, cache) = service::planning_index(index)?;
+        let limit = u32::try_from(snapshot.reader.searcher().num_docs())
             .map_err(|_| invalid_request("Publication query has too many indexed items."))?;
         for (id, source) in queries {
-            let ast = query::parse_bluink_query(source)
-                .map_err(|diagnostic| invalid_request(diagnostic.message))?;
-            let ordered = if ast.sort.is_some() {
-                source.to_owned()
-            } else {
-                format!("{source} sort:title-asc")
-            };
-            let response = search::search_service_sync(
-                index.to_owned(),
-                format!("+type:page +state:active {ordered}"),
-                limit,
-                0,
-                None,
-            )?;
+            let mut ordered = source.clone();
+            if ordered.sort.is_empty() {
+                ordered.sort.push(query::document::QuerySort {
+                    field: "title".into(),
+                    direction: query::document::SortDirection::Asc,
+                });
+            }
+            let scoped = query::document::QueryDocument::active_pages()
+                .compose(&ordered)
+                .map_err(|errors| invalid_request(&errors[0].message))?;
+            let response =
+                search::search_snapshot(&snapshot, &cache, &scoped, limit, 0, None, true)?;
             if response.hits.len() != response.count {
                 return Err(invalid_request(
                     "Publication query results changed while planning.",
@@ -181,32 +176,16 @@ pub(crate) fn plan_linked_pages(
     outside: OutsideLinks,
     profile: PdfProfile,
 ) -> Result<PublicationPlan> {
-    let graph = document_graph::snapshot(root)
-        .map_err(internal_error)?
-        .map(|snapshot| {
-            snapshot
-                .into_iter()
-                .map(|(id, edges)| (id, edges.pages))
-                .collect()
-        });
-    publication::plan::plan_linked_pages_with_graph(
-        root,
-        page,
-        format,
-        theme,
-        outside,
-        profile,
-        graph.as_ref(),
-    )
-    .map_err(internal_error)
+    publication::plan::plan_linked_pages(root, page, format, theme, outside, profile)
+        .map_err(internal_error)
 }
 
 pub(crate) fn trusted_theme(theme: &ThemeSnapshot, hash: Option<&str>) -> Result<bool> {
-    if matches!(theme.origin, ThemeOrigin::Project) {
-        if hash != Some(&theme.sha256) {
+    if theme.requires_trust {
+        if hash != Some(&theme.execution_sha256) {
             return Err(invalid_request(format!(
-                "Project theme {} requires approval for package hash {}.",
-                theme.id, theme.sha256
+                "Project theme {} requires approval for web code hash {}.",
+                theme.id, theme.execution_sha256
             )));
         }
         Ok(true)
@@ -236,9 +215,29 @@ pub(crate) fn render_publication(
     }
     let trusted = trusted_theme(&plan.theme, hash)?;
     match plan.format {
+        PublicationFormat::Epub => {
+            let bundle = publication::epub::render_publication(
+                root,
+                plan,
+                resource(resources.web_fonts, "web fonts")?,
+                resources.pdf_fonts.map(Path::new),
+            )
+            .map_err(internal_error)?;
+            publication::epub::publish(&bundle, output).map_err(internal_error)?;
+        }
+        PublicationFormat::Docx => {
+            let bundle = publication::word::render_publication(
+                root,
+                plan,
+                resource(resources.docx_fonts, "Word fonts")?,
+                resources.pdf_fonts.map(Path::new),
+            )
+            .map_err(internal_error)?;
+            publication::docx::publish_docx(&bundle, output).map_err(internal_error)?;
+        }
         PublicationFormat::Pdf => {
-            let bundle = publication::pdf::render_publication_pdf(root, plan, trusted)
-                .map_err(internal_error)?;
+            let bundle =
+                publication::pdf::render_publication_pdf(root, plan).map_err(internal_error)?;
             publication::pdf::publish_pdf(
                 &bundle,
                 plan.targets.pdf.profile,
@@ -253,7 +252,7 @@ pub(crate) fn render_publication(
                 .map_err(internal_error)?;
             let html = publication::fonts::embed_html(
                 &html,
-                &plan.theme.settings,
+                &plan.theme.resolved,
                 resource(resources.web_fonts, "web fonts")?,
             )
             .map_err(internal_error)?;
@@ -265,7 +264,7 @@ pub(crate) fn render_publication(
                 .map_err(internal_error)?;
             publication::fonts::add_site(
                 &mut site.files,
-                &plan.theme.settings,
+                &plan.theme.resolved,
                 resource(resources.web_fonts, "web fonts")?,
             )
             .map_err(internal_error)?;
@@ -282,7 +281,7 @@ pub(crate) fn render_publication(
 
 pub(crate) fn render_article(
     root: &Path,
-    plan: &ArticlePlan,
+    plan: &PagePlan,
     output: Option<&Path>,
     hash: Option<&str>,
     resources: &Resources<'_>,
@@ -291,7 +290,7 @@ pub(crate) fn render_article(
     let html = publication::article::render_article(root, plan, trusted).map_err(internal_error)?;
     let html = publication::fonts::embed_html(
         &html,
-        &plan.theme.settings,
+        &plan.theme.resolved,
         resource(resources.web_fonts, "web fonts")?,
     )
     .map_err(internal_error)?;
@@ -309,14 +308,13 @@ pub(crate) fn render_article(
 
 pub(crate) fn render_note_pdf(
     root: &Path,
-    plan: &NotePdfPlan,
+    plan: &PagePlan,
     output: &Path,
     hash: Option<&str>,
     resources: &Resources<'_>,
 ) -> Result<NoteGeneration> {
-    let trusted = trusted_theme(&plan.theme, hash)?;
-    let bundle =
-        publication::note_pdf::render_note_pdf(root, plan, trusted).map_err(internal_error)?;
+    trusted_theme(&plan.theme, hash)?;
+    let bundle = publication::note_pdf::render_note_pdf(root, plan).map_err(internal_error)?;
     publication::pdf::publish_pdf(
         &bundle,
         plan.profile,
@@ -333,13 +331,57 @@ pub(crate) fn render_note_pdf(
     })
 }
 
+pub(crate) fn render_note_docx(
+    root: &Path,
+    plan: &PagePlan,
+    output: &Path,
+    hash: Option<&str>,
+    resources: &Resources<'_>,
+) -> Result<NoteGeneration> {
+    trusted_theme(&plan.theme, hash)?;
+    let bundle = publication::word::render_page(
+        root,
+        plan,
+        resource(resources.docx_fonts, "Word fonts")?,
+        resources.pdf_fonts.map(Path::new),
+    )
+    .map_err(internal_error)?;
+    publication::docx::publish_docx(&bundle, output).map_err(internal_error)?;
+    Ok(NoteGeneration {
+        output: output.to_string_lossy().into_owned(),
+        page_id: plan.page_id.clone(),
+        assets: plan.assets.len(),
+        theme_sha256: plan.theme.sha256.clone(),
+    })
+}
+
+pub(crate) fn render_note_epub(
+    root: &Path,
+    plan: &PagePlan,
+    output: &Path,
+    resources: &Resources<'_>,
+) -> Result<NoteGeneration> {
+    let bundle = publication::epub::render_page(
+        root,
+        plan,
+        resource(resources.web_fonts, "web fonts")?,
+        resources.pdf_fonts.map(Path::new),
+    )
+    .map_err(internal_error)?;
+    publication::epub::publish(&bundle, output).map_err(internal_error)?;
+    Ok(NoteGeneration {
+        output: output.to_string_lossy().into_owned(),
+        page_id: plan.page_id.clone(),
+        assets: plan.assets.len(),
+        theme_sha256: plan.theme.sha256.clone(),
+    })
+}
+
 pub(crate) fn pdf_profile(value: &str) -> Result<PdfProfile> {
     match value {
         "default" => Ok(PdfProfile::Default),
         "accessible" => Ok(PdfProfile::Accessible),
-        _ => Err(invalid_request(
-            "Use default or accessible for PDF profile.",
-        )),
+        _ => Err(invalid_request("--profile must be default or accessible.")),
     }
 }
 
@@ -347,6 +389,8 @@ pub(crate) fn outside_links(value: &str) -> Result<OutsideLinks> {
     match value {
         "error" => Ok(OutsideLinks::Error),
         "text-only" => Ok(OutsideLinks::TextOnly),
-        _ => Err(invalid_request("Use error or text-only for outside links.")),
+        _ => Err(invalid_request(
+            "--outside-links must be error or text-only.",
+        )),
     }
 }

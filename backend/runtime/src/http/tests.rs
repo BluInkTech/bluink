@@ -14,7 +14,49 @@ mod listener;
 mod queries;
 mod settings;
 mod snippets;
+mod structured_query;
 mod support;
+mod theme_previews;
+mod workspace_notes;
+
+#[test]
+fn http_status_is_classified_by_type_and_preserves_messages() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for (error, expected) in [
+            (
+                ApplicationError::ShuttingDown,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                ApplicationError::NotInitialized("Initialize the project before using it."),
+                StatusCode::BAD_REQUEST,
+            ),
+            // Identical prose must not accidentally classify a validation error.
+            (
+                invalid_request("The application is shutting down."),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Read denied").into(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ] {
+            let message = error.to_string();
+            let response = error_response(&trace::Record::default(), error);
+            assert_eq!(response.status(), expected);
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                serde_json::json!({"error":message,"diagnostics":[]})
+            );
+        }
+    });
+}
 
 #[test]
 fn paths_are_decoded_once_and_keep_literal_percent_and_question_marks() {
@@ -54,6 +96,11 @@ fn paths_are_decoded_once_and_keep_literal_percent_and_question_marks() {
 fn blocking_admission_stays_owned_after_disconnect_and_stop_rejects_queued_work() {
     let folder = tempfile::tempdir().unwrap();
     let application = BluinkApplication::new(ApplicationOptions {
+        workspace_template_path: concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/vendor/workspace-starter.json"
+        )
+        .into(),
         project_root: folder.path().to_string_lossy().into_owned(),
         timezone: Some("UTC".to_owned()),
         cache_location: None,
@@ -61,6 +108,7 @@ fn blocking_admission_stays_owned_after_disconnect_and_stop_rejects_queued_work(
         data_dir: None,
         web_font_folder: None,
         pdf_font_folder: None,
+        docx_font_folder: None,
         typst_binary: None,
     })
     .unwrap();
@@ -71,7 +119,10 @@ fn blocking_admission_stays_owned_after_disconnect_and_stop_rejects_queued_work(
         .unwrap();
     runtime.block_on(async {
         application.initialize(false).await.unwrap();
-        let state = HttpState { application: Arc::downgrade(&application.inner), work: Arc::new(Semaphore::new(1)) };
+        let state = HttpState {
+            application: Arc::downgrade(&application.inner),
+            work: Arc::new(Semaphore::new(1)),
+        };
         let (started, running) = std::sync::mpsc::channel();
         let (release, wait) = std::sync::mpsc::channel();
         let (finished, done) = std::sync::mpsc::channel();
@@ -83,7 +134,8 @@ fn blocking_admission_stays_owned_after_disconnect_and_stop_rejects_queued_work(
                 wait.recv().unwrap();
                 finished.send(()).unwrap();
                 Ok(())
-            }).await
+            })
+            .await
         });
         running.recv_timeout(Duration::from_secs(5)).unwrap();
         // Dropping the HTTP handler cannot abort the already-started blocking action.
@@ -92,11 +144,21 @@ fn blocking_admission_stays_owned_after_disconnect_and_stop_rejects_queued_work(
         assert_eq!(state.work.available_permits(), 0);
         let queued_state = state.clone();
         let mut queued = tokio::spawn(async move {
-            worker::<()>(&queued_state, trace::Record::default(), |_| panic!("queued action started")).await
+            worker::<()>(&queued_state, trace::Record::default(), |_| {
+                panic!("queued action started")
+            })
+            .await
         });
-        assert!(tokio::time::timeout(Duration::from_millis(20), &mut queued).await.is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut queued)
+                .await
+                .is_err()
+        );
         state.work.close();
-        assert!(matches!(queued.await.unwrap(), Err(ApplicationError::InvalidRequest(message)) if message.contains("shutting down")));
+        assert!(matches!(
+            queued.await.unwrap(),
+            Err(ApplicationError::ShuttingDown)
+        ));
         assert_eq!(state.work.available_permits(), 0);
         release.send(()).unwrap();
         done.recv_timeout(Duration::from_secs(5)).unwrap();

@@ -12,7 +12,9 @@ pub(crate) fn create_writing_goal(
     root: &Path,
     request: &Value,
     activity_date: &str,
-    validate_query: impl FnOnce(&str) -> Result<(), MutationError>,
+    validate_query: impl FnOnce(
+        &crate::engine::project::query::QueryDocument,
+    ) -> Result<(), MutationError>,
 ) -> Result<Value, MutationError> {
     let scope = request["scope"]
         .as_str()
@@ -37,13 +39,18 @@ pub(crate) fn create_writing_goal(
             .as_str()
             .ok_or_else(|| expected("Choose a saved view for this writing goal."))?;
         let view = read_project_item(root, view_id)
-            .map_err(MutationError::Unexpected)?
+            .map_err(MutationError::Read)?
             .ok_or_else(|| expected("Writing goals need an active saved view."))?;
         if view["meta"]["type"] != "workspace" || view["meta"]["state"] != "active" {
             return Err(expected("Writing goals need an active saved view."));
         }
-        let query = view["content"]["query"].as_str().unwrap_or("");
-        validate_query(&format!("+type:page +state:active {query}"))?;
+        let query: crate::engine::project::query::QueryDocument =
+            serde_json::from_value(view["content"]["query"].clone())
+                .map_err(|error| expected(&format!("The workspace query is invalid: {error}")))?;
+        let scoped = crate::engine::project::query::QueryDocument::active_pages()
+            .compose(&query)
+            .map_err(|errors| expected(&errors[0].message))?;
+        validate_query(&scoped)?;
         content["viewId"] = json!(view_id);
         content["query"] = json!(query);
     } else if request.get("viewId").is_some() {
@@ -80,7 +87,7 @@ pub(crate) fn validate_goal_activation(
     if scope == "view" {
         let id = view_id.ok_or_else(|| expected("Choose a saved view for this writing goal."))?;
         let view = read_project_item(root, id)
-            .map_err(MutationError::Unexpected)?
+            .map_err(MutationError::Read)?
             .ok_or_else(|| expected("Writing goals need an active saved view."))?;
         if view["meta"]["type"] != "workspace"
             || view["meta"]["state"] != "active"
@@ -100,12 +107,16 @@ pub(crate) fn validate_goal_activation(
     let end = next["content"]["endDate"]
         .as_str()
         .ok_or_else(|| expected("Goal has no end date."))?;
-    for other_id in list_project_item_ids(root).map_err(MutationError::Unexpected)? {
+    let candidates =
+        match super::usage::item_candidates(root, "goal").map_err(MutationError::Internal)? {
+            Some(ids) => ids,
+            None => list_project_item_ids(root).map_err(MutationError::Internal)?,
+        };
+    for other_id in candidates {
         if other_id == id {
             continue;
         }
-        let Some(other) = read_project_item(root, &other_id).map_err(MutationError::Unexpected)?
-        else {
+        let Some(other) = read_project_item(root, &other_id).map_err(MutationError::Read)? else {
             continue;
         };
         if other["meta"]["type"] != "goal" || other["meta"]["state"] != "active" {
@@ -128,7 +139,7 @@ pub(crate) fn validate_goal_activation(
 }
 
 fn expected(message: &str) -> MutationError {
-    MutationError::Expected(message.to_owned())
+    MutationError::Validation(message.to_owned())
 }
 
 #[cfg(test)]
@@ -142,12 +153,13 @@ mod tests {
 
     #[test]
     fn direct_concurrent_writers_cannot_create_overlapping_goals() {
-        let root = std::env::temp_dir().join(format!("bluink-goal-{}", uuid::Uuid::now_v7()));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
         let config: Value =
             serde_json::from_slice(&std::fs::read(fixture.join("bluink.json")).unwrap()).unwrap();
         create_project_config(&root, config).unwrap();
-        std::fs::create_dir_all(root.join("properties")).unwrap();
+        crate::engine::project::properties::initialize(&root).unwrap();
         std::fs::create_dir_all(root.join("items")).unwrap();
         let mut workers = Vec::new();
         for _ in 0..2 {
@@ -183,6 +195,6 @@ mod tests {
                 .filter_map(|result| result.as_ref().err())
                 .any(|error| error.contains("already has a writing goal"))
         );
-        std::fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 }

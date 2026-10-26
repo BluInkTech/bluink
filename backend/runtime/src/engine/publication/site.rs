@@ -2,28 +2,47 @@
 // Copyright (c) 2023–2026 BluInk
 
 use std::fmt::Write as _;
+mod metadata;
 mod navigation;
 
+use metadata::page_metadata;
 use navigation::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path};
 
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::engine::document::projection::{bounded_preview, project_document};
 use crate::engine::project::item::read_project_item;
-use crate::engine::publication::html::{HtmlResources, escape_html, render_html_document};
+use crate::engine::publication::html::{
+    HtmlResources, escape_html, prepare_html_document, render_prepared_html_document,
+};
 use crate::engine::publication::plan::{
     PlannedCollection, PlannedListing, PlannedStructureNode, PublicationFormat, PublicationPlan,
     assert_plan_fresh,
 };
 use crate::engine::publication::preflight::LinkResolution;
+use crate::engine::publication::render::ReferenceScope;
 use crate::engine::publication::source::{document, min_heading_level, resolved_fields};
-use crate::engine::publication::theme::{
-    HtmlShellContext, HtmlShellKind, load_html_macros, render_html_shell,
-};
+use crate::engine::publication::theme::{HtmlShell, HtmlShellContext, HtmlShellKind};
+
+/// Render-only lookup: portable plans retain their ordered page array.
+struct SitePlan<'a> {
+    source: &'a PublicationPlan,
+    pages_by_id: HashMap<&'a str, &'a super::plan::PlannedPage>,
+}
+impl std::ops::Deref for SitePlan<'_> {
+    type Target = PublicationPlan;
+    fn deref(&self) -> &Self::Target {
+        self.source
+    }
+}
+impl SitePlan<'_> {
+    fn page(&self, id: &str) -> Option<&super::plan::PlannedPage> {
+        self.pages_by_id.get(id).copied()
+    }
+}
 
 const SEARCH_SCRIPT: &str = r#"(() => {
   const entries = __BLUINK_SEARCH_INDEX__;
@@ -134,44 +153,54 @@ pub(crate) fn render_publication_site(
         return Err("A site renderer needs a site Publication plan.".to_owned());
     }
     assert_plan_fresh(root, plan)?;
-    let macros = load_html_macros(root, &plan.theme, HtmlShellKind::Site, trust_project_theme)?;
+    let captured = SitePlan {
+        source: plan,
+        pages_by_id: plan
+            .pages
+            .iter()
+            .map(|page| (page.id.as_str(), page))
+            .collect(),
+    };
+    let plan = &captured;
+    let shell = HtmlShell::prepare(root, &plan.theme, trust_project_theme)?;
     let mut files = BTreeMap::new();
-    let mut page_items = HashMap::new();
-    for page in &plan.pages {
-        let item = read_project_item(root, &page.id)?
-            .ok_or_else(|| format!("Publication page {} disappeared.", page.id))?;
-        page_items.insert(page.id.as_str(), item);
-    }
+    let mut summaries = HashMap::new();
+    let mut search_entries = Vec::with_capacity(plan.pages.len());
     let snippets: HashMap<String, serde_json::Value> = plan
         .snippets
         .iter()
         .map(|snippet| (snippet.id.clone(), snippet.paragraph.clone()))
         .collect();
     for page in &plan.pages {
-        let item = page_items
-            .get(page.id.as_str())
-            .ok_or("Publication page was not captured.")?;
-        let page_document = document(item);
+        let item = read_project_item(root, &page.id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Publication page {} disappeared.", page.id))?;
+        summaries.insert(page.id.as_str(), page_summary(&item));
+        let page_document = document(&item);
         let links = resolved_links(plan, &page.id, &page.id)?;
         let assets = resolved_assets(plan, &page.id);
-        let fields = resolved_fields(item, page_document)?;
+        let fields = resolved_fields(&item, page_document)?;
         let exclusions: HashSet<String> = page.excluded_block_ids.iter().cloned().collect();
         let heading_offset =
             2 - i16::try_from(min_heading_level(page_document, &exclusions).unwrap_or(1))
                 .map_err(|_| "Page heading level is too large.")?;
-        let body = render_html_document(
+        let prepared = prepare_html_document(
             page_document,
             &HtmlResources {
+                page_id: &page.id,
                 links: &links,
                 assets: &assets,
                 fields: &fields,
                 snippets: &snippets,
                 excluded_block_ids: &exclusions,
-                macros: Some(&macros),
             },
             heading_offset,
+            &mut ReferenceScope::default(),
         )
         .map_err(|error| format!("Page {}: {error}", page.id))?;
+        let metadata = page_metadata(&prepared)?;
+        search_entries.push(search_entry(plan, page, &metadata.text));
+        let body = render_prepared_html_document(&prepared)?;
         let mut article = format!(
             "<article id=\"note-{}\"><header><h1>{}</h1></header>\n",
             page.id,
@@ -180,19 +209,16 @@ pub(crate) fn render_publication_site(
         article.push_str(&body);
         article.push_str("</article>\n");
         let navigation = site_navigation(plan, &page.id)?;
-        let contents = page_contents(page_document, &exclusions, &fields, heading_offset)?;
         let title = format!("{} — {}", page.title, plan.title);
         let language = item["meta"]["lang"].as_str().unwrap_or("und");
-        let html = render_html_shell(
-            root,
-            &plan.theme,
+        let html = shell.render(
             HtmlShellKind::Site,
             HtmlShellContext {
                 title: &title,
                 language,
                 body: &article,
                 navigation: &navigation,
-                contents: &contents,
+                contents: &metadata.contents,
                 role: if page.id == plan.root_page_id {
                     "home"
                 } else if page.published_on.is_some() {
@@ -202,17 +228,14 @@ pub(crate) fn render_publication_site(
                 },
                 page: serde_json::json!({"title":page.title,"route":page.route,"publishedOn":page.published_on,"tags":page.tags}),
             },
-            trust_project_theme,
         )?;
         files.insert(page_file(plan, &page.id), html.into_bytes());
     }
     for listing in &plan.listings {
-        let body = render_listing(plan, listing, &page_items)?;
+        let body = render_listing(plan, listing, &summaries)?;
         let navigation = site_navigation_at(plan, &listing.route, None)?;
         let title = format!("{} — {}", listing.title, plan.title);
-        let html = render_html_shell(
-            root,
-            &plan.theme,
+        let html = shell.render(
             HtmlShellKind::Site,
             HtmlShellContext {
                 title: &title,
@@ -225,9 +248,8 @@ pub(crate) fn render_publication_site(
                 } else {
                     "listing"
                 },
-                page: listing_context(plan, listing, &page_items)?,
+                page: listing_context(plan, listing, &summaries)?,
             },
-            trust_project_theme,
         )?;
         files.insert(listing.route.clone(), html.into_bytes());
     }
@@ -238,7 +260,7 @@ pub(crate) fn render_publication_site(
             .ok_or("Feed collection has no listing address.")?;
         files.insert(
             format!("{slug}/feed.xml"),
-            render_feed(plan, collection, &page_items)?.into_bytes(),
+            render_feed(plan, collection, &summaries)?.into_bytes(),
         );
     }
     if let Some(base_url) = &plan.targets.site.base_url {
@@ -249,25 +271,10 @@ pub(crate) fn render_publication_site(
     }
     files.insert(
         "search.js".to_owned(),
-        search_script(plan, &page_items)?.into_bytes(),
+        search_script(&search_entries)?.into_bytes(),
     );
     for asset in &plan.assets {
-        let path = root
-            .join("items")
-            .join(&asset.owner_id[..2])
-            .join(&asset.owner_id)
-            .join("assets")
-            .join(&asset.filename);
-        let bytes =
-            fs::read(&path).map_err(|error| format!("Cannot read asset {}: {error}", asset.src))?;
-        let digest = Sha256::digest(&bytes);
-        let hash: String = super::digest_hex(&digest);
-        if bytes.len() as u64 != asset.bytes || hash != asset.sha256 {
-            return Err(format!(
-                "Asset {} changed during site rendering.",
-                asset.src
-            ));
-        }
+        let bytes = super::render::read_asset(root, asset)?;
         files.insert(
             format!("assets/{}/{}", asset.owner_id, asset.filename),
             bytes,
@@ -300,10 +307,14 @@ fn page_summary(source: &Value) -> String {
     clippy::too_many_lines,
     reason = "Keep the complete format or operation dispatch together for contract review."
 )]
+#[expect(
+    clippy::expect_used,
+    reason = "Formatting only strings and primitive values into String is infallible."
+)]
 fn render_listing(
-    plan: &PublicationPlan,
+    plan: &SitePlan<'_>,
     listing: &PlannedListing,
-    page_items: &HashMap<&str, Value>,
+    summaries: &HashMap<&str, String>,
 ) -> Result<String, String> {
     let collection = plan
         .collections
@@ -319,12 +330,8 @@ fn render_listing(
     } else {
         body.push_str("<ol class=\"publication-card-list\">");
         for id in &listing.page_ids {
-            let page = plan
-                .pages
-                .iter()
-                .find(|page| &page.id == id)
-                .ok_or("Listing page was not captured.")?;
-            let source = page_items
+            let page = plan.page(id).ok_or("Listing page was not captured.")?;
+            let summary = summaries
                 .get(id.as_str())
                 .ok_or("Listing source was not captured.")?;
             write!(
@@ -343,9 +350,8 @@ fn render_listing(
                 )
                 .expect("writing to a String cannot fail");
             }
-            let summary = page_summary(source);
             if !summary.is_empty() {
-                write!(body, "<p>{}</p>", escape_html(&summary))
+                write!(body, "<p>{}</p>", escape_html(summary))
                     .expect("writing to a String cannot fail");
             }
             if collection.archives && !page.tags.is_empty() {
@@ -423,9 +429,9 @@ fn render_listing(
 }
 
 fn listing_context(
-    plan: &PublicationPlan,
+    plan: &SitePlan<'_>,
     listing: &PlannedListing,
-    page_items: &HashMap<&str, Value>,
+    summaries: &HashMap<&str, String>,
 ) -> Result<Value, String> {
     let collection = plan
         .collections
@@ -434,12 +440,8 @@ fn listing_context(
         .ok_or("Listing has no planned collection.")?;
     let mut entries = Vec::new();
     for id in &listing.page_ids {
-        let page = plan
-            .pages
-            .iter()
-            .find(|page| &page.id == id)
-            .ok_or("Listing page was not captured.")?;
-        let source = page_items
+        let page = plan.page(id).ok_or("Listing page was not captured.")?;
+        let summary = summaries
             .get(id.as_str())
             .ok_or("Listing source was not captured.")?;
         let tags = if collection.archives {
@@ -447,7 +449,7 @@ fn listing_context(
         } else {
             Vec::new()
         };
-        entries.push(serde_json::json!({"title":page.title,"href":relative_href(&listing.route, &page.route),"summary":page_summary(source),"publishedOn":page.published_on,"tags":tags}));
+        entries.push(serde_json::json!({"title":page.title,"href":relative_href(&listing.route, &page.route),"summary":summary,"publishedOn":page.published_on,"tags":tags}));
     }
     let pagination = (1..=listing.total_pages).map(|number| serde_json::json!({"number":number,"href":relative_href(&listing.route, &listing_page_route(&listing.base_path, number)),"current":number == listing.page_number})).collect::<Vec<_>>();
     let archives = if listing.base_path == collection.listing_slug.as_deref().unwrap_or("")
@@ -479,10 +481,14 @@ fn escape_xml(source: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "Formatting only strings and primitive values into String is infallible."
+)]
 fn render_feed(
-    plan: &PublicationPlan,
+    plan: &SitePlan<'_>,
     collection: &PlannedCollection,
-    page_items: &HashMap<&str, Value>,
+    summaries: &HashMap<&str, String>,
 ) -> Result<String, String> {
     let base = plan
         .targets
@@ -497,15 +503,11 @@ fn render_feed(
     let mut ids = collection.page_ids.clone();
     ids.sort_by(|a, b| {
         let left = plan
-            .pages
-            .iter()
-            .find(|page| &page.id == a)
+            .page(a)
             .and_then(|page| page.published_on.as_deref())
             .unwrap_or("");
         let right = plan
-            .pages
-            .iter()
-            .find(|page| &page.id == b)
+            .page(b)
             .and_then(|page| page.published_on.as_deref())
             .unwrap_or("");
         right.cmp(left).then_with(|| a.cmp(b))
@@ -517,12 +519,8 @@ fn render_feed(
         escape_xml(&plan.title)
     );
     for id in ids.iter().take(20) {
-        let page = plan
-            .pages
-            .iter()
-            .find(|page| &page.id == id)
-            .ok_or("Feed page was not planned.")?;
-        let source = page_items
+        let page = plan.page(id).ok_or("Feed page was not planned.")?;
+        let summary = summaries
             .get(id.as_str())
             .ok_or("Feed source was not captured.")?;
         let date = page
@@ -538,9 +536,8 @@ fn render_feed(
             chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(timestamp, chrono::Utc)
                 .to_rfc2822();
         let url = canonical_url(base, &page.route);
-        let summary = page_summary(source);
         write!(xml, "<item><title>{}</title><link>{}</link><guid isPermaLink=\"true\">{}</guid><pubDate>{}</pubDate><description>{}</description></item>",
-            escape_xml(&page.title), escape_xml(&url), escape_xml(&url), escape_xml(&pub_date), escape_xml(&summary)).expect("writing to a String cannot fail");
+            escape_xml(&page.title), escape_xml(&url), escape_xml(&url), escape_xml(&pub_date), escape_xml(summary)).expect("writing to a String cannot fail");
     }
     xml.push_str("</channel></rss>");
     Ok(xml)
@@ -548,6 +545,10 @@ fn render_feed(
 #[expect(
     clippy::case_sensitive_file_extension_comparisons,
     reason = "Canonical resource filenames and generated routes are deliberately case sensitive."
+)]
+#[expect(
+    clippy::expect_used,
+    reason = "Formatting only strings and primitive values into String is infallible."
 )]
 fn render_sitemap(base: &str, files: &BTreeMap<String, Vec<u8>>) -> String {
     let mut xml = String::from(
@@ -565,15 +566,17 @@ fn render_sitemap(base: &str, files: &BTreeMap<String, Vec<u8>>) -> String {
     xml
 }
 
-fn page_file(plan: &PublicationPlan, id: &str) -> String {
-    plan.pages
-        .iter()
-        .find(|page| page.id == id)
+#[expect(
+    clippy::expect_used,
+    reason = "Site planning captures a route for every included page before rendering references."
+)]
+fn page_file(plan: &SitePlan<'_>, id: &str) -> String {
+    plan.page(id)
         .map(|page| page.route.clone())
         .expect("every included page has a planned route")
 }
 
-fn page_href(plan: &PublicationPlan, from_id: &str, to_id: &str) -> String {
+fn page_href(plan: &SitePlan<'_>, from_id: &str, to_id: &str) -> String {
     relative_href(&page_file(plan, from_id), &page_file(plan, to_id))
 }
 
@@ -597,7 +600,7 @@ fn relative_href(from: &str, to: &str) -> String {
 }
 
 fn resolved_links(
-    plan: &PublicationPlan,
+    plan: &SitePlan<'_>,
     source_id: &str,
     host_id: &str,
 ) -> Result<HashMap<String, String>, String> {
@@ -646,7 +649,7 @@ fn resolved_links(
     Ok(links)
 }
 
-fn resolved_assets(plan: &PublicationPlan, host_id: &str) -> HashMap<String, String> {
+fn resolved_assets(plan: &SitePlan<'_>, host_id: &str) -> HashMap<String, String> {
     let prefix = root_prefix(&page_file(plan, host_id));
     plan.assets
         .iter()
@@ -661,15 +664,12 @@ fn resolved_assets(plan: &PublicationPlan, host_id: &str) -> HashMap<String, Str
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::path::Path;
 
     use serde_json::{Value, json};
 
-    use super::{
-        RenderedSite, collect_search_text, page_contents, page_summary, publish_site,
-        render_publication_site,
-    };
+    use super::{RenderedSite, page_summary, publish_site, render_publication_site};
     use crate::engine::project::asset::write_asset;
     use crate::engine::project::config::create_project_config;
     use crate::engine::project::write::write_item_input;
@@ -685,13 +685,13 @@ mod tests {
         reason = "Canonical resource filenames and generated routes are deliberately case sensitive."
     )]
     fn every_preset_can_render_every_output_format() {
-        let root =
-            std::env::temp_dir().join(format!("bluink-format-matrix-{}", uuid::Uuid::now_v7()));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
         let config: Value =
             serde_json::from_slice(&std::fs::read(fixture.join("bluink.json")).unwrap()).unwrap();
         create_project_config(&root, config).unwrap();
-        std::fs::create_dir_all(root.join("properties")).unwrap();
+        crate::engine::project::properties::initialize(&root).unwrap();
         let home = uuid::Uuid::now_v7().to_string();
         let chapter = uuid::Uuid::now_v7().to_string();
         for (id, title, body) in [
@@ -714,21 +714,41 @@ mod tests {
                     "outline":[{"kind":"page","pageId":chapter,"children":[]}],
                     "selectionRules":[],"themeId":"classic",
                     "targets":{"pdf":{"profile":"default","outsideLinks":"error"},
-                        "html":{"outsideLinks":"error"},
+                        "html":{"outsideLinks":"error"},"docx":{"outsideLinks":"error"},"epub":{"outsideLinks":"error"},
                         "site":{"layout":layout,"outsideLinks":"error"}}}}),
                 None, "2026-09-28").unwrap();
             for format in [
                 PublicationFormat::Pdf,
+                PublicationFormat::Docx,
+                PublicationFormat::Epub,
                 PublicationFormat::Html,
                 PublicationFormat::Site,
             ] {
                 let plan = plan_publication(&root, &id, format).unwrap();
                 assert_eq!(plan.pages.len(), 2, "{preset} {format:?}");
                 match format {
+                    PublicationFormat::Epub => {
+                        let fonts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fonts/assets");
+                        crate::engine::publication::epub::render_publication(
+                            &root,
+                            &plan,
+                            &fonts.join("web"),
+                            Some(&fonts.join("pdf")),
+                        )
+                        .unwrap();
+                    }
+                    PublicationFormat::Docx => {
+                        let fonts =
+                            Path::new(env!("CARGO_MANIFEST_DIR")).join("../fonts/assets/docx");
+                        let word = crate::engine::publication::word::render_publication(
+                            &root, &plan, &fonts, None,
+                        )
+                        .unwrap();
+                        assert!(word.bytes.starts_with(b"PK"), "{preset} DOCX");
+                    }
                     PublicationFormat::Pdf => {
-                        let pdf = render_publication_pdf(&root, &plan, false).unwrap();
-                        let source =
-                            String::from_utf8(pdf.files["pdf/content.typ"].clone()).unwrap();
+                        let pdf = render_publication_pdf(&root, &plan).unwrap();
+                        let source = String::from_utf8(pdf.files["content.typ"].clone()).unwrap();
                         assert!(source.contains("Chapter content"), "{preset} PDF");
                     }
                     PublicationFormat::Html => {
@@ -754,16 +774,18 @@ mod tests {
                 }
             }
         }
-        std::fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 
     #[test]
     fn renders_ordered_site_with_links_passages_and_assets() {
-        let root = std::env::temp_dir().join(format!("bluink-site-{}", uuid::Uuid::now_v7()));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
         let config: Value =
             serde_json::from_slice(&std::fs::read(fixture.join("bluink.json")).unwrap()).unwrap();
         create_project_config(&root, config).unwrap();
+        crate::engine::project::properties::initialize(&root).unwrap();
         crate::engine::project::snippets::write_snippet(
             &root,
             "excerpt",
@@ -771,7 +793,6 @@ mod tests {
             None,
         )
         .unwrap();
-        std::fs::create_dir_all(root.join("properties")).unwrap();
         let ids: Vec<_> = (0..4).map(|_| uuid::Uuid::now_v7().to_string()).collect();
         let asset_src = format!("/assets/{}/image.png", ids[0]);
         write_item_input(&root, json!({"id":ids[0],"meta":{"type":"page","title":"Start","lang":"en-GB"},
@@ -791,7 +812,7 @@ mod tests {
         write_item_input(&root, json!({"id":ids[3],"meta":{"type":"publication","title":"Book"},
             "content":{"kind":"publication","preset":"book","selectedOutput":"site","rootPageId":ids[0],"outline":[{"kind":"section","id":uuid::Uuid::now_v7().to_string(),"title":"Fundamentals","children":[{"kind":"page","pageId":ids[1],"children":[]}]}],
                 "selectionRules":[],"themeId":"classic","targets":{"pdf":{"profile":"default","outsideLinks":"error"},
-                "html":{"outsideLinks":"error"},
+                "html":{"outsideLinks":"error"},"docx":{"outsideLinks":"error"},"epub":{"outsideLinks":"error"},
                 "site":{"layout":"documentation","outsideLinks":"error"}}}}), None, "2026-09-28").unwrap();
         let plan = plan_publication(&root, &ids[3], PublicationFormat::Site).unwrap();
         let site = render_publication_site(&root, &plan, false).unwrap();
@@ -815,6 +836,10 @@ mod tests {
         assert!(index.contains("src=\"search.js\""));
         let search = String::from_utf8(site.files["search.js"].clone()).unwrap();
         assert!(search.contains("next chapter"));
+        assert!(
+            search.contains("quoted source"),
+            "Expanded snippets must be searchable"
+        );
         assert!(search.contains("Chapter <one>"));
         assert!(chapter.contains("href=\"../index.html\""));
         assert_eq!(
@@ -823,24 +848,17 @@ mod tests {
         );
         let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/themes/field-notes");
         let installed = root.join("themes/field-notes");
-        for directory in ["html", "site", "pdf"] {
+        for directory in ["html", "site"] {
             std::fs::create_dir_all(installed.join(directory)).unwrap();
         }
-        for relative in [
-            "manifest.json",
-            "html/article.html",
-            "html/macros.html",
-            "site/page.html",
-            "pdf/document.typ",
-            "pdf/macros.j2",
-        ] {
+        for relative in ["manifest.json", "html/article.html", "site/page.html"] {
             std::fs::copy(example.join(relative), installed.join(relative)).unwrap();
         }
         let themed_id = uuid::Uuid::now_v7().to_string();
         write_item_input(&root, json!({"id":themed_id,"meta":{"type":"publication","title":"Field notes"},
             "content":{"kind":"publication","preset":"book","selectedOutput":"site","rootPageId":ids[0],"outline":[{"kind":"page","pageId":ids[1],"children":[]}],
                 "selectionRules":[],"themeId":"field-notes","targets":{"pdf":{"profile":"default","outsideLinks":"error"},
-                "html":{"outsideLinks":"error"},
+                "html":{"outsideLinks":"error"},"docx":{"outsideLinks":"error"},"epub":{"outsideLinks":"error"},
                 "site":{"layout":"documentation","outsideLinks":"error"}}}}), None, "2026-09-28").unwrap();
         let themed_plan = plan_publication(&root, &themed_id, PublicationFormat::Site).unwrap();
         assert!(
@@ -852,62 +870,21 @@ mod tests {
         let themed = render_publication_site(&root, &themed_plan, true).unwrap();
         let themed_index = String::from_utf8(themed.files["index.html"].clone()).unwrap();
         assert!(themed_index.contains("publication--field-notes"));
-        assert!(themed_index.contains("class=\"field-note-paragraph\""));
+        assert!(themed_index.contains("padding: 0.500000rem"));
         assert!(themed_index.contains("Quoted source</p>"));
         assert!(themed_index.contains("aria-label=\"Chapters\""));
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn page_contents_uses_rendered_heading_text_and_skips_excluded_sections() {
-        let included = "01a0e2a0-0000-7000-8000-000000000001";
-        let excluded = "01a0e2a0-0000-7000-8000-000000000002";
-        let document = json!({"type":"doc","content":[
-            {"type":"heading","attrs":{"id":included,"level":2},"content":[
-                {"type":"text","text":"A <title> & "},
-                {"type":"field","attrs":{"key":"edition"}}]},
-            {"type":"heading","attrs":{"id":excluded,"level":2},"content":[
-                {"type":"text","text":"Excluded"}]}
-        ]});
-        let contents = page_contents(
-            &document,
-            &HashSet::from([excluded.to_owned()]),
-            &HashMap::from([("edition".to_owned(), "2026".to_owned())]),
-            0,
-        )
-        .unwrap();
-        assert!(contents.contains(&format!("href=\"#block-{included}\"")));
-        assert!(contents.contains("A &lt;title&gt; &amp; 2026"));
-        assert!(!contents.contains("Excluded"));
-    }
-
-    #[test]
-    fn search_text_omits_excluded_blocks_and_resolves_fields() {
-        let excluded = "01a0e2a0-0000-7000-8000-000000000002";
-        let document = json!({"type":"doc","content":[
-            {"type":"paragraph","content":[{"type":"text","text":"Included"},{"type":"field","attrs":{"key":"year"}}]},
-            {"type":"paragraph","attrs":{"id":excluded},"content":[{"type":"text","text":"Hidden"}]}
-        ]});
-        let mut text = String::new();
-        collect_search_text(
-            &document,
-            &HashSet::from([excluded.to_owned()]),
-            &HashMap::from([("year".to_owned(), "2026".to_owned())]),
-            &mut text,
-        )
-        .unwrap();
-        assert!(text.contains("Included 2026"));
-        assert!(!text.contains("Hidden"));
+        temporary.close().unwrap();
     }
 
     #[test]
     fn renders_a_website_with_paginated_blog_archives_and_feed() {
-        let root = std::env::temp_dir().join(format!("bluink-blog-{}", uuid::Uuid::now_v7()));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
         let config: Value =
             serde_json::from_slice(&std::fs::read(fixture.join("bluink.json")).unwrap()).unwrap();
         create_project_config(&root, config).unwrap();
-        std::fs::create_dir_all(root.join("properties")).unwrap();
+        crate::engine::project::properties::initialize(&root).unwrap();
         let ids: Vec<_> = (0..4).map(|_| uuid::Uuid::now_v7().to_string()).collect();
         for (index, id) in ids.iter().take(3).enumerate() {
             let meta = if index == 0 {
@@ -923,10 +900,10 @@ mod tests {
         let collection_id = uuid::Uuid::now_v7().to_string();
         write_item_input(&root, json!({"id":ids[3],"meta":{"type":"publication","title":"Astronomy site"},
             "content":{"kind":"publication","preset":"blog","selectedOutput":"site","rootPageId":ids[0],
-                "outline":[{"kind":"collection","id":collection_id,"title":"Articles","query":"+tag:astronomy sort:published_on-desc",
+                "outline":[{"kind":"collection","id":collection_id,"title":"Articles","query":{"version":1,"clauses":[{"polarity":"required","predicate":{"kind":"tag","key":"astronomy"}}],"sort":[{"field":"published_on","direction":"desc"}]},
                     "listingSlug":"blog","pageSize":1,"feed":true,"archives":true,"showPagesInNavigation":false}],
                 "selectionRules":[],"themeId":"classic","targets":{"pdf":{"profile":"default","outsideLinks":"error"},
-                "html":{"outsideLinks":"error"},
+                "html":{"outsideLinks":"error"},"docx":{"outsideLinks":"error"},"epub":{"outsideLinks":"error"},
                 "site":{"layout":"website","outsideLinks":"error","baseUrl":"https://example.test/"}}}}), None, "2026-09-28").unwrap();
         let resolved = HashMap::from([(collection_id, vec![ids[2].clone(), ids[1].clone()])]);
         let plan =
@@ -960,13 +937,13 @@ mod tests {
         let pdf_plan =
             plan_publication_resolved(&root, &ids[3], PublicationFormat::Pdf, &resolved).unwrap();
         assert_eq!(pdf_plan.pages.len(), 3);
-        assert!(render_publication_pdf(&root, &pdf_plan, false).is_ok());
+        assert!(render_publication_pdf(&root, &pdf_plan).is_ok());
         let html_plan =
             plan_publication_resolved(&root, &ids[3], PublicationFormat::Html, &resolved).unwrap();
         let html = render_publication_html(&root, &html_plan, false).unwrap();
         assert!(html.find("Body 2").unwrap() < html.find("Body 1").unwrap());
         assert_eq!(html.matches("<article id=\"note-").count(), 3);
-        let _ = std::fs::remove_dir_all(root);
+        temporary.close().unwrap();
     }
 
     #[test]
@@ -986,8 +963,8 @@ mod tests {
 
     #[test]
     fn publishes_atomically_and_never_replaces_an_existing_destination() {
-        let root =
-            std::env::temp_dir().join(format!("bluink-site-output-{}", uuid::Uuid::now_v7()));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         std::fs::create_dir_all(&root).unwrap();
         let destination = root.join("book");
         let mut files = std::collections::BTreeMap::new();
@@ -1038,6 +1015,6 @@ mod tests {
             std::fs::read(destination.join("index.html")).unwrap(),
             b"<h1>Book</h1>"
         );
-        std::fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 }

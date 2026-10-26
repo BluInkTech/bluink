@@ -26,6 +26,11 @@ impl Fixture {
     ) -> Self {
         let root = tempfile::tempdir().unwrap();
         let mut options = ApplicationOptions {
+            workspace_template_path: concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/vendor/workspace-starter.json"
+            )
+            .into(),
             project_root: root.path().to_string_lossy().into_owned(),
             timezone: Some("UTC".into()),
             cache_location: Some("project".into()),
@@ -33,6 +38,7 @@ impl Fixture {
             data_dir: None,
             web_font_folder: None,
             pdf_font_folder: None,
+            docx_font_folder: None,
             typst_binary: None,
         };
         configure(&mut options);
@@ -131,26 +137,16 @@ impl Fixture {
 
     pub(crate) fn reopen(&mut self, index: bool) {
         self.runtime.block_on(self.app.stop()).unwrap();
-        self.app = BluinkApplication::new(ApplicationOptions {
-            project_root: self.root.path().to_string_lossy().into_owned(),
-            timezone: Some("UTC".into()),
-            cache_location: Some("project".into()),
-            public_dir: None,
-            data_dir: None,
-            web_font_folder: None,
-            pdf_font_folder: None,
-            typst_binary: None,
-        })
-        .unwrap();
+        self.app = BluinkApplication::new(self.app.inner.options.clone()).unwrap();
         self.runtime.block_on(self.app.initialize(index)).unwrap();
         self.router = router(&self.app.inner, Arc::new(Semaphore::new(BLOCKING_CAPACITY)));
     }
 
     pub(crate) fn item_path(&self, id: &Value) -> std::path::PathBuf {
         let id = id.as_str().unwrap();
-        self.root
-            .path()
-            .join(format!("items/{}/{id}/item.json", &id[..2]))
+        crate::engine::project::identity::ItemId::try_from(id)
+            .unwrap()
+            .path(self.root.path())
     }
 
     pub(crate) fn settled(&self) {

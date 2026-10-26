@@ -4,13 +4,13 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, readdir, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { seedPages, withTempDir } from '../test-utils/fixtures.js'
-import { nativeAddon } from './addon.js'
+import { createApplication } from './addon.js'
 
 const cli = fileURLToPath(new URL('../../bluink', import.meta.url))
 const nativePath = fileURLToPath(
@@ -95,7 +95,7 @@ process.channel.unref();
 }
 
 async function reopen(root: string) {
-	const application = new (nativeAddon().BluinkApplication)({
+	const application = createApplication({
 		projectRoot: root,
 		timezone: 'UTC',
 		cacheLocation: 'project',
@@ -182,18 +182,24 @@ test('compiled CLI plain mode displays real Rust startup counters without termin
 }, async () => {
 	await withTempDir(async (directory) => {
 		await seedPages(
-			new (nativeAddon().BluinkApplication)({
+			createApplication({
 				projectRoot: directory,
 				timezone: 'UTC',
 				cacheLocation: 'project',
 			}),
 			[{ title: 'Progress fixture' }],
 		)
+		const records = (
+			await readdir(path.join(directory, 'items'), { recursive: true })
+		).filter((entry) => path.basename(entry) === 'item.json').length
 		const running = launch(directory, ['server', '--port', '0', '--no-tui'])
 		try {
 			await running.ready()
 			assert.equal(running.stdout, '')
-			assert.match(running.stderr, /1\/1 \(100%\)/)
+			assert.ok(
+				running.stderr.includes(`${records}/${records} (100%)`),
+				running.stderr,
+			)
 			assert.equal(running.stderr.includes('\u001b'), false)
 			running.stop('SIGTERM')
 			assert.deepEqual(await running.exited, [0, null], running.stderr)
@@ -264,7 +270,11 @@ test('compiled CLI cleans partial startup after bind and project initialization 
 		])
 		try {
 			assert.deepEqual(await collision.exited, [1, null], collision.stderr)
-			assert.match(collision.stderr, /address|Address/)
+			assert.match(
+				collision.stderr,
+				new RegExp(`Port ${address.port} is already in use`),
+			)
+			assert.match(collision.stderr, /Or choose another port with --port\./)
 			await reopen(directory)
 		} finally {
 			await collision.dispose()
@@ -333,7 +343,7 @@ test('compiled export command shares early-stop coordination without polluting s
 }, async () => {
 	await withTempDir(async (directory) => {
 		const [page] = await seedPages(
-			new (nativeAddon().BluinkApplication)({
+			createApplication({
 				projectRoot: directory,
 				timezone: 'UTC',
 				cacheLocation: 'project',

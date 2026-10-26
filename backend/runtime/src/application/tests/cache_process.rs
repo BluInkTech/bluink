@@ -7,6 +7,11 @@ use std::process::{Child, Command, Stdio};
 
 fn at(root: &Path) -> Application {
     Application::new(ApplicationOptions {
+        workspace_template_path: concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/vendor/workspace-starter.json"
+        )
+        .into(),
         project_root: root.to_string_lossy().into_owned(),
         timezone: Some("UTC".into()),
         cache_location: Some("project".into()),
@@ -14,6 +19,7 @@ fn at(root: &Path) -> Application {
         data_dir: None,
         web_font_folder: None,
         pdf_font_folder: None,
+        docx_font_folder: None,
         typst_binary: None,
     })
     .unwrap()

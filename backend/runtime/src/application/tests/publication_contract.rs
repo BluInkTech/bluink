@@ -3,7 +3,7 @@
 
 //! Regression coverage migrated from the obsolete Node Publication facade.
 use super::*;
-use crate::engine::publication::{OutsideLinks, PdfProfile, plan::PublicationFormat, theme};
+use crate::engine::publication::{OutsideLinks, PdfProfile, plan::PublicationFormat};
 use crate::export;
 
 fn write(app: &Application, input: Value) -> Value {
@@ -40,7 +40,7 @@ fn content(root: &Value, preset: &str, outline: Value) -> Value {
     "rootPageId": id(root), "outline": outline, "selectionRules": [],
     "themeId": "classic", "targets": {
         "pdf": {"profile": "default", "outsideLinks": "error"},
-        "html": {"outsideLinks": "error"},
+        "html": {"outsideLinks": "error"},"docx": {"outsideLinks": "error"},"epub":{"outsideLinks": "error"},
         "site": {"layout": if preset == "blog" { "website" } else { "documentation" },
             "outsideLinks": "error"}
     }})
@@ -65,16 +65,41 @@ fn ready_index(app: &Application) -> String {
 }
 
 #[test]
-fn authored_order_theme_settings_and_resolved_revisions_have_one_rust_owner() {
-    let app = application("publication-authored-contract");
+fn collection_searches_retain_their_captured_generation() {
+    let project = TestProject::new("publication-query-generation");
+    let app = project.application();
+    app.initialize_sync(false).unwrap();
+    let first = page(&app, "First collection page", &[]);
+    let index = ready_index(&app);
+    let (snapshot, cache) = service::cached_index(&index).unwrap();
+    let query = crate::query::document::QueryDocument::active_pages();
+    let before =
+        crate::search::search_snapshot(&snapshot, &cache, &query, 100, 0, None, true).unwrap();
+    assert_eq!(before.count, 1);
+
+    page(&app, "Second collection page", &[]);
+    ready_index(&app);
+    let retained =
+        crate::search::search_snapshot(&snapshot, &cache, &query, 100, 0, None, true).unwrap();
+    assert_eq!(retained.count, 1);
+    assert_eq!(retained.hits[0].id, id(&first));
+    let current = crate::search::search_service_sync(index, query, 100, 0, None, true).unwrap();
+    assert_eq!(current.count, 2);
+    drop(snapshot);
+    drop(cache);
+    app.stop_sync().unwrap();
+    project.close().unwrap();
+}
+
+#[test]
+fn authored_order_theme_overrides_and_resolved_revisions_have_one_rust_owner() {
+    let project = TestProject::new("publication-authored-contract");
+    let app = project.application();
     app.initialize_sync(false).unwrap();
     let root = page(&app, "Overview", &[]);
     let first = page(&app, "Stars", &[]);
     let second = page(&app, "Planets", &[]);
-    let mut settings = theme::capture_theme(&app.root, "classic", PublicationFormat::Pdf)
-        .unwrap()
-        .settings;
-    settings.typography.body_scale = 1.1;
+    let settings = json!({"shared":{"root":{"fontSize":"13.2pt"}},"targets":{}});
     let mut source = content(
         &root,
         "book",
@@ -85,7 +110,7 @@ fn authored_order_theme_settings_and_resolved_revisions_have_one_rust_owner() {
         ]),
     );
     source["selectedOutput"] = json!("pdf");
-    source["themeSettings"] = serde_json::to_value(settings).unwrap();
+    source["themeOverrides"] = serde_json::to_value(settings).unwrap();
     let publication = write(
         &app,
         json!({"meta": {"type": "publication", "title": "Book"},
@@ -94,7 +119,7 @@ fn authored_order_theme_settings_and_resolved_revisions_have_one_rust_owner() {
     let plan = export::plan_publication(&app.root, id(&publication), PublicationFormat::Pdf, None)
         .unwrap();
     assert_eq!(plan.format, PublicationFormat::Pdf);
-    assert_eq!(plan.theme.settings.typography.body_scale, 1.1);
+    assert_eq!(plan.theme.resolved.root_font_size_pt, 13.2);
     assert_eq!(plan.publication_revision, publication["revision"]);
     assert_eq!(
         plan.pages
@@ -129,7 +154,7 @@ fn authored_order_theme_settings_and_resolved_revisions_have_one_rust_owner() {
         .unwrap();
     assert_ne!(fresh.pages[2].revision, plan.pages[2].revision);
     app.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
@@ -138,7 +163,8 @@ fn authored_order_theme_settings_and_resolved_revisions_have_one_rust_owner() {
     reason = "Keep each end-to-end scenario together so setup, failure checks and cleanup remain visible."
 )]
 fn query_collections_are_deterministic_and_stale_membership_cannot_render() {
-    let app = application("publication-collection-contract");
+    let project = TestProject::new("publication-collection-contract");
+    let app = project.application();
     app.initialize_sync(false).unwrap();
     let root = page(&app, "Overview", &[]);
     let stars = page(&app, "Stars", &["astronomy"]);
@@ -148,7 +174,7 @@ fn query_collections_are_deterministic_and_stale_membership_cannot_render() {
         json!({"meta": {"type": "publication", "title": "Guide"},
         "content": content(&root, "documentation", json!([
             {"kind": "collection", "id": "00000000-0000-7000-8000-000000000711",
-                "title": "Topics", "query": "+tag:astronomy"}
+                "title": "Topics", "query": crate::query::document::test_query("+tag:astronomy")}
         ]))}),
     );
     let index = ready_index(&app);
@@ -218,7 +244,7 @@ fn query_collections_are_deterministic_and_stale_membership_cannot_render() {
         json!({"meta": {"type": "publication", "title": "Blog"},
         "content": content(&root, "blog", json!([
             {"kind": "collection", "id": "00000000-0000-7000-8000-000000000712", "title": "Posts",
-                "query": "+has:published_on sort:published_on-desc", "listingSlug": "posts", "pageSize": 20}
+                "query": crate::query::document::test_query("+has:published_on sort:published_on-desc"), "listingSlug": "posts", "pageSize": 20}
         ]))}),
     );
     let empty = write(
@@ -226,7 +252,7 @@ fn query_collections_are_deterministic_and_stale_membership_cannot_render() {
         json!({"meta": {"type": "publication", "title": "Empty guide"},
         "content": content(&root, "documentation", json!([
             {"kind": "collection", "id": "00000000-0000-7000-8000-000000000713", "title": "Missing topics",
-                "query": "+tag:no_results_expected", "listingSlug": "topics"}
+                "query": crate::query::document::test_query("+tag:no_results_expected"), "listingSlug": "topics"}
         ]))}),
     );
     ready_index(&app);
@@ -250,22 +276,23 @@ fn query_collections_are_deterministic_and_stale_membership_cannot_render() {
         vec![id(&root)]
     );
     app.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn linked_plans_overlay_unreported_canonical_edges_and_terminate_cycles() {
-    let app = application("publication-graph-contract");
+    let project = TestProject::new("publication-graph-contract");
+    let app = project.application();
     app.initialize_sync(false).unwrap();
     let pages = ["Root", "Second", "Third"].map(|title| page(&app, title, &[]));
+    let unrelated = page(&app, "Outside the export", &[]);
     ready_index(&app);
-    assert!(
-        crate::document_graph::snapshot(&app.root)
-            .unwrap()
-            .unwrap()
-            .values()
-            .all(|edges| edges.pages.is_empty())
-    );
+    // A linked export must visit only reachable notes. A project-wide graph
+    // capture would read this changed, unrelated file and fail the export.
+    let unrelated_path = crate::engine::project::identity::ItemId::try_from(id(&unrelated))
+        .unwrap()
+        .path(&app.root);
+    std::fs::write(unrelated_path, b"Unrelated malformed note").unwrap();
     for (index, source) in pages.iter().enumerate() {
         let target = &pages[(index + 1) % pages.len()];
         // Deliberately bypass notification: external edits must overlay the index.
@@ -329,5 +356,5 @@ fn linked_plans_overlay_unreported_canonical_edges_and_terminate_cycles() {
         pages[..2].iter().map(id).collect::<Vec<_>>()
     );
     app.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }

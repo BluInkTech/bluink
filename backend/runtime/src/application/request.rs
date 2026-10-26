@@ -59,8 +59,18 @@ mod tests {
             };
             assert_eq!(message, expected);
         }
-        assert!(decode::<QueryItemsRequest>(br#"{"query":"", "limit":-1}"#).is_err());
-        assert!(decode::<QueryItemsRequest>(br#"{"query":"", "limit":1.5}"#).is_err());
+        assert!(
+            decode::<QueryItemsRequest>(
+                br#"{"query":{"version":1,"clauses":[],"sort":[]}, "limit":-1}"#
+            )
+            .is_err()
+        );
+        assert!(
+            decode::<QueryItemsRequest>(
+                br#"{"query":{"version":1,"clauses":[],"sort":[]}, "limit":1.5}"#
+            )
+            .is_err()
+        );
         let decoded = decode::<ReadItemRequest>(r#"{"id":"文学 🌍"}"#.as_bytes()).unwrap();
         assert_eq!(decoded.id, "文学 🌍");
         assert_eq!(decoded.options.content, None);

@@ -8,7 +8,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { nativeAddon } from './addon.js'
+import { createApplication } from './addon.js'
 import { seedPages, withTempDir } from '../test-utils/fixtures.js'
 
 const execute = promisify(execFile)
@@ -40,7 +40,7 @@ async function command(cwd: string, ...args: string[]) {
 
 async function fixture(root: string) {
 	const pages = await seedPages(
-		new (nativeAddon().BluinkApplication)({
+		createApplication({
 			projectRoot: root,
 			timezone: 'UTC',
 			cacheLocation: 'project',
@@ -122,6 +122,8 @@ test('compiled Publication CLI forwards create, inspect, plan and generate actio
 					targets: {
 						pdf: { profile: 'default', outsideLinks: 'error' },
 						html: { outsideLinks: 'error' },
+						docx: { outsideLinks: 'error' },
+						epub: { outsideLinks: 'error' },
 						site: { layout: 'documentation', outsideLinks: 'error' },
 					},
 				},

@@ -32,12 +32,23 @@ fn fixture() -> (Fixture, Value, std::path::PathBuf) {
         options.data_dir = Some(root.join("data").to_string_lossy().into_owned());
     });
     let page = f.page("Upload owner", "");
-    let id = page["id"].as_str().unwrap();
-    let assets = f
-        .root
-        .path()
-        .join(format!("items/{}/{id}/assets", &id[..2]));
+    let assets = f.item_path(&page["id"]).parent().unwrap().join("assets");
     (f, page, assets)
+}
+
+#[test]
+fn reopening_preserves_configured_static_and_font_resources() {
+    let (mut f, _, _) = fixture();
+    f.reopen(false);
+    for (path, expected) in [
+        ("/", "<html>Installed UI</html>"),
+        ("/fonts/ui.woff2", "font bytes"),
+        ("/data/example.json", "{\"example\":true}"),
+    ] {
+        let (status, _, body) = f.request("GET", path, Body::empty());
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert_eq!(body.as_ref(), expected.as_bytes(), "{path}");
+    }
 }
 
 fn multipart(id: Option<&str>, file: bool, duplicate: bool, mime: &str) -> Vec<u8> {
@@ -74,21 +85,38 @@ fn upload(f: &Fixture, body: Body) -> (StatusCode, Value) {
 #[test]
 fn static_resources_and_note_assets_keep_mime_security_headers_and_confined_paths() {
     let (f, page, assets) = fixture();
+    std::fs::create_dir_all(&assets).unwrap();
     std::fs::write(assets.join("diagram.svg"), "<svg/>").unwrap();
     for (route, mime, body) in [
-        ("/?note=example", "text/html", "<html>Installed UI</html>"),
-        ("/assets/app.css?build=1", "text/css", "body { margin: 0; }"),
+        (
+            "/?note=example",
+            "text/html; charset=utf-8",
+            "<html>Installed UI</html>",
+        ),
+        (
+            "/assets/app.css?build=1",
+            "text/css; charset=utf-8",
+            "body { margin: 0; }",
+        ),
         (
             "/assets/app.js",
-            "text/javascript",
+            "text/javascript; charset=utf-8",
             "console.log(\"bundle\")",
         ),
-        ("/assets/%252e%252e.css", "text/css", "literal percent"),
+        (
+            "/assets/%252e%252e.css",
+            "text/css; charset=utf-8",
+            "literal percent",
+        ),
         ("/fonts/ui.woff2", "font/woff2", "font bytes"),
-        ("/fonts/inter.css", "text/css", "@font-face {}"),
+        (
+            "/fonts/inter.css",
+            "text/css; charset=utf-8",
+            "@font-face {}",
+        ),
         (
             "/data/example.json",
-            "application/json",
+            "application/json; charset=utf-8",
             "{\"example\":true}",
         ),
     ] {
@@ -183,7 +211,7 @@ fn multipart_uploads_use_random_names_preserve_bytes_and_leave_no_partial_files_
     ] {
         let (status, value) = upload(&f, Body::from(body));
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(value, json!({"error":error}));
+        assert_eq!(value, json!({"error":error,"diagnostics":[]}));
     }
     assert_eq!(
         f.request("GET", "/api/upload_asset", "").0,
@@ -208,7 +236,10 @@ fn whole_body_limits_apply_to_fixed_streamed_and_interrupted_uploads() {
     for body in [Body::from(large), Body::from_stream(stream)] {
         let (status, value) = upload(&f, body);
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(value, json!({"error":"Image upload is larger than 10 MB."}));
+        assert_eq!(
+            value,
+            json!({"error":"Image upload is larger than 10 MB.","diagnostics":[]})
+        );
     }
     let partial = Bytes::from(multipart(Some(id), true, false, "image/png"));
     let interrupted = futures_util::stream::iter([
@@ -220,8 +251,11 @@ fn whole_body_limits_apply_to_fixed_streamed_and_interrupted_uploads() {
     ]);
     let (status, value) = upload(&f, Body::from_stream(interrupted));
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(value, json!({"error":"ERR_INVALID_UPLOAD"}));
-    assert_eq!(std::fs::read_dir(&assets).unwrap().count(), 0);
+    assert_eq!(
+        value,
+        json!({"error":"ERR_INVALID_UPLOAD","diagnostics":[]})
+    );
+    assert!(!assets.exists());
     assert_eq!(
         upload(
             &f,
@@ -268,7 +302,7 @@ fn disconnected_multipart_socket_leaves_no_asset_and_the_real_listener_stays_usa
     let mut response = String::new();
     socket.read_to_string(&mut response).unwrap();
     assert!(response.starts_with("HTTP/1.1 200"));
-    assert_eq!(std::fs::read_dir(&assets).unwrap().count(), 0);
+    assert!(!assets.exists());
     assert_eq!(
         upload(
             &f,
@@ -289,7 +323,9 @@ fn static_and_asset_upload_paths_reject_symlink_escapes() {
     std::fs::create_dir(&outside).unwrap();
     std::fs::write(outside.join("secret.txt"), "private outside content").unwrap();
     std::os::unix::fs::symlink(&outside, f.root.path().join("public/assets/linked")).unwrap();
-    std::fs::remove_dir(&assets).unwrap();
+    if assets.exists() {
+        std::fs::remove_dir(&assets).unwrap();
+    }
     std::os::unix::fs::symlink(&outside, &assets).unwrap();
     for path in [
         "/assets/linked/secret.txt".to_owned(),
@@ -309,4 +345,33 @@ fn static_and_asset_upload_paths_reject_symlink_escapes() {
             .contains("within the owning item")
     );
     assert_eq!(std::fs::read_dir(outside).unwrap().count(), 1);
+}
+
+#[test]
+fn image_assets_come_at_a_listed_width_while_the_original_stays() {
+    use image::GenericImageView;
+    let f = Fixture::new(true);
+    let page = f.page("Cover owner", "");
+    let assets = f.item_path(&page["id"]).parent().unwrap().join("assets");
+    std::fs::create_dir_all(&assets).unwrap();
+    image::RgbImage::from_pixel(900, 450, image::Rgb([40, 80, 120]))
+        .save(assets.join("cover.jpg"))
+        .unwrap();
+    let original = std::fs::read(assets.join("cover.jpg")).unwrap();
+    let url = format!("/assets/{}/cover.jpg", page["id"].as_str().unwrap());
+    let (status, headers, body) = f.request("GET", &format!("{url}?w=320"), "");
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
+    assert_eq!(
+        image::load_from_memory(&body).unwrap().dimensions(),
+        (320, 160)
+    );
+    // Unlisted widths and plain requests get the original, which is unchanged.
+    for path in [format!("{url}?w=300"), url] {
+        let (status, _, body) = f.request("GET", &path, "");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_ref(), original.as_slice());
+    }
+    // The copy lives in the rebuildable cache, not beside the original.
+    assert_eq!(std::fs::read_dir(&assets).unwrap().count(), 1);
 }

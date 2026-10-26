@@ -6,8 +6,11 @@ use serde::{Deserialize, Serialize};
 use super::Application;
 use super::error::{Result, internal_error, invalid_request};
 use crate::engine::project::types::{CalendarGranularity, FacetKind, TaskStatus};
-use crate::model::{CalendarResults, PassageRecord, ReconciliationTimings, ResultPage, TaskRecord};
-use crate::{calendar, catalogue, passages, query, relations, reports, service, tasks};
+use crate::indexing::service;
+use crate::indexing::state::ReconciliationTimings;
+use crate::model::{CalendarResults, PassageRecord, ResultPage, TaskRecord};
+use crate::query::document::QueryDocument;
+use crate::{calendar, catalogue, passages, relations, reports, tasks};
 
 #[derive(Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
@@ -19,7 +22,8 @@ pub(crate) struct EmptyRequest {}
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(test, ts(optional_fields = nullable))]
 pub(crate) struct QueryTasksRequest {
-    query: Option<String>,
+    query: Option<QueryDocument>,
+    pin_scope_id: Option<String>,
     note_id: Option<String>,
     status: TaskStatus,
     limit: Option<u32>,
@@ -28,18 +32,14 @@ pub(crate) struct QueryTasksRequest {
 
 #[derive(Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(test, ts(optional_fields = nullable))]
 pub(crate) struct QueryPassagesRequest {
     label: String,
+    query: Option<QueryDocument>,
+    pin_scope_id: Option<String>,
     limit: Option<u32>,
     offset: Option<u32>,
-}
-
-#[derive(Deserialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[cfg_attr(test, ts(optional_fields = nullable))]
-pub(crate) struct AnalyzeQueryRequest {
-    query: String,
 }
 
 #[derive(Deserialize)]
@@ -47,7 +47,7 @@ pub(crate) struct AnalyzeQueryRequest {
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(test, ts(optional_fields = nullable))]
 pub(crate) struct CalendarRequest {
-    query: Option<String>,
+    query: Option<QueryDocument>,
     field: String,
     start_date: String,
     end_date: String,
@@ -83,6 +83,7 @@ pub(crate) struct FacetCount {
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CacheStatus {
+    project_id: String,
     structural_state: String,
     pending: usize,
     documents: usize,
@@ -102,20 +103,16 @@ pub(crate) struct CacheStatus {
 impl Application {
     pub(crate) fn query_tasks(&self, request: QueryTasksRequest) -> Result<ResultPage<TaskRecord>> {
         let _operation = self.begin_operation()?;
-        if !matches!(request.status.as_str(), "open" | "completed") {
-            return Err(invalid_request("Choose open or completed tasks."));
-        }
         let limit = request.limit.unwrap_or(50);
-        if !(1..=200).contains(&limit) {
-            return Err(invalid_request("Choose a valid task page."));
-        }
+        tasks::validate_query(request.status.as_str(), limit)?;
         tasks::query_collection(
-            self.index_path()?,
+            &self.index_path()?,
             request.query,
             request.note_id,
             request.status.as_str().to_owned(),
             limit,
             request.offset.unwrap_or(0),
+            request.pin_scope_id.as_deref(),
         )
     }
 
@@ -127,26 +124,12 @@ impl Application {
         passages::query_service(
             self.index_path()?,
             request.label,
+            request.query,
             request.limit.unwrap_or(50),
             request.offset.unwrap_or(0),
+            request.pin_scope_id.as_deref(),
         )
     }
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "The service consumes its decoded request or owned work at the application boundary."
-    )]
-    pub(crate) fn analyze_query(
-        &self,
-        request: AnalyzeQueryRequest,
-    ) -> Result<query::QueryAnalysis> {
-        let _operation = self.begin_operation()?;
-        let fields = service::query_fields(&self.index_path()?)?;
-        Ok(query::analyze_bluink_query_with_schema(
-            &request.query,
-            &fields,
-        ))
-    }
-
     pub(crate) fn calendar_buckets(&self, request: CalendarRequest) -> Result<CalendarResults> {
         let _operation = self.begin_operation()?;
         let valid_property = request.field.strip_prefix("meta.").is_some_and(|key| {
@@ -170,7 +153,8 @@ impl Application {
                 &request.start_date,
                 &request.end_date,
                 request.granularity.as_str(),
-                request.query.as_deref(),
+                request.query.as_ref(),
+                request.pin_scope_id.as_deref(),
             );
         }
         calendar::calendar_buckets_service_sync(
@@ -186,6 +170,9 @@ impl Application {
 
     pub(crate) fn metadata_fields(&self) -> Result<Vec<catalogue::MetadataField>> {
         let _operation = self.begin_operation()?;
+        if let Some(snapshot) = service::project_index(&self.root)? {
+            return Ok(snapshot.query_fields.metadata().to_vec());
+        }
         catalogue::read_metadata_fields(
             self.root
                 .to_str()
@@ -235,6 +222,13 @@ impl Application {
         let _operation = self.begin_operation()?;
         let status = service::index_service_status_typed(&self.index_path()?)?;
         Ok(CacheStatus {
+            project_id: self
+                .state()?
+                .config
+                .as_ref()
+                .and_then(|config| config["id"].as_str())
+                .ok_or_else(|| internal_error("Project identity is missing."))?
+                .to_owned(),
             structural_state: status.state,
             pending: status.pending,
             documents: status.documents,

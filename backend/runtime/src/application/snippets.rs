@@ -58,6 +58,13 @@ impl Application {
             serde_json::to_value(request.paragraph).map_err(internal_error)?,
             None,
         )?;
+        crate::indexing::service::mark_project_write(
+            &self.root,
+            &canonical::item_id(&request.id).map_err(invalid_request)?,
+            record["revision"]
+                .as_str()
+                .ok_or_else(|| internal_error("Snippet has no revision"))?,
+        )?;
         serde_json::from_value(record).map_err(internal_error)
     }
 
@@ -68,6 +75,13 @@ impl Application {
             &request.id,
             serde_json::to_value(request.paragraph).map_err(internal_error)?,
             Some(&request.revision),
+        )?;
+        crate::indexing::service::mark_project_write(
+            &self.root,
+            &canonical::item_id(&request.id).map_err(invalid_request)?,
+            record["revision"]
+                .as_str()
+                .ok_or_else(|| internal_error("Snippet has no revision"))?,
         )?;
         serde_json::from_value(record).map_err(internal_error)
     }
@@ -92,11 +106,14 @@ impl Application {
     )]
     pub(crate) fn archive_snippet(&self, request: ArchiveSnippetRequest) -> Result<SnippetRecord> {
         let _operation = self.begin_operation()?;
-        let record = canonical::archive_snippet_with_usage_check(
+        canonical::validate_snippet_id(&request.id).map_err(invalid_request)?;
+        let record = canonical::archive_snippet(&self.root, &request.id, &request.revision)?;
+        crate::indexing::service::mark_project_write(
             &self.root,
-            &request.id,
-            &request.revision,
-            || crate::document_graph::verified_snippet_usages(&self.root, &request.id),
+            &canonical::item_id(&request.id).map_err(invalid_request)?,
+            record["revision"]
+                .as_str()
+                .ok_or_else(|| internal_error("Snippet has no revision"))?,
         )?;
         serde_json::from_value(record).map_err(internal_error)
     }
@@ -107,7 +124,7 @@ impl Application {
     pub(crate) fn query_snippets(&self, request: QuerySnippetsRequest) -> Result<SnippetResults> {
         let _operation = self.begin_operation()?;
         crate::snippets::query(
-            &self.snippets,
+            &self.index_path()?,
             &self.root,
             request.query.as_deref().unwrap_or(""),
             request.limit.unwrap_or(50),

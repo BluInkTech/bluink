@@ -1,0 +1,73 @@
+<h1 id="block-heading-one">Heading one &amp; &lt;special&gt;</h1>
+<h2 id="block-heading-two">Heading two</h2>
+<h3 id="block-heading-three">Heading three</h3>
+<h4 id="block-heading-four">Heading four</h4>
+<h5 id="block-heading-five">Heading five</h5>
+<h6 id="block-heading-six">Heading six</h6>
+<p id="block-all-marks">Plain &amp; &lt;safe&gt; <strong>bold</strong><em> italic</em><strong><sup> raised bold</sup></strong><u> underline</u><s> strike</s><code> x &lt; y &amp;&amp; z</code><sup>2</sup><sub>O</sub><a href="https://example.com/?a=1&amp;b=2" rel="noopener noreferrer"> External</a><a href="chapter-two.html" rel="noopener noreferrer"> Internal</a><a href="#heading-one" rel="noopener noreferrer"> Anchor</a><br>Writer &amp; editor<sup><a id="fnref-1-1" href="#fn-1" role="doc-noteref">1</a></sup><sup><a id="fnref-2-1" href="#fn-2" role="doc-noteref">2</a></sup><sup><a id="fnref-3-1" href="#fn-3" role="doc-noteref">3</a></sup><sup><a id="fnref-3-2" href="#fn-3" role="doc-noteref">3</a></sup></p>
+<p></p>
+<blockquote id="block-quote"><p>A quoted paragraph.</p>
+</blockquote>
+<ul><li><p>Bullet one</p>
+</li>
+<li><p>Bullet two</p>
+</li>
+</ul>
+<ol start="7"><li><p>Number seven</p>
+</li>
+<li><p>Number eight</p>
+</li>
+</ol>
+<div class="titled-block" id="block-table-figure"><table><caption>Table caption</caption><colgroup><col style="width: 20%"><col style="width: 30%"><col style="width: 50%"></colgroup><tbody><tr><th scope="col" rowspan="2"><p>Two rows</p>
+</th><th scope="col" colspan="2"><p>Two columns</p>
+</th></tr>
+<tr><td><p>A</p>
+</td><td><p>B</p>
+</td></tr>
+</tbody></table>
+</div>
+<div class="titled-block" id="block-image-figure"><figure><img src="assets/pixel.png" alt="One transparent pixel" width="64" height="48">
+<figcaption>Image caption</figcaption></figure>
+</div>
+<img src="assets/pixel.png" alt="Uncaptioned image" width="32">
+<div class="titled-block" id="block-code-figure"><figure class="code-block"><pre data-language="rust"><code>fn main() {
+    println!(&quot;# &lt;literal&gt;&quot;);
+}</code></pre>
+<figcaption>Code caption</figcaption></figure>
+</div>
+<pre><code>plain code</code></pre>
+<hr>
+<section class="embedded-passage">
+<p><strong>Shared source</strong><a href="https://example.com/source" rel="noopener noreferrer"> online</a></p>
+</section>
+<aside class="callout" data-kind="info"><p class="callout-title">Information</p>
+<p>Info body</p>
+</aside>
+<aside class="callout" data-kind="abstract"><p>Abstract body</p>
+</aside>
+<aside class="callout" data-kind="note"><p>Note body</p>
+</aside>
+<aside class="callout" data-kind="tip"><ul><li><p>Tip list</p>
+</li>
+</ul>
+</aside>
+<aside class="callout" data-kind="success"><p>Success body</p>
+</aside>
+<aside class="callout" data-kind="important"><p>Important body</p>
+</aside>
+<aside class="callout" data-kind="warning"><p>Warning body</p>
+</aside>
+<aside class="callout" data-kind="error"><p>Error body</p>
+</aside>
+<aside class="callout" data-kind="question"><p>Question body</p>
+</aside>
+<aside class="callout" data-kind="example"><p>Example body</p>
+</aside>
+<section class="footnotes" aria-label="Footnotes" role="doc-endnotes"><ol>
+<li id="fn-1" role="doc-footnote"><p><strong>Rich footnote</strong><a href="https://example.com/source" rel="noopener noreferrer"> source</a></p>
+ <a href="#fnref-1-1" aria-label="Back to reference 1, occurrence 1">↩</a></li>
+<li id="fn-2" role="doc-footnote"><p><em>Inline citation</em></p>
+ <a href="#fnref-2-1" aria-label="Back to reference 2, occurrence 1">↩</a></li>
+<li id="fn-3" role="doc-footnote"><p><strong>Shared source</strong><a href="https://example.com/source" rel="noopener noreferrer"> online</a></p>
+ <a href="#fnref-3-1" aria-label="Back to reference 3, occurrence 1">↩</a> <a href="#fnref-3-2" aria-label="Back to reference 3, occurrence 2">↩</a></li>
+</ol></section>

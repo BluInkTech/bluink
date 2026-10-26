@@ -491,7 +491,8 @@ fn terminal_child() {
         crate::diagnostics::configure_native_diagnostics().unwrap();
         let console = BluinkConsole::new(ConsoleOptions { cli_version: "26.10.1-alpha".to_owned(), node_version: "fixture-host".to_owned(), mode: Some(std::env::var("BLUINK_CONSOLE_TEST_MODE").unwrap()) }).unwrap();
         let application = BluinkApplication::new(ApplicationOptions {
-            project_root: std::env::var("BLUINK_CONSOLE_TEST_PROJECT").unwrap(), timezone: Some("UTC".to_owned()), cache_location: Some("project".to_owned()), public_dir: None, data_dir: None, web_font_folder: None, pdf_font_folder: None, typst_binary: None,
+            workspace_template_path: concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/workspace-starter.json").into(),
+            project_root: std::env::var("BLUINK_CONSOLE_TEST_PROJECT").unwrap(), timezone: Some("UTC".to_owned()), cache_location: Some("project".to_owned()), public_dir: None, data_dir: None, web_font_folder: None, pdf_font_folder: None, docx_font_folder: None, typst_binary: None,
         }).unwrap();
         console.attach_application(&application).unwrap();
         console.update_rss(Some(184.0 * 1_048_576.0)).unwrap();

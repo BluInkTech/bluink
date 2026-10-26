@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 
 use fs4::fs_std::FileExt;
 
-use super::error::{ApplicationError, Result};
+use super::error::{ApplicationError, Result, internal_error};
 
-pub const SCHEMA_FINGERPRINT: &str = "bluink-v15-typed-document-relations";
+use crate::indexing::index::SCHEMA_FINGERPRINT;
 
 pub(crate) fn resolve(root: &Path, project_id: &str, location: Option<&str>) -> Result<PathBuf> {
     let machine = hostname::get()?.to_string_lossy().to_lowercase();
@@ -43,7 +43,7 @@ fn system_directory() -> Result<PathBuf> {
     let home = || {
         std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
             .map(PathBuf::from)
-            .ok_or_else(|| ApplicationError::Internal("Cannot resolve home directory.".to_owned()))
+            .ok_or_else(|| internal_error("Cannot resolve home directory.".to_owned()))
     };
     if cfg!(windows) {
         let base = match std::env::var_os("LOCALAPPDATA") {
@@ -73,9 +73,11 @@ impl CacheLease {
         let mut sidecar = cache.as_os_str().to_owned();
         sidecar.push(".lock");
         let sidecar = PathBuf::from(sidecar);
-        fs::create_dir_all(sidecar.parent().ok_or_else(|| {
-            ApplicationError::Internal("Cache lock has no parent directory.".to_owned())
-        })?)?;
+        fs::create_dir_all(
+            sidecar
+                .parent()
+                .ok_or_else(|| internal_error("Cache lock has no parent directory.".to_owned()))?,
+        )?;
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -106,14 +108,15 @@ mod tests {
 
     #[test]
     fn lease_releases_without_deleting_the_lock_file() {
-        let root = std::env::temp_dir().join(format!("bluink-cache-{}", std::process::id()));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         let cache = root.join("index");
         let first = CacheLease::acquire(&cache).unwrap();
         assert!(CacheLease::acquire(&cache).is_err());
         drop(first);
         assert!(root.join("index.lock").is_file());
         drop(CacheLease::acquire(&cache).unwrap());
-        fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 
     #[test]

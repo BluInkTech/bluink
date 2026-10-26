@@ -2,7 +2,7 @@
 // Copyright (c) 2023–2026 BluInk
 
 //! Development-only generation from the types used by Rust dispatch and serde.
-use crate::engine::project::types::{FacetKind, ItemState, ItemType};
+use crate::engine::project::types::{CoverGradient, FacetKind, ItemState, ItemType};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write;
 use std::path::PathBuf;
@@ -67,8 +67,14 @@ fn generated() -> Vec<(&'static str, String)> {
     };
     crate::application::operation::contracts(&mut registry);
     registry.visit::<crate::engine::publication::PublicationContent>();
+    registry.visit::<crate::engine::publication::theme_format::Definition>();
+    registry.visit::<crate::engine::publication::theme_format::Overrides>();
+    registry.visit::<crate::engine::publication::theme_format::ResolvedTheme>();
     registry.visit::<crate::http::uploads::Uploaded>();
+    registry.visit::<crate::http::RpcFailure>();
     registry.visit::<crate::engine::project::types::WritingGoalContent>();
+    registry.visit::<crate::engine::project::types::ViewContent>();
+    registry.visit::<crate::engine::project::home_widgets::WidgetConstraint>();
     let mut types = HEADER.to_owned();
     for declaration in registry.declarations.values() {
         writeln!(types, "export {declaration}").unwrap();
@@ -89,6 +95,7 @@ fn generated() -> Vec<(&'static str, String)> {
         ("ItemType", ItemType::VALUES),
         ("ItemState", ItemState::VALUES),
         ("FacetKind", FacetKind::VALUES),
+        ("CoverGradient", CoverGradient::VALUES),
     ] {
         writeln!(runtime, "export const {name} = {{").unwrap();
         for (key, value) in values {
@@ -98,8 +105,20 @@ fn generated() -> Vec<(&'static str, String)> {
     }
     writeln!(
         runtime,
-        "export const PublicSystemItemId = {{ NOTES_ORDER: '{}' }} as const",
-        crate::engine::project::write::ALL_NOTES_PIN_SCOPE_ID
+        "export const homeWidgetConstraints = {} satisfies import('./types.js').WidgetConstraint[]",
+        serde_json::to_string(&crate::engine::project::home_widgets::definitions()).unwrap()
+    )
+    .unwrap();
+    writeln!(
+        runtime,
+        "export const homeWidgetTitleLength = {}",
+        crate::engine::project::home_widgets::TITLE_LENGTH
+    )
+    .unwrap();
+    writeln!(
+        runtime,
+        "export const assetImageWidths = {:?} as const",
+        crate::http::sized_images::WIDTHS
     )
     .unwrap();
     vec![
@@ -107,23 +126,40 @@ fn generated() -> Vec<(&'static str, String)> {
         ("runtime.ts", runtime),
         ("wire.ts", wire_examples()),
     ]
+    .into_iter()
+    .map(|(file, source)| {
+        let lines = source
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n");
+        (file, format!("{}\n", lines.trim_end()))
+    })
+    .collect()
 }
-/// Pair request deserialization and response serialization with strict TypeScript checks.
 fn wire_examples() -> String {
     use crate::application::{items::PublicItem, operation::Request};
     use serde_json::json;
     let id = "00000000-0000-7000-8000-000000000501";
     let mut source = HEADER.to_owned()
-        + "import type { Api, PublicItem, OutlineNode, TaskRecord, ThemeSnapshot } from './types.js'\n\n";
+        + "import type { Api, PublicItem, OutlineNode, TaskRecord, ThemeSnapshot, PublicationThemeDefinition, PublicationThemeOverrides, ResolvedPublicationTheme } from './types.js'\n\n";
     let requests = [
-        ("query_items", json!({"query":"#fiction", "limit":null})),
+        (
+            "validate_query",
+            json!({"document":{"version":1,"clauses":[{"polarity":"required","predicate":{"kind":"tag","key":"fiction"}}],"sort":[]}}),
+        ),
+        ("read_query_capabilities", json!({})),
+        (
+            "query_items",
+            json!({"query":crate::query::document::test_query("#fiction"), "limit":null}),
+        ),
         ("read_item", json!({"id":id})),
         ("read_items", json!({"ids":[id]})),
         ("create_item", json!({})),
         ("read_export", json!({"jobId":"job"})),
         (
             "mutate_note_task",
-            json!({"noteId":id,"version":"revision-1","change":{"kind":"complete","taskId":"task-1"}}),
+            json!({"noteId":id,"change":{"kind":"complete","taskId":"task-1","revision":"revision-1"}}),
         ),
         (
             "create_export",
@@ -155,6 +191,14 @@ fn wire_examples() -> String {
         crate::engine::publication::plan::PublicationFormat::Html,
     )
     .unwrap();
+    let portable: crate::engine::publication::theme_format::Definition = serde_json::from_str(
+        include_str!("../../test-fixtures/publication/portable-theme.json"),
+    )
+    .unwrap();
+    let overrides = crate::engine::publication::theme_format::Overrides::default();
+    theme_wire_examples(&mut source, &theme, &portable);
+    let resolved =
+        crate::engine::publication::theme_format::resolve(&portable, "docx", &overrides).unwrap();
     for (name, ty, value) in [
         ("item", "PublicItem", serde_json::to_value(&item).unwrap()),
         ("task", "TaskRecord", serde_json::to_value(task).unwrap()),
@@ -163,6 +207,21 @@ fn wire_examples() -> String {
             "theme",
             "ThemeSnapshot",
             serde_json::to_value(theme).unwrap(),
+        ),
+        (
+            "portableTheme",
+            "PublicationThemeDefinition",
+            serde_json::to_value(portable).unwrap(),
+        ),
+        (
+            "portableOverrides",
+            "PublicationThemeOverrides",
+            serde_json::to_value(overrides).unwrap(),
+        ),
+        (
+            "resolvedTheme",
+            "ResolvedPublicationTheme",
+            serde_json::to_value(resolved).unwrap(),
         ),
     ] {
         writeln!(source, "export const {name} = {value} satisfies {ty}").unwrap();
@@ -183,6 +242,50 @@ fn generated_contracts_match_rust_and_wire_examples() {
             actual, expected,
             "Run npm run contracts:generate after changing the contract."
         );
+    }
+}
+
+fn theme_wire_examples(
+    source: &mut String,
+    theme: &crate::engine::publication::theme::ThemeSnapshot,
+    portable: &crate::engine::publication::theme_format::Definition,
+) {
+    use crate::application::operation::Request;
+    use serde_json::json;
+    for (operation, value) in [
+        ("create_publication_theme", json!({"name":"Research"})),
+        (
+            "read_publication_theme_package",
+            json!({"themeId":"classic"}),
+        ),
+        ("list_publication_themes", json!({})),
+        (
+            "duplicate_publication_theme",
+            json!({"themeId":"classic","revision":theme.sha256,"name":"Custom"}),
+        ),
+        (
+            "update_publication_theme",
+            json!({"themeId":portable.id,"revision":theme.sha256,"definition":portable}),
+        ),
+        (
+            "validate_publication_theme",
+            json!({"themeId":portable.id,"revision":theme.sha256,"definition":portable}),
+        ),
+        (
+            "delete_publication_theme",
+            json!({"themeId":"custom","revision":theme.sha256}),
+        ),
+        (
+            "preview_publication_theme",
+            json!({"themeId":portable.id,"revision":theme.sha256,"definition":portable,"format":"docx","start":true}),
+        ),
+    ] {
+        Request::decode(operation, &serde_json::to_vec(&value).unwrap()).unwrap();
+        writeln!(
+            source,
+            "export const {operation} = {value} satisfies Api['{operation}']['request']"
+        )
+        .unwrap();
     }
 }
 #[test]

@@ -1,21 +1,22 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2023–2026 BluInk
 
-use std::collections::HashMap;
+use crate::indexing::coordinator::MainSnapshot;
 use std::time::Instant;
 
 use crate::application::error::Result;
-use tantivy::DocAddress;
-use tantivy::collector::{Count, DocSetCollector, TopDocs};
-use tantivy::query::{BooleanQuery, Occur, Query};
+use tantivy::collector::{Count, TopDocs};
+use tantivy::query::{BooleanQuery, Occur, Query, TermSetQuery};
 use tantivy::schema::{OwnedValue, TantivyDocument, Value};
+use tantivy::{DocAddress, Term};
 
 use crate::application::error::internal_error;
-use crate::model::{CachedResult, SearchHit, SearchResults, empty_object};
-use crate::query::compile_native_query;
+use crate::indexing::service::{cached_index, service_index};
+use crate::indexing::state::CachedResult;
+use crate::model::{SearchHit, SearchResults, empty_object};
 use crate::query::sort::{collect_fast_sorted, compare_sort_values, search_hit_sort_value};
+use crate::query::{compile_query_document, document::QueryDocument};
 use crate::relations::{document_values, exact_term_query, owned_value_to_json};
-use crate::service::{aggregation_cache, cache_result, query_fields, service_index};
 
 /// Resolve query membership without sorting or hydrating stored item documents.
 /// Activity reports only need IDs, and can match more than one search page.
@@ -25,46 +26,96 @@ use crate::service::{aggregation_cache, cache_result, query_fields, service_inde
 )]
 pub(crate) fn matching_item_ids_service_sync(
     index_path: String,
-    query_text: String,
+    document: QueryDocument,
+    pin_scope_id: Option<&str>,
 ) -> Result<Vec<String>> {
-    let (index, reader, dirty) = service_index(&index_path)?;
-    let property_fields = query_fields(&index_path)?;
-    let (query, _, _) = compile_native_query(&index, &query_text, &property_fields, None)?;
+    matching_item_ids(&service_index(&index_path)?, &document, pin_scope_id)
+}
+
+pub(crate) fn matching_item_ids(
+    snapshot: &MainSnapshot,
+    document: &QueryDocument,
+    pin_scope_id: Option<&str>,
+) -> Result<Vec<String>> {
+    matching_candidate_ids(snapshot, document, pin_scope_id, None)
+}
+
+/// Restrict membership work to the owners of the records being queried.
+pub(crate) fn matching_candidate_ids(
+    snapshot: &MainSnapshot,
+    document: &QueryDocument,
+    pin_scope_id: Option<&str>,
+    candidates: Option<&[String]>,
+) -> Result<Vec<String>> {
+    let MainSnapshot {
+        index,
+        reader,
+        query_fields: property_fields,
+        ..
+    } = snapshot;
+    let (query, _, _) = compile_query_document(index, document, property_fields, pin_scope_id)?;
+    let query = if let Some(candidates) = candidates {
+        let field = index.schema().get_field("id").map_err(internal_error)?;
+        Box::new(BooleanQuery::new(vec![
+            (Occur::Must, query),
+            (
+                Occur::Must,
+                Box::new(TermSetQuery::new(
+                    candidates.iter().map(|id| Term::from_field_text(field, id)),
+                )),
+            ),
+        ])) as Box<dyn Query>
+    } else {
+        query
+    };
     let searcher = reader.searcher();
-    let addresses = searcher
-        .search(query.as_ref(), &DocSetCollector)
-        .map_err(internal_error)?;
-    let dirty = dirty.lock().map_err(internal_error)?.clone();
-    let mut by_segment: HashMap<u32, Vec<u32>> = HashMap::new();
-    for address in addresses {
-        by_segment
-            .entry(address.segment_ord)
-            .or_default()
-            .push(address.doc_id);
-    }
-    let mut ids = Vec::new();
-    for (segment_ord, doc_ids) in by_segment {
-        let segment = searcher.segment_reader(segment_ord);
-        let id_column = segment
-            .fast_fields()
-            .str("id")
-            .map_err(internal_error)?
-            .ok_or_else(|| internal_error("Tantivy id fast field is missing"))?;
-        for doc_id in doc_ids {
-            let Some(id_ord) = id_column.term_ords(doc_id).next() else {
-                continue;
-            };
-            let mut id = String::new();
-            id_column
-                .ord_to_str(id_ord, &mut id)
-                .map_err(internal_error)?;
-            if !dirty.contains_key(&id) {
-                ids.push(id);
-            }
-        }
-    }
-    ids.sort_unstable();
-    Ok(ids)
+    collect_matching_ids(&searcher, query.as_ref())
+}
+
+/// Resolve only the supplied candidates; never enumerate a workspace's corpus.
+pub(crate) fn matching_candidate_note_ids_service_sync(
+    index_path: &str,
+    document: &QueryDocument,
+    workspace_id: &str,
+    candidates: &[String],
+) -> Result<Vec<String>> {
+    let MainSnapshot {
+        index,
+        reader,
+        query_fields: property_fields,
+        ..
+    } = service_index(index_path)?;
+    let (base, _, _) =
+        compile_query_document(&index, document, &property_fields, Some(workspace_id))?;
+    let schema = index.schema();
+    let id = schema.get_field("id").map_err(internal_error)?;
+    let query = BooleanQuery::new(vec![
+        (Occur::Must, base),
+        (
+            Occur::Must,
+            Box::new(TermSetQuery::new(
+                candidates
+                    .iter()
+                    .map(|candidate| Term::from_field_text(id, candidate)),
+            )),
+        ),
+        (
+            Occur::Must,
+            exact_term_query(
+                schema.get_field("item_type").map_err(internal_error)?,
+                "page",
+            ),
+        ),
+        (
+            Occur::Must,
+            exact_term_query(schema.get_field("state").map_err(internal_error)?, "active"),
+        ),
+    ]);
+    collect_matching_ids(&reader.searcher(), &query)
+}
+
+fn collect_matching_ids(searcher: &tantivy::Searcher, query: &dyn Query) -> Result<Vec<String>> {
+    crate::indexing::fast::matching_ids(searcher, query).map_err(internal_error)
 }
 
 fn collect_ranked(
@@ -107,37 +158,62 @@ fn collect_ranked(
     )
 }
 
-#[tracing::instrument(
-    level = "debug",
-    skip_all,
-    fields(limit, offset, query_length = query_text.len(), has_pin_scope = pin_scope_id.is_some())
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "Keep the complete format or operation dispatch together for contract review."
-)]
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "The service consumes its decoded request or owned work at the application boundary."
+    reason = "The service consumes its decoded request at the application boundary."
 )]
 pub(crate) fn search_service_sync(
     index_path: String,
-    query_text: String,
+    document: QueryDocument,
     limit: u32,
     offset: u32,
     pin_scope_id: Option<String>,
+    prioritize_pins: bool,
+) -> Result<SearchResults> {
+    let (snapshot, cache) = cached_index(&index_path)?;
+    search_snapshot(
+        &snapshot,
+        &cache,
+        &document,
+        limit,
+        offset,
+        pin_scope_id.as_deref(),
+        prioritize_pins,
+    )
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep ranked collection and hydration together."
+)]
+#[tracing::instrument(
+    level = "debug",
+    skip_all,
+    fields(limit, offset, clause_count = document.clauses.len(), has_pin_scope = pin_scope_id.is_some())
+)]
+pub(crate) fn search_snapshot(
+    snapshot: &MainSnapshot,
+    cache: &crate::indexing::coordinator::QueryCache,
+    document: &QueryDocument,
+    limit: u32,
+    offset: u32,
+    pin_scope_id: Option<&str>,
+    prioritize_pins: bool,
 ) -> Result<SearchResults> {
     let started_at = Instant::now();
-    let cache_key = format!("search:{limit}:{offset}:{query_text}:{pin_scope_id:?}");
-    let cache = aggregation_cache(&index_path)?;
-    let (index, reader, dirty) = service_index(&index_path)?;
-    let property_fields = query_fields(&index_path)?;
-    let (query, sorts, _) = compile_native_query(
-        &index,
-        &query_text,
-        &property_fields,
-        pin_scope_id.as_deref(),
-    )?;
+    let identity = document.cache_identity()?;
+    let cache_key =
+        format!("search:{limit}:{offset}:{identity}:{pin_scope_id:?}:{prioritize_pins}");
+    if let Some(CachedResult::Search(cached)) = cache.get(&cache_key).map_err(internal_error)? {
+        return Ok(cached);
+    }
+    let MainSnapshot {
+        index,
+        reader,
+        query_fields: property_fields,
+        ..
+    } = snapshot;
+    let (query, sorts, _) = compile_query_document(index, document, property_fields, pin_scope_id)?;
     let compiled_at = Instant::now();
     let schema = index.schema();
     let id = schema.get_field("id").map_err(internal_error)?;
@@ -150,38 +226,18 @@ pub(crate) fn search_service_sync(
     let tags = schema.get_field("tags").map_err(internal_error)?;
     let pins = schema.get_field("pins").map_err(internal_error)?;
     let searcher = reader.searcher();
-    // The index worker mutates this small map. Snapshot it before doing any
-    // search work so independent readers never serialize behind the mutex.
-    let dirty = dirty.lock().map_err(internal_error)?.clone();
-    if dirty.is_empty()
-        && let Some(CachedResult::Search(cached)) = cache
-            .lock()
-            .map_err(internal_error)?
-            .get(&cache_key)
-            .cloned()
-    {
-        return Ok(cached);
-    }
     let mut pinned_hits = Vec::new();
     let mut unpinned_hits = Vec::new();
-    let page_size = limit
-        .saturating_add(offset)
-        .saturating_add(u32::try_from(dirty.len()).unwrap_or(u32::MAX))
-        .max(1) as usize;
+    let page_size = usize::try_from(
+        u64::from(limit.saturating_add(offset))
+            .min(searcher.num_docs())
+            .max(1),
+    )
+    .map_err(internal_error)?;
     let (ranked, pinned_ranked_len, used_fast_sort, pinned_count) =
-        if let Some(scope_id) = pin_scope_id.as_deref() {
-            let (pinned_base, _, _) = compile_native_query(
-                &index,
-                &query_text,
-                &property_fields,
-                pin_scope_id.as_deref(),
-            )?;
-            let (unpinned_base, _, _) = compile_native_query(
-                &index,
-                &query_text,
-                &property_fields,
-                pin_scope_id.as_deref(),
-            )?;
+        if let Some(scope_id) = pin_scope_id.filter(|_| prioritize_pins) {
+            let pinned_base = query.box_clone();
+            let unpinned_base = query.box_clone();
             let pinned_query = BooleanQuery::new(vec![
                 (Occur::Must, pinned_base),
                 (Occur::Must, exact_term_query(pins, scope_id)),
@@ -212,7 +268,7 @@ pub(crate) fn search_service_sync(
         };
     let collected_at = Instant::now();
 
-    let can_page_before_hydration = dirty.is_empty() && (used_fast_sort || sorts.is_empty());
+    let can_page_before_hydration = used_fast_sort || sorts.is_empty();
     let mut skipped = 0usize;
     for (rank_index, (score, address)) in ranked.into_iter().enumerate() {
         // Tantivy returns enough ranked addresses to satisfy offset paging. Do
@@ -227,9 +283,6 @@ pub(crate) fn search_service_sync(
             .get_first(id)
             .and_then(|value| value.as_str())
             .ok_or_else(|| internal_error("Tantivy document is missing its item id"))?;
-        if dirty.contains_key(item_id) {
-            continue;
-        }
         let hit = SearchHit {
             id: item_id.to_owned(),
             revision: document
@@ -323,12 +376,11 @@ pub(crate) fn search_service_sync(
         total_ms = Instant::now().duration_since(started_at).as_secs_f64() * 1000.0,
         limit,
         offset,
-        dirty_count = dirty.len(),
         used_fast_sort,
         "search operation completed"
     );
-    if dirty.is_empty() {
-        cache_result(&cache, cache_key, CachedResult::Search(result.clone()));
-    }
+    cache
+        .insert(cache_key, CachedResult::Search(result.clone()))
+        .map_err(internal_error)?;
     Ok(result)
 }

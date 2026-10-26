@@ -6,7 +6,7 @@ import { fontDirectory, version as fontsVersion } from '@bluink/fonts'
 import { webDirectory } from './native/web.js'
 import pkg from '../package.json' with { type: 'json' }
 import type { BluinkApplication } from '../runtime/index.js'
-import { nativeAddon, publicationRuntime } from './native/addon.js'
+import { createApplication, publicationRuntime } from './native/addon.js'
 import { startServerConsole } from './native/console.js'
 import { hostLifecycle } from './native/lifecycle.js'
 
@@ -18,13 +18,14 @@ export async function createAppState(consoleMode?: 'auto' | 'plain'): Promise<{
 	const cwd = process.cwd()
 	const runtime = publicationRuntime()
 	const cacheLocation = process.env['BLUINK_CACHE_LOCATION']
-	const application = new (nativeAddon().BluinkApplication)({
+	const application = createApplication({
 		projectRoot: path.resolve(process.env['BLUINK_PROJECT_DIR'] ?? cwd),
 		...(cacheLocation && { cacheLocation }),
 		publicDir: webDirectory(pkg.version, fontsVersion),
 		dataDir: path.join(cwd, 'data'),
 		webFontFolder: fontDirectory('web'),
 		pdfFontFolder: runtime.fontFolder,
+		docxFontFolder: runtime.docxFontFolder,
 		typstBinary: runtime.typstBinary,
 	})
 	let stop: Promise<void> | undefined

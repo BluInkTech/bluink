@@ -4,7 +4,7 @@
 //! CLI domain work. Argument parsing and stdout presentation remain in Node.
 use std::path::{Component, PathBuf};
 
-use crate::engine::publication::{self, plan::PublicationFormat};
+use crate::engine::publication::{self, page::plan_page, plan::PublicationFormat};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -22,8 +22,7 @@ pub(crate) struct CommandRequest {
 #[derive(Serialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub(crate) enum CommandResult {
-    ArticlePlan(Box<publication::article::ArticlePlan>),
-    NotePdfPlan(Box<publication::note_pdf::NotePdfPlan>),
+    PagePlan(Box<publication::page::PagePlan>),
     PublicationPlan(Box<publication::plan::PublicationPlan>),
     PublicationGenerated(export::Generation),
     Item(Value),
@@ -31,6 +30,14 @@ pub(crate) enum CommandResult {
 }
 
 impl CommandRequest {
+    fn flag(&self, name: &str) -> Result<bool> {
+        match self.values.get(name) {
+            None => Ok(false),
+            Some(Value::Bool(value)) => Ok(*value),
+            _ => Err(invalid_request(format!("--{name} must be a boolean."))),
+        }
+    }
+
     fn string(&self, name: &str, message: &str) -> Result<Option<&str>> {
         self.values
             .get(name)
@@ -79,6 +86,7 @@ impl Application {
         export::Resources {
             web_fonts: self.options.web_font_folder.as_deref(),
             pdf_fonts: self.options.pdf_font_folder.as_deref(),
+            docx_fonts: self.options.docx_font_folder.as_deref(),
             typst: self.options.typst_binary.as_deref(),
         }
     }
@@ -120,101 +128,103 @@ impl Application {
     fn command_export(&self, request: &CommandRequest) -> Result<CommandResult> {
         let _operation = self.begin_operation()?;
         let format = match request.positionals.as_slice() {
-            [format] if format == "pdf" || format == "html" => format.as_str(),
+            [format] if matches!(format.as_str(), "pdf" | "docx" | "epub" | "html") => {
+                PublicationFormat::parse(format).map_err(invalid_request)?
+            }
             _ => {
                 return Err(invalid_request(
-                    "Usage: bluink export <pdf|html> --note <page-id> [options]. Use bluink publication for books and sites.",
+                    "Usage: bluink export <pdf|docx|epub|html> --note <page-id> [options]. Use bluink publication for books and sites.",
                 ));
             }
         };
         let id = request.required("note", "Standalone export requires --note with a page ID.")?;
-        if !crate::engine::project::item::is_item_id(id) {
+        if !crate::engine::project::identity::is_item_id(id) {
             return Err(invalid_request(format!("Invalid Bluink item id: {id}")));
         }
-        let outside = request
-            .string(
-                "outside-links",
-                "--outside-links must be error or text-only.",
-            )?
-            .unwrap_or("error");
-        if !matches!(outside, "error" | "text-only") {
-            return Err(invalid_request(
-                "--outside-links must be error or text-only.",
-            ));
-        }
-        let outside = export::outside_links(outside)?;
+        let outside = export::outside_links(
+            request
+                .string(
+                    "outside-links",
+                    "--outside-links must be error or text-only.",
+                )?
+                .unwrap_or("error"),
+        )?;
         let theme = request
             .string("theme", "--theme needs a theme ID.")?
             .unwrap_or("classic");
         if theme.is_empty() {
             return Err(invalid_request("--theme needs a theme ID."));
         }
-        let trust = request.trust()?;
-        let check = request.values.get("check") == Some(&Value::Bool(true));
-        if format == "html" {
+        let profile = if format == PublicationFormat::Pdf {
+            export::pdf_profile(
+                request
+                    .string("profile", "--profile must be default or accessible.")?
+                    .unwrap_or("default"),
+            )?
+        } else {
             if request.values.contains_key("profile") {
                 return Err(invalid_request("--profile applies only to PDF."));
             }
-            let output = if check {
-                None
-            } else {
-                Some(
-                    request
-                        .path(request.required("out", "--out must specify a new HTML file path.")?),
-                )
-            };
-            let plan = publication::article::plan_article(&self.root, id, theme, outside)
-                .map_err(internal_error)?;
-            if let Some(output) = output {
-                let result = export::render_article(
-                    &self.root,
-                    &plan,
-                    Some(&output),
-                    trust,
-                    &self.export_resources(),
-                )?;
-                return Ok(CommandResult::Text(result.output.ok_or_else(|| {
-                    internal_error("HTML generation did not return its output path.")
-                })?));
-            }
-            return Ok(CommandResult::ArticlePlan(Box::new(plan)));
-        }
-        let profile = request
-            .string("profile", "--profile must be default or accessible.")?
-            .unwrap_or("default");
-        if !matches!(profile, "default" | "accessible") {
-            return Err(invalid_request("--profile must be default or accessible."));
-        }
-        let output = if check {
+            publication::PdfProfile::Default
+        };
+        let output = if request.flag("check")? {
             None
         } else {
-            Some(request.path(request.required("out", "--out must specify a new PDF file path.")?))
+            Some(
+                request
+                    .path(request.required("out", "--out must specify a new output file path.")?),
+            )
         };
-        let plan = publication::note_pdf::plan_note_pdf(
-            &self.root,
-            id,
-            theme,
-            export::pdf_profile(profile)?,
-            outside,
-        )
-        .map_err(internal_error)?;
-        if let Some(output) = output {
-            let result = export::render_note_pdf(
+        let trust = request.trust()?;
+        let linked = request.flag("include-linked")?;
+        if linked {
+            let format = if format == PublicationFormat::Html {
+                PublicationFormat::Site
+            } else {
+                format
+            };
+            let plan = export::plan_linked_pages(&self.root, id, format, theme, outside, profile)?;
+            let Some(output) = output else {
+                return Ok(CommandResult::PublicationPlan(Box::new(plan)));
+            };
+            let generated = export::render_publication(
                 &self.root,
                 &plan,
                 &output,
                 trust,
+                None,
                 &self.export_resources(),
             )?;
-            return Ok(CommandResult::Text(result.output));
+            return Ok(CommandResult::Text(generated.output));
         }
-        Ok(CommandResult::NotePdfPlan(Box::new(plan)))
+        let plan =
+            plan_page(&self.root, id, theme, outside, format, profile).map_err(internal_error)?;
+        let Some(output) = output else {
+            return Ok(CommandResult::PagePlan(Box::new(plan)));
+        };
+        let resources = self.export_resources();
+        let path = match format {
+            PublicationFormat::Html => {
+                export::render_article(&self.root, &plan, Some(&output), trust, &resources)?
+                    .output
+                    .ok_or_else(|| {
+                        internal_error("HTML generation did not return its output path.")
+                    })?
+            }
+            PublicationFormat::Pdf => {
+                export::render_note_pdf(&self.root, &plan, &output, trust, &resources)?.output
+            }
+            PublicationFormat::Epub => {
+                export::render_note_epub(&self.root, &plan, &output, &resources)?.output
+            }
+            PublicationFormat::Docx => {
+                export::render_note_docx(&self.root, &plan, &output, trust, &resources)?.output
+            }
+            PublicationFormat::Site => unreachable!("standalone formats were validated"),
+        };
+        Ok(CommandResult::Text(path))
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Keep the complete format or operation dispatch together for contract review."
-    )]
     fn command_publication(&self, request: &CommandRequest) -> Result<CommandResult> {
         let action = match request.positionals.as_slice() {
             [action] if matches!(action.as_str(), "create" | "inspect" | "plan" | "generate") => {
@@ -251,10 +261,7 @@ impl Application {
             if let Some(description) = description {
                 meta.insert("description".to_owned(), description.clone());
             }
-            let input = serde_json::from_value(serde_json::json!({
-                "meta": meta, "content": value["content"]
-            }))
-            .map_err(internal_error)?;
+            let input = super::mutations::CreateItemRequest::new(meta, value["content"].clone());
             // create_item owns canonical validation, activity and projection invalidation.
             drop(operation);
             return Ok(CommandResult::Text(self.create_item(input)?.id));
@@ -262,22 +269,21 @@ impl Application {
         let id = request.required("id", "Use --id with a Publication item ID.")?;
         if action == "inspect" {
             let _operation = self.begin_operation()?;
-            if !crate::engine::project::item::is_item_id(id) {
+            if !crate::engine::project::identity::is_item_id(id) {
                 return Err(invalid_request(format!("Invalid Bluink item id: {id}")));
             }
-            let item = crate::engine::project::item::read_project_item(&self.root, id)
-                .map_err(internal_error)?
+            let item = crate::engine::project::item::read_project_item(&self.root, id)?
                 .filter(|item| item["meta"]["type"] == "publication")
                 .ok_or_else(|| invalid_request(format!("Publication {id} does not exist.")))?;
             return Ok(CommandResult::Item(item));
         }
         let format_message = if action == "plan" {
-            "Use --format pdf, html, or site when planning."
+            "Use --format pdf, docx, epub, html, or site when planning."
         } else {
-            "Use --format pdf, html, or site when generating a Publication."
+            "Use --format pdf, docx, epub, html, or site when generating a Publication."
         };
         let format = request.required("format", format_message)?;
-        if !matches!(format, "pdf" | "html" | "site") {
+        if !matches!(format, "pdf" | "docx" | "epub" | "html" | "site") {
             return Err(invalid_request(format_message));
         }
         let format = PublicationFormat::parse(format).map_err(invalid_request)?;

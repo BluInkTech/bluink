@@ -12,7 +12,8 @@ use sha2::{Digest, Sha256};
 
 use crate::engine::document::links::valid_external_url;
 use crate::engine::project::asset::valid_filename;
-use crate::engine::project::item::{is_item_id, read_project_item};
+use crate::engine::project::identity::is_item_id;
+use crate::engine::project::item::read_project_item;
 use crate::engine::project::snippets::read_snippet;
 use crate::engine::publication::plan::{PlannedPage, PublicationFormat, PublicationPlan};
 use crate::engine::publication::{OutsideLinks, PublicationContent};
@@ -90,6 +91,8 @@ pub(crate) fn preflight_publication(
 ) -> Result<(), String> {
     let policy = match plan.format {
         PublicationFormat::Pdf => &content.targets.pdf.outside_links,
+        PublicationFormat::Docx => &content.targets.docx.outside_links,
+        PublicationFormat::Epub => &content.targets.epub.outside_links,
         PublicationFormat::Html => &content.targets.html.outside_links,
         PublicationFormat::Site => &content.targets.site.outside_links,
     };
@@ -107,7 +110,8 @@ pub(crate) fn preflight_pages(
 ) -> Result<PreflightResult, String> {
     let mut preflight = PagePreflight::default();
     for page in pages {
-        let item = read_project_item(root, &page.id)?
+        let item = read_project_item(root, &page.id)
+            .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("Publication page {} disappeared during planning.", page.id))?;
         preflight.scan(root, page, &item)?;
     }
@@ -132,15 +136,13 @@ impl PagePreflight {
         page: &PlannedPage,
         item: &Value,
     ) -> Result<(), String> {
-        let document = item["content"]
-            .get("content")
-            .filter(|value| value.is_object())
-            .unwrap_or_else(|| &item["content"]);
+        let document = super::source::document(item);
         self.anchors
             .insert(format!("note-{}", page.id), page.id.clone());
         scan_node(
             root,
             document,
+            &item["meta"],
             page,
             None,
             &mut self.anchors,
@@ -261,7 +263,10 @@ impl PagePreflight {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep the explicit publication context together at the planning/rendering boundary."
+)]
 #[expect(
     clippy::too_many_lines,
     reason = "Keep the complete format or operation dispatch together for contract review."
@@ -269,6 +274,7 @@ impl PagePreflight {
 fn scan_node(
     root: &Path,
     node: &Value,
+    metadata: &Value,
     page: &PlannedPage,
     inherited_block_id: Option<&str>,
     anchors: &mut HashMap<String, String>,
@@ -322,9 +328,7 @@ fn scan_node(
             .as_str()
             .filter(|key| !key.is_empty())
             .ok_or_else(|| format!("{context}: field has no key."))?;
-        let item = read_project_item(root, &page.id)?
-            .ok_or_else(|| format!("{context}: field source page is missing."))?;
-        let value = &item["meta"][key];
+        let value = &metadata[key];
         if !value.is_string() && !value.is_number() && !value.is_boolean() {
             return Err(format!("{context}: field {key} has no scalar value."));
         }
@@ -336,6 +340,7 @@ fn scan_node(
         scan_node(
             root,
             paragraph,
+            metadata,
             page,
             block_id,
             anchors,
@@ -371,6 +376,7 @@ fn scan_node(
             scan_node(
                 root,
                 child,
+                metadata,
                 page,
                 block_id,
                 anchors,
@@ -385,13 +391,12 @@ fn scan_node(
 }
 
 pub(crate) fn assert_dependencies_fresh(root: &Path, plan: &PublicationPlan) -> Result<(), String> {
-    assert_preflight_fresh(root, &plan.assets, &plan.links, &plan.snippets)
+    assert_preflight_fresh(root, &plan.assets, &plan.snippets)
 }
 
 pub(crate) fn assert_preflight_fresh(
     root: &Path,
     assets: &[PlannedAsset],
-    _links: &[PlannedLink],
     snippets: &[PlannedSnippet],
 ) -> Result<(), String> {
     for asset in assets {
@@ -432,10 +437,8 @@ fn read_asset(root: &Path, src: &str) -> Result<PlannedAsset, String> {
     if segments.next().is_some() || !is_item_id(owner_id) || !valid_filename(filename) {
         return Err(format!("Invalid asset URL: {src}"));
     }
-    let path = root
-        .join("items")
-        .join(&owner_id[..2])
-        .join(owner_id)
+    let path = crate::engine::project::identity::ItemId::try_from(owner_id)?
+        .directory(root)
         .join("assets")
         .join(filename);
     reject_symlinks(root, &path)?;

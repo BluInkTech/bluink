@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::engine::document::validation::validate_document;
-use crate::engine::project::item::is_item_id;
+use crate::engine::project::identity::is_item_id;
 
 const ADDRESSABLE_BLOCKS: &[&str] = &[
     "paragraph",
@@ -32,10 +32,7 @@ const ADDRESSABLE_BLOCKS: &[&str] = &[
 /// survive edits; copied or missing identities receive fresh `UUIDv7` values.
 pub(crate) fn prepare_page_content(mut content: Value) -> Result<Value, String> {
     normalize_block_ids(&mut content, &mut HashSet::new(), 0)?;
-    let document = content
-        .get("content")
-        .filter(|value| value.is_object())
-        .unwrap_or(&content);
+    let document = super::document_root(&content);
     validate_document(document).map_err(|error| error.to_string())?;
     Ok(content)
 }
@@ -70,7 +67,7 @@ fn normalize_block_ids(
         }
         let attrs = attrs
             .as_object_mut()
-            .expect("attributes were set to an object");
+            .ok_or("Block attributes must be an object")?;
         let current = attrs.get("id").and_then(Value::as_str);
         let id = match current {
             Some(id) if is_item_id(id) && seen.insert(id.to_owned()) => id.to_owned(),

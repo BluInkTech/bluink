@@ -50,10 +50,10 @@ pub(crate) fn decoded(source: &str) -> Option<String> {
 
 pub(crate) fn file(root: &Path, source: &str) -> Option<PathBuf> {
     let decoded = decoded(source)?;
-    file_decoded(root, &decoded)
+    file_decoded(root, Path::new(decoded.trim_start_matches('/')))
 }
 
-fn file_decoded(root: &Path, relative: &str) -> Option<PathBuf> {
+fn file_decoded(root: &Path, relative: &Path) -> Option<PathBuf> {
     if std::fs::symlink_metadata(root)
         .ok()?
         .file_type()
@@ -62,7 +62,10 @@ fn file_decoded(root: &Path, relative: &str) -> Option<PathBuf> {
         return None;
     }
     let mut path = root.to_owned();
-    for part in relative.split('/').filter(|part| !part.is_empty()) {
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            return None;
+        };
         path.push(part);
         if std::fs::symlink_metadata(&path)
             .ok()?
@@ -80,25 +83,7 @@ fn file_decoded(root: &Path, relative: &str) -> Option<PathBuf> {
 }
 
 fn mime(path: &Path) -> Option<&'static str> {
-    Some(match path.extension()?.to_str()? {
-        "ico" => "image/x-icon",
-        "html" => "text/html",
-        "js" => "text/javascript",
-        "json" => "application/json",
-        "webmanifest" => "application/manifest+json",
-        "wasm" => "application/wasm",
-        "css" => "text/css",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        "svg" => "image/svg+xml",
-        "pdf" => "application/pdf",
-        "ttf" => "application/x-font-ttf",
-        "woff2" => "font/woff2",
-        "txt" => "text/plain",
-        _ => return None,
-    })
+    crate::engine::media_type::for_path(path)
 }
 
 pub(crate) fn stream<G: Send + 'static>(
@@ -144,6 +129,26 @@ pub(crate) fn stream<G: Send + 'static>(
         .into_response())
 }
 
+/// A copy of an image asset at a listed width, made on Tokio's blocking pool
+/// when missing. `None` serves the original.
+async fn sized(
+    record: &trace::Record,
+    (width, owner, cache, original): (u32, String, PathBuf, PathBuf),
+) -> Option<(File, &'static str)> {
+    let started = std::time::Instant::now();
+    let made = super::sized_images::prepare(original, cache, owner, width).await;
+    if let Err(error) = &made {
+        tracing::warn!(operation = "image_copy", %error,
+            "Image copy could not be made; serving the original");
+    }
+    let made = made.ok().flatten();
+    let copy = made?;
+    if copy.made {
+        record.image_copy(started.elapsed());
+    }
+    File::open(copy.path).ok().map(|file| (file, copy.mime))
+}
+
 pub(super) async fn serve(
     State(state): State<HttpState>,
     Extension(record): Extension<trace::Record>,
@@ -159,23 +164,34 @@ pub(super) async fn serve(
     let Some(decoded) = decoded(&source) else {
         return failure(StatusCode::BAD_REQUEST, "ERR_NOT_FOUND");
     };
+    // `?w=` asks for an image asset at one of a few widths.
+    let width = super::sized_images::requested_width(request.uri().query());
     let result = blocking(&state, record.clone(), move |application| {
         let _operation = application.begin_operation()?;
         let parts: Vec<_> = decoded.split('/').filter(|part| !part.is_empty()).collect();
         let options = &application.options;
+        let mut owner = None;
         let (root, relative) = match parts.as_slice() {
-            ["assets", id, name] if crate::engine::project::item::is_item_id(id) => (
-                Some(application.project_root().to_owned()),
-                format!("items/{}/{id}/assets/{name}", id[..2].to_ascii_lowercase()),
-            ),
+            ["assets", id, name] if crate::engine::project::identity::is_item_id(id) => {
+                let identity = crate::engine::project::identity::ItemId::try_from(*id)
+                    .map_err(crate::application::error::invalid_request)?;
+                owner = Some((*id).to_owned());
+                (
+                    Some(application.project_root().to_owned()),
+                    identity.directory(Path::new("")).join("assets").join(name),
+                )
+            }
             ["fonts", rest @ ..] => (
                 options.web_font_folder.as_ref().map(PathBuf::from),
-                rest.join("/"),
+                PathBuf::from(rest.join("/")),
             ),
-            ["data", rest @ ..] => (options.data_dir.as_ref().map(PathBuf::from), rest.join("/")),
+            ["data", rest @ ..] => (
+                options.data_dir.as_ref().map(PathBuf::from),
+                PathBuf::from(rest.join("/")),
+            ),
             _ => (
                 options.public_dir.as_ref().map(PathBuf::from),
-                decoded.trim_start_matches('/').to_owned(),
+                PathBuf::from(decoded.trim_start_matches('/')),
             ),
         };
         // The path is already decoded. Do not decode it twice (e.g. %252e).
@@ -185,14 +201,23 @@ pub(super) async fn serve(
         let Some(mime) = mime(&path) else {
             return Ok(None);
         };
+        // Sizing happens below, off the request workers that every RPC shares.
+        let sizing = width
+            .zip(owner)
+            .zip(application.image_cache())
+            .map(|((width, owner), cache)| (width, owner, cache, path.clone()));
         let Ok(file) = File::open(path) else {
             return Ok(None);
         };
-        Ok(Some((file, mime)))
+        Ok(Some((file, mime, sizing)))
     })
     .await;
     match result {
-        Ok(Some((file, mime))) => {
+        Ok(Some((file, mime, sizing))) => {
+            let (file, mime) = match sizing {
+                Some(sizing) => sized(&record, sizing).await.unwrap_or((file, mime)),
+                None => (file, mime),
+            };
             stream(file, mime, ()).unwrap_or_else(|error| error_response(&record, error))
         }
         Ok(None) => failure(StatusCode::NOT_FOUND, "ERR_NOT_FOUND"),

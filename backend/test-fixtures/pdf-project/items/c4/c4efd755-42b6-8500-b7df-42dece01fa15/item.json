@@ -1,0 +1,25 @@
+{
+  "format": "bluink.item",
+  "formatVersion": 17,
+  "id": "c4efd755-42b6-8500-b7df-42dece01fa15",
+  "revision": "c4efd755-42b6-8500-b7df-42dece01fa15",
+  "createdAt": "1970-01-01T00:00:00.000Z",
+  "modifiedAt": "1970-01-01T00:00:00.000Z",
+  "meta": {
+    "type": "property",
+    "state": "active",
+    "title": "color"
+  },
+  "content": {
+    "key": "color",
+    "valueType": "color"
+  },
+  "analytics": {
+    "analyzerVersion": 1,
+    "timezone": "UTC",
+    "current": {
+      "contentHash": "e3b0c44298fc1c14",
+      "wordCount": 0
+    }
+  }
+}

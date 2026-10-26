@@ -121,7 +121,7 @@ mod tests {
                  "target":"block","matcher":{"kind":"block_label","value":"draft"}}
             ],
             "themeId":"classic", "targets":{"pdf":{"profile":"default","outsideLinks":"error"},
-                "html":{"outsideLinks":"error"},
+                "html":{"outsideLinks":"error"},"docx":{"outsideLinks":"error"},"epub":{"outsideLinks":"error"},
                 "site":{"layout":"documentation","outsideLinks":"error"}}
         });
         let rules = validate_publication(&content).unwrap().selection_rules;

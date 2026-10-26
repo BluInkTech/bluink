@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2023–2026 BluInk
 
+use crate::indexing::coordinator::MainSnapshot;
 use std::collections::HashSet;
 
 use crate::application::error::Result;
@@ -11,8 +12,9 @@ use tantivy::schema::{Facet, IndexRecordOption, OwnedValue, Schema, TantivyDocum
 use tantivy::{IndexReader, Term};
 
 use crate::application::error::{internal_error, invalid_request};
-use crate::model::{CachedResult, TargetCount};
-use crate::service::{aggregation_cache, cache_result, service_index};
+use crate::indexing::service::cached_index;
+use crate::indexing::state::CachedResult;
+use crate::model::TargetCount;
 
 pub(crate) fn exact_term_query(field: tantivy::schema::Field, value: &str) -> Box<dyn Query> {
     Box::new(TermQuery::new(
@@ -113,17 +115,13 @@ pub(crate) fn facet_service_sync(
         _ => return Err(invalid_request("Unsupported facet field")),
     };
     let cache_key = format!("facet:{field_name}:{source_type:?}:{selected:?}");
-    let cache = aggregation_cache(&index_path)?;
-    let cached = cache
-        .lock()
-        .map_err(internal_error)?
-        .get(&cache_key)
-        .cloned();
+    let (snapshot, cache) = cached_index(&index_path)?;
+    let cached = cache.get(&cache_key).map_err(internal_error)?;
     if let Some(CachedResult::Facets(value)) = cached {
         return Ok(value);
     }
     let selected: HashSet<String> = selected.into_iter().collect();
-    let (index, reader, _) = service_index(&index_path)?;
+    let MainSnapshot { index, reader, .. } = snapshot;
     let required = selected
         .iter()
         .cloned()
@@ -134,7 +132,9 @@ pub(crate) fn facet_service_sync(
         .into_iter()
         .filter(|entry| !selected.contains(&entry.tid))
         .collect::<Vec<_>>();
-    cache_result(&cache, cache_key, CachedResult::Facets(output.clone()));
+    cache
+        .insert(cache_key, CachedResult::Facets(output.clone()))
+        .map_err(internal_error)?;
     Ok(output)
 }
 pub(crate) fn document_values(

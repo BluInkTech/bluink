@@ -2,21 +2,31 @@
 // Copyright (c) 2023–2026 BluInk
 
 pub(crate) mod article;
+pub(crate) mod docx;
+pub(crate) mod epub;
 pub(crate) mod fonts;
 pub(crate) mod html;
-pub(crate) mod macros;
+mod media;
 pub(crate) mod note_pdf;
 pub(crate) mod one_html;
+mod output;
+pub(crate) mod page;
 pub(crate) mod pdf;
 pub(crate) mod plan;
 pub(crate) mod preflight;
+#[cfg(test)]
+mod regression;
+pub(crate) mod render;
 pub(crate) mod request;
 pub(crate) mod selection;
 pub(crate) mod site;
 pub(crate) mod source;
-pub(crate) mod style;
 pub(crate) mod theme;
+pub(crate) mod theme_format;
+pub(crate) mod theme_preview;
+pub(crate) mod theme_store;
 pub(crate) mod typst;
+pub(crate) mod word;
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -24,7 +34,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
 
-use crate::engine::project::item::{is_item_id, is_tag_key};
+use crate::engine::project::identity::is_item_id;
+use crate::engine::project::item::is_tag_key;
 use crate::engine::project::properties::is_snake_case;
 use crate::engine::publication::theme::validate_theme_override;
 
@@ -41,7 +52,7 @@ pub(crate) struct PublicationContent {
     pub(crate) theme_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
-    pub(crate) theme_settings: Option<theme::ThemeSettingsOverride>,
+    pub(crate) theme_overrides: Option<theme_format::Overrides>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[cfg_attr(test, ts(as = "BTreeMap<String, theme::ThemeOptionValue>"))]
     pub(crate) theme_options: BTreeMap<String, Value>,
@@ -70,6 +81,8 @@ pub(crate) enum PublicationPreset {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PublicationOutput {
     Pdf,
+    Docx,
+    Epub,
     Html,
     Site,
 }
@@ -100,7 +113,7 @@ pub(crate) enum OutlineNode {
     Collection {
         id: String,
         title: String,
-        query: String,
+        query: crate::engine::project::query::QueryDocument,
         #[serde(rename = "showPagesInNavigation", default = "default_true")]
         #[cfg_attr(test, ts(as = "Option<bool>", optional))]
         show_pages_in_navigation: bool,
@@ -175,8 +188,17 @@ pub(crate) enum SelectionMatcherKind {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PublicationTargets {
     pub(crate) pdf: PdfTarget,
+    pub(crate) docx: DocxTarget,
+    pub(crate) epub: HtmlTarget,
     pub(crate) html: HtmlTarget,
     pub(crate) site: SiteTarget,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DocxTarget {
+    pub(crate) outside_links: OutsideLinks,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -235,10 +257,10 @@ pub(crate) fn validate_publication(content: &Value) -> Result<PublicationContent
     if !is_item_id(&publication.root_page_id) {
         return Err("Publication rootPageId must be a page UUID.".to_owned());
     }
-    if !is_theme_id(&publication.theme_id) {
+    if !theme::is_theme_id(&publication.theme_id) {
         return Err("Publication themeId must be a lowercase hyphenated ID.".to_owned());
     }
-    if let Some(settings) = &publication.theme_settings {
+    if let Some(settings) = &publication.theme_overrides {
         validate_theme_override(
             &serde_json::to_value(settings).map_err(|error| error.to_string())?,
         )?;
@@ -333,7 +355,7 @@ fn validate_outline_node<'a>(
             ..
         } => {
             register_node(id, nodes)?;
-            if title.trim().is_empty() || title.len() > 160 || query.trim().is_empty() {
+            if title.trim().is_empty() || title.len() > 160 || query.version != 1 {
                 return Err("Publication collections need a title and query.".to_owned());
             }
             if let Some(slug) = listing_slug {
@@ -387,22 +409,6 @@ fn validate_slug(slug: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn is_theme_id(value: &str) -> bool {
-    let mut segments = value.split('-');
-    segments.next().is_some_and(valid_theme_segment) && segments.all(valid_theme_segment)
-}
-
-fn valid_theme_segment(segment: &str) -> bool {
-    !segment.is_empty()
-        && segment
-            .bytes()
-            .next()
-            .is_some_and(|byte| byte.is_ascii_lowercase())
-        && segment
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-}
-
 fn is_block_type(value: &str) -> bool {
     matches!(
         value,
@@ -426,6 +432,10 @@ fn is_block_type(value: &str) -> bool {
 }
 
 /// Encode a digest without allocating a temporary String for each byte.
+#[expect(
+    clippy::expect_used,
+    reason = "Formatting only strings and primitive values into String is infallible."
+)]
 fn digest_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut hex = String::with_capacity(bytes.len() * 2);
@@ -452,7 +462,7 @@ mod tests {
                 "target":"block", "matcher":{"kind":"block_label", "value":"draft_note"}}],
             "themeId": "classic",
             "targets": {"pdf":{"profile":"default","outsideLinks":"error"},
-                "html":{"outsideLinks":"error"},
+                "html":{"outsideLinks":"error"},"docx":{"outsideLinks":"error"},"epub":{"outsideLinks":"error"},
                 "site":{"layout":"documentation","outsideLinks":"text-only"}}
         })
     }
@@ -470,7 +480,7 @@ mod tests {
     #[test]
     fn stores_an_explicit_output_independent_of_preset() {
         for preset in ["book", "documentation", "blog", "website"] {
-            for output in ["pdf", "html", "site"] {
+            for output in ["pdf", "docx", "epub", "html", "site"] {
                 let mut content = valid();
                 content["preset"] = json!(preset);
                 content["selectedOutput"] = json!(output);
@@ -519,20 +529,20 @@ mod tests {
     }
 
     #[test]
-    fn validates_shared_theme_settings_on_the_publication() {
+    fn validates_shared_theme_overrides_on_the_publication() {
         let mut content = valid();
-        content["themeSettings"] = json!({"typography":{"bodyScale":1.2}});
+        content["themeOverrides"] = json!({"shared":{"root":{"fontSize":"14.4pt"}},"targets":{}});
         assert_eq!(
             serde_json::to_value(
                 validate_publication(&content)
                     .unwrap()
-                    .theme_settings
+                    .theme_overrides
                     .unwrap()
             )
-            .unwrap()["typography"]["bodyScale"],
-            json!(1.2)
+            .unwrap()["shared"]["root"]["fontSize"],
+            json!("14.4pt")
         );
-        content["themeSettings"]["unknown"] = json!({"ink":"#ffffff"});
+        content["themeOverrides"]["unknown"] = json!({"ink":"#ffffff"});
         assert!(validate_publication(&content).is_err());
     }
 }

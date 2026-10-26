@@ -2,11 +2,62 @@
 // Copyright (c) 2023–2026 BluInk
 
 use super::*;
+use crate::indexing::coordinator::MainSnapshot;
+
+#[test]
+fn periodic_scan_publishes_external_snippet_changes_and_deletions() {
+    let project = TestProject::new("native-snippet-events");
+    let app = project.application();
+    app.initialize_sync(true).unwrap();
+    let mut scanner = crate::application::watch::Coordinator::start_with_interval(
+        app.root.clone(),
+        app.index_path().unwrap(),
+        Duration::from_millis(50),
+    )
+    .unwrap();
+    let wait = |text: &str, count: usize| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let result = execute(&app, "query_snippets", json!({"query":text})).unwrap();
+            if result["count"] == count {
+                break;
+            }
+            assert!(Instant::now() < deadline, "Snippet query {text}: {result}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let write = |text, revision| {
+        crate::engine::project::snippets::write_snippet(
+            &app.root,
+            "external",
+            json!({"type":"paragraph","content":[{"type":"text","text":text}]}),
+            revision,
+        )
+        .unwrap()
+    };
+    let first = write("originalsentinel", None);
+    wait("originalsentinel", 1);
+    write("replacedsentinel", first["revision"].as_str());
+    wait("replacedsentinel", 1);
+    wait("originalsentinel", 0);
+    std::fs::remove_file(crate::engine::project::snippets::path(&app.root, "external").unwrap())
+        .unwrap();
+    wait("replacedsentinel", 0);
+    assert!(scanner.failure().is_none());
+    scanner.stop().unwrap();
+    app.stop_sync().unwrap();
+    project.close().unwrap();
+}
 
 fn wait_for_count(app: &Application, query: &str, count: usize) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let result = execute(app, "query_items", json!({"query": query})).unwrap();
+        let result = execute(
+            app,
+            "query_items",
+            json!({"query": crate::query::document::test_query(query)}),
+        )
+        .unwrap();
         if result["count"] == count {
             return;
         }
@@ -18,7 +69,7 @@ fn wait_for_count(app: &Application, query: &str, count: usize) {
 fn wait_for_commit(index: &str, previous: Option<u64>) -> Option<u64> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let status = crate::service::index_service_status_typed(index).unwrap();
+        let status = crate::indexing::service::index_service_status_typed(index).unwrap();
         if status.pending == 0 && status.state == "ready" && status.last_committed_at != previous {
             return status.last_committed_at;
         }
@@ -32,7 +83,8 @@ fn wait_for_commit(index: &str, previous: Option<u64>) -> Option<u64> {
 
 #[test]
 fn native_root_events_reconcile_external_content_without_waiting_for_periodic_scan() {
-    let app = application("native-root-events");
+    let project = TestProject::new("native-root-events");
+    let app = project.application();
     app.initialize_sync(true).unwrap();
     let id = "ABCDEF02-2345-7000-ABCD-EF0123456789";
     crate::engine::project::write::write_item_input(
@@ -46,18 +98,21 @@ fn native_root_events_reconcile_external_content_without_waiting_for_periodic_sc
     // Creating/removing a shard is visible to the shallow OS subscription;
     // these assertions finish well before the production five-minute scan.
     wait_for_count(&app, "nativewatchsentinel", 1);
-    let item = crate::project::item_path(&app.root, id);
+    let item = crate::engine::project::identity::ItemId::try_from(id)
+        .unwrap()
+        .path(&app.root);
     let shard = item.parent().unwrap().parent().unwrap();
     std::fs::rename(shard, app.root.join("removed-shard")).unwrap();
     wait_for_count(&app, "nativewatchsentinel", 0);
     assert!(app.status().unwrap()["watcherError"].is_null());
     app.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn periodic_scan_discovers_deep_external_creates_updates_and_deletions() {
-    let app = application("periodic-scan");
+    let project = TestProject::new("periodic-scan");
+    let app = project.application();
     app.initialize_sync(true).unwrap();
     let index = app.index_path().unwrap();
     let mut scanner = crate::application::watch::Coordinator::start_with_interval(
@@ -79,7 +134,7 @@ fn periodic_scan_discovers_deep_external_creates_updates_and_deletions() {
         )
         .unwrap()
     };
-    let initial_commit = crate::service::index_service_status_typed(&index)
+    let initial_commit = crate::indexing::service::index_service_status_typed(&index)
         .unwrap()
         .last_committed_at;
     let created = write("rescanoriginal", None);
@@ -88,28 +143,34 @@ fn periodic_scan_discovers_deep_external_creates_updates_and_deletions() {
     write("rescanreplacement", created["item"]["revision"].as_str());
     wait_for_count(&app, "rescanreplacement", 1);
     wait_for_count(&app, "rescanoriginal", 0);
-    // Queries can read the dirty overlay before the worker records its commit.
-    // Compare unchanged rescans only after that pending update is fully committed.
+    // Publication precedes the status update; wait for its commit timestamp
+    // before comparing unchanged rescans.
     let committed = wait_for_commit(&index, created_commit);
     std::thread::sleep(Duration::from_millis(400));
     assert_eq!(
-        crate::service::index_service_status_typed(&index)
+        crate::indexing::service::index_service_status_typed(&index)
             .unwrap()
             .last_committed_at,
         committed,
         "Unchanged rescans must not enqueue documents or commit the index"
     );
-    std::fs::remove_file(crate::project::item_path(&app.root, id)).unwrap();
+    std::fs::remove_file(
+        crate::engine::project::identity::ItemId::try_from(id)
+            .unwrap()
+            .path(&app.root),
+    )
+    .unwrap();
     wait_for_count(&app, "rescanreplacement", 0);
     assert!(scanner.failure().is_none());
     scanner.stop().unwrap();
     app.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn idle_cache_release_preserves_snapshots_and_accepts_subsequent_writes() {
-    let app = application("idle-readers");
+    let project = TestProject::new("idle-readers");
+    let app = project.application();
     app.initialize_sync(true).unwrap();
     execute(
         &app,
@@ -119,21 +180,28 @@ fn idle_cache_release_preserves_snapshots_and_accepts_subsequent_writes() {
     .unwrap();
     wait_for_count(&app, "firstidle", 1);
     let index = app.index_path().unwrap();
-    let (native_index, reader, _) = crate::service::service_index(&index).unwrap();
+    let MainSnapshot {
+        index: native_index,
+        reader,
+        ..
+    } = crate::indexing::service::service_index(&index).unwrap();
     let snapshot = reader.searcher();
+    let original_count = snapshot.num_docs();
     let title = native_index.schema().get_field("title").unwrap();
     drop(reader);
-    let cache = crate::service::aggregation_cache(&index).unwrap();
-    cache.lock().unwrap().insert(
-        "idle-sentinel".to_owned(),
-        crate::model::CachedResult::Facets(Vec::new()),
-    );
+    let cache = crate::indexing::service::aggregation_cache(&index).unwrap();
+    cache
+        .insert(
+            "idle-sentinel".to_owned(),
+            crate::indexing::state::CachedResult::Facets(Vec::new()),
+        )
+        .unwrap();
     let deadline = Instant::now() + Duration::from_secs(8);
-    while !cache.lock().unwrap().is_empty() {
+    while !cache.values().unwrap().is_empty() {
         assert!(Instant::now() < deadline, "Idle caches were not released");
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(snapshot.num_docs(), 1);
+    assert_eq!(snapshot.num_docs(), original_count);
     let first = tantivy::query::TermQuery::new(
         tantivy::Term::from_field_text(title, "firstidle"),
         tantivy::schema::IndexRecordOption::Basic,
@@ -150,11 +218,16 @@ fn idle_cache_release_preserves_snapshots_and_accepts_subsequent_writes() {
     .unwrap();
     wait_for_count(&app, "secondidle", 1);
     assert_eq!(
-        execute(&app, "query_items", json!({"query":"+type:page"})).unwrap()["count"],
+        execute(
+            &app,
+            "query_items",
+            json!({"query":crate::query::document::test_query("+type:page")})
+        )
+        .unwrap()["count"],
         2
     );
-    assert_eq!(snapshot.num_docs(), 1);
+    assert_eq!(snapshot.num_docs(), original_count);
     drop(snapshot);
     app.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }

@@ -3,7 +3,7 @@
 
 import path from 'node:path'
 import { fontDirectory } from '@bluink/fonts'
-import { nativeAddon, publicationRuntime } from './addon.js'
+import { createApplication, publicationRuntime } from './addon.js'
 import { hostLifecycle } from './lifecycle.js'
 
 export type CommandValues = Record<
@@ -21,13 +21,14 @@ export async function runApplicationCommand(
 	const cwd = process.cwd()
 	const project = values['project']
 	const runtime = publicationRuntime()
-	const application = new (nativeAddon().BluinkApplication)({
+	const application = createApplication({
 		projectRoot: path.resolve(typeof project === 'string' ? project : cwd),
 		...(process.env['BLUINK_CACHE_LOCATION'] && {
 			cacheLocation: process.env['BLUINK_CACHE_LOCATION'],
 		}),
 		webFontFolder: fontDirectory('web'),
 		pdfFontFolder: runtime.fontFolder,
+		docxFontFolder: runtime.docxFontFolder,
 		typstBinary: runtime.typstBinary,
 	})
 	let stopped: Promise<void> | undefined

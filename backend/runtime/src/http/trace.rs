@@ -18,7 +18,7 @@ use crate::diagnostics::{slow_threshold_ms, waits};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct Timings {
     body: Duration,
     decode: Duration,
@@ -26,13 +26,24 @@ struct Timings {
     admission: Duration,
     readiness: Duration,
     execute: Duration,
+    storage_lock: Duration,
+    publication: Duration,
     encode: Duration,
+    /// The request made a sized image copy: slow by design, once per image.
+    image_copy: Duration,
 }
 
 #[derive(Clone, Default)]
 pub(super) struct Record(Arc<Mutex<Timings>>);
 
 impl Record {
+    // Diagnostics are best-effort bookkeeping, not canonical state. A poisoned
+    // timing lock must never turn a subsequent HTTP request into another panic.
+    fn timings(&self) -> std::sync::MutexGuard<'_, Timings> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
     pub(super) fn reading(&self) -> BodyRead {
         BodyRead {
             record: self.clone(),
@@ -40,19 +51,25 @@ impl Record {
         }
     }
     pub(super) fn decode(&self, elapsed: Duration) {
-        self.0.lock().unwrap().decode = elapsed;
+        self.timings().decode = elapsed;
     }
     pub(super) fn queue(&self, elapsed: Duration) {
-        self.0.lock().unwrap().queue = elapsed;
+        self.timings().queue = elapsed;
     }
     pub(super) fn encode(&self, elapsed: Duration) {
-        self.0.lock().unwrap().encode += elapsed;
+        self.timings().encode += elapsed;
+    }
+    pub(super) fn image_copy(&self, elapsed: Duration) {
+        self.timings().image_copy = elapsed;
     }
     pub(super) fn execution(&self, elapsed: Duration, waits: waits::Timings) {
-        let mut timings = self.0.lock().unwrap();
+        let mut timings = self.timings();
         timings.admission = waits.admission;
         timings.readiness = waits.readiness;
         timings.execute = elapsed.saturating_sub(waits.admission + waits.readiness);
+        // These are parts of execution, not additional request phases.
+        timings.storage_lock = waits.storage_lock;
+        timings.publication = waits.publication;
     }
 }
 
@@ -63,11 +80,7 @@ pub(super) struct BodyRead {
 
 impl Drop for BodyRead {
     fn drop(&mut self) {
-        self.record
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .body = self.started.elapsed();
+        self.record.timings().body = self.started.elapsed();
     }
 }
 
@@ -81,23 +94,22 @@ struct Completion {
 
 impl Drop for Completion {
     fn drop(&mut self) {
-        let timings = self
-            .record
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let timings = *self.record.timings();
         let duration_ms = milliseconds(self.started.elapsed());
         let status = self.status;
+        // Making an image copy is expected work, so it is not reported as slow.
+        let slow = duration_ms - milliseconds(timings.image_copy) >= slow_threshold_ms();
         let message = match status {
             499 => "HTTP request interrupted",
             500..=599 => "HTTP request failed",
             400..=498 => "HTTP request rejected",
-            _ if duration_ms >= slow_threshold_ms() => "slow HTTP request",
+            _ if slow => "slow HTTP request",
+            _ if !timings.image_copy.is_zero() => "image copy made",
             _ => "HTTP request completed",
         };
         let level = if status >= 500 {
             tracing::Level::ERROR
-        } else if duration_ms >= slow_threshold_ms() {
+        } else if slow {
             tracing::Level::WARN
         } else {
             tracing::Level::DEBUG
@@ -115,7 +127,10 @@ impl Drop for Completion {
                         admission_ms = milliseconds(timings.admission),
                         readiness_ms = milliseconds(timings.readiness),
                         execute_ms = milliseconds(timings.execute),
+                        storage_lock_ms = milliseconds(timings.storage_lock),
+                        publication_ms = milliseconds(timings.publication),
                         encode_ms = milliseconds(timings.encode),
+                        image_copy_ms = milliseconds(timings.image_copy),
                         response_bytes = self.bytes, message)
                 };
             }
@@ -173,4 +188,59 @@ pub(super) async fn request(mut request: Request, next: Next) -> Response {
             .ok()
     });
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_breakdown_preserves_total_and_wait_categories() {
+        let record = Record::default();
+        record.execution(
+            Duration::from_millis(100),
+            waits::Timings {
+                admission: Duration::from_millis(5),
+                readiness: Duration::from_millis(10),
+                storage_lock: Duration::from_millis(20),
+                publication: Duration::from_millis(30),
+            },
+        );
+        let timings = record.timings();
+        assert_eq!(timings.execute, Duration::from_millis(85));
+        assert_eq!(timings.storage_lock, Duration::from_millis(20));
+        assert_eq!(timings.publication, Duration::from_millis(30));
+    }
+
+    #[test]
+    fn poisoned_diagnostics_do_not_panic_subsequent_request_bookkeeping() {
+        let record = Record::default();
+        let poison = record.clone();
+        assert!(
+            std::panic::catch_unwind(move || {
+                let _guard = poison.0.lock().unwrap();
+                panic!("Simulate interrupted timing bookkeeping");
+            })
+            .is_err()
+        );
+        assert!(record.0.is_poisoned());
+        record.decode(Duration::from_millis(2));
+        record.queue(Duration::from_millis(3));
+        record.encode(Duration::from_millis(4));
+        record.execution(Duration::from_millis(8), waits::Timings::default());
+        drop(record.reading());
+        let timings = record.timings();
+        assert_eq!(timings.decode, Duration::from_millis(2));
+        assert_eq!(timings.queue, Duration::from_millis(3));
+        assert_eq!(timings.encode, Duration::from_millis(4));
+        assert_eq!(timings.execute, Duration::from_millis(8));
+        drop(timings);
+        drop(Completion {
+            record,
+            span: tracing::Span::none(),
+            started: Instant::now(),
+            status: 200,
+            bytes: None,
+        });
+    }
 }

@@ -78,23 +78,7 @@ impl Preview {
 }
 
 pub(crate) fn content_type(path: &Path) -> &'static str {
-    match path.extension().and_then(|value| value.to_str()) {
-        Some("pdf") => "application/pdf",
-        Some("woff2") => "font/woff2",
-        Some("txt") => "text/plain; charset=utf-8",
-        Some("html") => "text/html; charset=utf-8",
-        Some("css") => "text/css; charset=utf-8",
-        Some("js") => "text/javascript; charset=utf-8",
-        Some("json") => "application/json; charset=utf-8",
-        Some("xml") => "application/xml; charset=utf-8",
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        Some("avif") => "image/avif",
-        Some("svg") => "image/svg+xml",
-        _ => "application/octet-stream",
-    }
+    crate::engine::media_type::for_path(path).unwrap_or("application/octet-stream")
 }
 
 async fn serve_file(State(root): State<PathBuf>, request: Request) -> Response {

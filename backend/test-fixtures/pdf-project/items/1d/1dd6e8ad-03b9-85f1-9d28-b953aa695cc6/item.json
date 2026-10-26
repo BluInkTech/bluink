@@ -1,0 +1,25 @@
+{
+  "format": "bluink.item",
+  "formatVersion": 17,
+  "id": "1dd6e8ad-03b9-85f1-9d28-b953aa695cc6",
+  "revision": "1dd6e8ad-03b9-85f1-9d28-b953aa695cc6",
+  "createdAt": "1970-01-01T00:00:00.000Z",
+  "modifiedAt": "1970-01-01T00:00:00.000Z",
+  "meta": {
+    "type": "property",
+    "state": "active",
+    "title": "journal_date"
+  },
+  "content": {
+    "key": "journal_date",
+    "valueType": "date"
+  },
+  "analytics": {
+    "analyzerVersion": 1,
+    "timezone": "UTC",
+    "current": {
+      "contentHash": "e3b0c44298fc1c14",
+      "wordCount": 0
+    }
+  }
+}

@@ -89,19 +89,8 @@ impl Renderer {
 
     fn resize(&mut self, height: u16, dimensions: (u16, u16)) -> io::Result<()> {
         self.terminal.clear()?;
-        if height > self.height {
-            // Make room by advancing the primary screen, retaining the log
-            // lines displaced by an expanded view in ordinary scrollback.
-            execute!(
-                io::stderr(),
-                cursor::MoveTo(0, dimensions.1.saturating_sub(1))
-            )?;
-            write!(
-                io::stderr(),
-                "{}",
-                "\r\n".repeat(usize::from(height - self.height))
-            )?;
-        }
+        // Reposition the panel without appending blank lines on every toggle.
+        // Covered diagnostics remain available in the retained history views.
         execute!(
             io::stderr(),
             cursor::MoveTo(0, dimensions.1.saturating_sub(height))
@@ -197,12 +186,24 @@ fn footer(core: &Core, status: &Status, width: u16) -> Vec<Line<'static>> {
     let shortcuts = if dropped > 0 {
         format!("{dropped} diagnostic events dropped · l Logs · ? Help · q Stop")
     } else if width >= 80 {
-        "o Open browser   e Errors   l Logs   i Info   ? Help   q Stop".to_owned()
+        "o Open browser   w Warnings   e Errors   l Logs   i Info   ? Help   q Stop".to_owned()
     } else {
-        "o Open  e Errors  l Logs  i Info  ? Help  q Stop".to_owned()
+        "o Open  w Warnings  e Errors  l Logs  i Info  ? Help  q Stop".to_owned()
+    };
+    let project = std::path::Path::new(&status.project)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let heading = if project.is_empty() {
+        "─".repeat(usize::from(width))
+    } else {
+        let label = columns(&format!("── Project: {} ─", text(&project)), "", width);
+        let label = label.trim_end();
+        let remaining = usize::from(width).saturating_sub(Line::raw(label).width());
+        format!("{label}{}", "─".repeat(remaining))
     };
     vec![
-        Line::styled("─".repeat(usize::from(width)), style(Color::DarkGray)),
+        Line::styled(heading, style(Color::DarkGray)),
         Line::from(vec![
             Span::styled(status_prefix, style(health_color)),
             Span::styled(
@@ -292,6 +293,7 @@ fn body(core: &Core, model: &Model, status: &Status, rows: usize) -> Vec<Line<'s
             "Keyboard shortcuts",
             "o  Open browser                 q / Ctrl+C  Stop Bluink",
             "l  Recent logs                  e  Recent errors",
+            "w  Recent warnings",
             "i  Session information          ?  Help",
             "↑ / ↓  Select / scroll          Page Up / Down  Move a page",
             "Home / End  First / newest      Enter  Toggle event details",
@@ -302,12 +304,12 @@ fn body(core: &Core, model: &Model, status: &Status, rows: usize) -> Vec<Line<'s
         .map(Line::raw)
         .collect(),
         View::Info => information(core, model, status),
-        View::Logs | View::Errors => {
+        View::Logs | View::Errors | View::Warnings => {
             let entries = model.entries();
-            let title = if model.view == View::Errors {
-                "Errors"
-            } else {
-                "Logs"
+            let title = match model.view {
+                View::Errors => "Errors",
+                View::Warnings => "Warnings",
+                _ => "Logs",
             };
             let mut lines = vec![Line::styled(
                 format!("{title} · ↑↓ Select · Enter Details · Esc Close"),
@@ -449,10 +451,11 @@ fn key(
         KeyCode::Char('o') => core.action("openBrowser"),
         KeyCode::Char('l') => model.open(View::Logs),
         KeyCode::Char('e') => model.open(View::Errors),
+        KeyCode::Char('w') => model.open(View::Warnings),
         KeyCode::Char('i') => model.open(View::Info),
         KeyCode::Char('?') => model.open(View::Help),
         KeyCode::Esc => model.open(View::Status),
-        KeyCode::Enter if matches!(model.view, View::Logs | View::Errors) => {
+        KeyCode::Enter if matches!(model.view, View::Logs | View::Errors | View::Warnings) => {
             model.details = !model.details;
             model.scroll = 0;
             model.following = false;
@@ -488,17 +491,13 @@ pub(super) fn run(core: &Core, incoming: &Receiver<DiagnosticEvent>) -> io::Resu
         }
         let status = core.status();
         let address = core.address();
-        if !project_shown && !status.project.is_empty() {
+        if renderer.is_none() && !project_shown && !status.project.is_empty() {
             let project = std::path::Path::new(&status.project)
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy();
             let introduction = format!("Project: {}", text(&project));
-            if let Some(renderer) = &mut renderer {
-                renderer.log(&introduction, "info")?;
-            } else {
-                writeln!(output, "{introduction}")?;
-            }
+            writeln!(output, "{introduction}")?;
             project_shown = true;
         }
         let mut too_small = false;
@@ -599,6 +598,7 @@ mod tests {
         let (core, _) = super::super::tests::fixture();
         *core.address.lock().unwrap() = Some("http://127.0.0.1:9000".to_owned());
         let status = Status {
+            project: "example-project".to_owned(),
             ready: true,
             phase: "Search up to date".to_owned(),
             ..Status::default()
@@ -616,9 +616,51 @@ mod tests {
                 "Memory 184 MiB",
                 "http://127.0.0.1:9000",
                 "q Stop",
+                "w Warnings",
+                "── Project: example-project ─",
             ] {
                 assert!(output.contains(expected), "{width}: {output}");
             }
         }
+    }
+
+    #[test]
+    fn warning_history_can_be_opened_navigated_and_inspected() {
+        let (core, _) = super::super::tests::fixture();
+        let status = Status::default();
+        let mut model = Model::default();
+        for (level, message) in [
+            ("warn", "earlier warning"),
+            ("info", "later activity"),
+            ("warn", "latest warning"),
+        ] {
+            model.push(&DiagnosticEvent {
+                timestamp_ms: 0,
+                level: level.to_owned(),
+                target: "test".to_owned(),
+                name: None,
+                message: Some(message.to_owned()),
+                fields: std::collections::BTreeMap::default(),
+                spans: vec![],
+                duration_ms: None,
+            });
+        }
+        key(&core, &mut model, KeyCode::Char('w'), KeyModifiers::NONE, 0);
+        key(&core, &mut model, KeyCode::Home, KeyModifiers::NONE, 0);
+        for width in [60, 80, 120] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 16)).unwrap();
+            terminal
+                .draw(|frame| draw(frame, &core, &model, &status))
+                .unwrap();
+            let output = format!("{:?}", terminal.backend());
+            assert!(output.contains("Warnings ·"));
+            assert!(output.contains("earlier warning"));
+            assert!(!output.contains("later activity"));
+        }
+        key(&core, &mut model, KeyCode::Enter, KeyModifiers::NONE, 0);
+        assert!(model.details);
+        assert!(!model.following);
+        key(&core, &mut model, KeyCode::Esc, KeyModifiers::NONE, 0);
+        assert!(model.view == View::Status);
     }
 }

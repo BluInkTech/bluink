@@ -1,0 +1,25 @@
+{
+  "format": "bluink.item",
+  "formatVersion": 17,
+  "id": "aa555795-0119-8cc9-9171-b70a6a7a8135",
+  "revision": "aa555795-0119-8cc9-9171-b70a6a7a8135",
+  "createdAt": "1970-01-01T00:00:00.000Z",
+  "modifiedAt": "1970-01-01T00:00:00.000Z",
+  "meta": {
+    "type": "property",
+    "state": "active",
+    "title": "start_date"
+  },
+  "content": {
+    "key": "start_date",
+    "valueType": "date"
+  },
+  "analytics": {
+    "analyzerVersion": 1,
+    "timezone": "UTC",
+    "current": {
+      "contentHash": "e3b0c44298fc1c14",
+      "wordCount": 0
+    }
+  }
+}

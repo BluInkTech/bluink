@@ -6,8 +6,10 @@ mod cache_process;
 mod catalogue;
 mod commands;
 mod exports;
+mod publication_consistency;
 mod publication_contract;
 mod settings;
+mod setups;
 mod shutdown;
 mod snippets;
 mod watch;
@@ -15,24 +17,50 @@ mod watch;
 use super::*;
 use std::sync::Arc;
 
-fn application(name: &str) -> Application {
-    let root = std::env::temp_dir().join(format!("bluink-app-{name}-{}", std::process::id()));
-    Application::new(ApplicationOptions {
-        project_root: root.to_str().unwrap().to_owned(),
-        timezone: Some("Europe/London".to_owned()),
-        cache_location: None,
-        public_dir: None,
-        data_dir: None,
-        web_font_folder: None,
-        pdf_font_folder: None,
-        typst_binary: None,
-    })
-    .unwrap()
+/// Declare before applications so panic unwinding drops workers before their files.
+struct TestProject(tempfile::TempDir);
+
+impl TestProject {
+    fn new(name: &str) -> Self {
+        Self(
+            tempfile::Builder::new()
+                .prefix(&format!("bluink-{name}-"))
+                .tempdir()
+                .unwrap(),
+        )
+    }
+
+    fn application(&self) -> Application {
+        let root = self.0.path().join("project");
+        Application::new(ApplicationOptions {
+            workspace_template_path: concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/vendor/workspace-starter.json"
+            )
+            .into(),
+            project_root: root.to_str().unwrap().to_owned(),
+            timezone: Some("Europe/London".to_owned()),
+            cache_location: Some("project".into()),
+            public_dir: None,
+            data_dir: None,
+            web_font_folder: None,
+            pdf_font_folder: None,
+            docx_font_folder: None,
+            typst_binary: None,
+        })
+        .unwrap()
+    }
+
+    /// Successful tests explicitly stop their applications before checking cleanup.
+    fn close(self) -> std::io::Result<()> {
+        self.0.close()
+    }
 }
 
 #[test]
 fn direct_operations_do_not_create_an_index() {
-    let app = application("direct");
+    let project = TestProject::new("direct");
+    let app = project.application();
     let opened = app.initialize_sync(false).unwrap();
     assert!(opened["indexPath"].is_null());
     assert_eq!(app.status().unwrap()["ready"], true);
@@ -40,12 +68,50 @@ fn direct_operations_do_not_create_an_index() {
     app.stop_sync().unwrap();
     app.stop_sync().unwrap();
     assert!(app.initialize_sync(false).is_err());
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
+}
+
+#[test]
+fn runtime_workspace_preset_is_shared_by_bootstrap_and_new_workspaces() {
+    let project = TestProject::new("runtime-workspace-preset");
+    let mut template = crate::engine::project::workspace::initial_content();
+    template["widgets"] = json!([{
+        "id": uuid::Uuid::now_v7().to_string(),
+        "title": "My reading desk",
+        "topBar": true,
+        "home": {"span": 12, "hidden": true},
+        "config": {"kind": "layout", "mode": "table", "query": {"version": 1, "clauses": [], "sort": []}},
+    }]);
+    let template_path = project.0.path().join("starter.json");
+    std::fs::write(&template_path, serde_json::to_vec(&template).unwrap()).unwrap();
+    let mut options = project.application().options.clone();
+    options.workspace_template_path = template_path.to_string_lossy().into_owned();
+    let app = Application::new(options).unwrap();
+    app.initialize_sync(false).unwrap();
+    let main = crate::engine::project::config::read_default_workspace(&app.root).unwrap();
+    let created = execute(
+        &app,
+        "create_item",
+        json!({"meta":{"type":"workspace","title":"Reading"}}),
+    )
+    .unwrap();
+    for workspace in [&main, &created] {
+        let widgets = workspace["content"]["widgets"].as_array().unwrap();
+        assert_eq!(widgets.len(), 1);
+        assert_eq!(widgets[0]["title"], "My reading desk");
+    }
+    assert_ne!(
+        main["content"]["widgets"][0]["id"],
+        created["content"]["widgets"][0]["id"]
+    );
+    app.stop_sync().unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn request_timing_accounts_for_application_admission_waits() {
-    let app = Arc::new(application("admission-timing"));
+    let project = TestProject::new("admission-timing");
+    let app = Arc::new(project.application());
     app.initialize_sync(false).unwrap();
     let gate = app.operations.write().unwrap();
     let worker = Arc::clone(&app);
@@ -71,13 +137,14 @@ fn request_timing_accounts_for_application_admission_waits() {
     assert_eq!(waits.readiness, Duration::ZERO);
     thread.join().unwrap();
     app.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn index_ownership_is_exclusive_and_released_after_join() {
-    let first = application("exclusive");
-    let second = application("exclusive");
+    let project = TestProject::new("exclusive");
+    let first = project.application();
+    let second = project.application();
     let opened = first.initialize_sync(true).unwrap();
     assert!(opened["indexPath"].is_string());
     assert!(second.initialize_sync(true).is_err());
@@ -85,12 +152,13 @@ fn index_ownership_is_exclusive_and_released_after_join() {
     first.stop_sync().unwrap();
     second.initialize_sync(true).unwrap();
     second.stop_sync().unwrap();
-    std::fs::remove_dir_all(&first.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn failed_index_initialization_releases_ownership() {
-    let first = application("failure");
+    let project = TestProject::new("failure");
+    let first = project.application();
     first.initialize_sync(false).unwrap();
     let id = "00000000-0000-7000-8000-000000000999";
     let item = first.root.join("items/00").join(id).join("item.json");
@@ -98,16 +166,17 @@ fn failed_index_initialization_releases_ownership() {
     std::fs::write(&item, "{}").unwrap();
     assert!(first.initialize_sync(true).is_err());
     std::fs::remove_file(item).unwrap();
-    let second = application("failure");
+    let second = project.application();
     second.initialize_sync(true).unwrap();
     first.stop_sync().unwrap();
     second.stop_sync().unwrap();
-    std::fs::remove_dir_all(&first.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn shutdown_rejects_new_operations_and_waits_for_accepted_work() {
-    let app = Arc::new(application("operation-drain"));
+    let project = TestProject::new("operation-drain");
+    let app = Arc::new(project.application());
     app.initialize_sync(false).unwrap();
     let accepted = app.begin_operation().unwrap();
     let (finished, completion) = std::sync::mpsc::channel();
@@ -123,7 +192,7 @@ fn shutdown_rejects_new_operations_and_waits_for_accepted_work() {
     }
     assert!(matches!(
         app.begin_operation(),
-        Err(ApplicationError::InvalidRequest(_))
+        Err(ApplicationError::ShuttingDown)
     ));
     assert!(matches!(
         completion.try_recv(),
@@ -133,13 +202,15 @@ fn shutdown_rejects_new_operations_and_waits_for_accepted_work() {
     completion.recv_timeout(Duration::from_secs(5)).unwrap();
     worker.join().unwrap();
     assert_eq!(app.status().unwrap()["phase"], "Stopped");
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn item_operations_keep_two_project_handles_isolated_without_an_index() {
-    let first = application("read-isolation-first");
-    let second = application("read-isolation-second");
+    let first_project = TestProject::new("read-isolation-first");
+    let first = first_project.application();
+    let second_project = TestProject::new("read-isolation-second");
+    let second = second_project.application();
     let id = "00000000-0000-7000-8000-000000000212";
     for (app, title) in [(&first, "First project"), (&second, "Second project")] {
         app.initialize_sync(false).unwrap();
@@ -165,8 +236,8 @@ fn item_operations_keep_two_project_handles_isolated_without_an_index() {
         .unwrap();
     assert_eq!(value.meta.title.as_deref().unwrap(), "Second project");
     second.stop_sync().unwrap();
-    std::fs::remove_dir_all(&first.root).unwrap();
-    std::fs::remove_dir_all(&second.root).unwrap();
+    first_project.close().unwrap();
+    second_project.close().unwrap();
 }
 #[expect(
     clippy::needless_pass_by_value,
@@ -183,7 +254,8 @@ fn execute(app: &Application, name: &str, body: Value) -> Result<Value> {
     reason = "Keep each end-to-end scenario together so setup, failure checks and cleanup remain visible."
 )]
 fn application_mutations_preserve_revisions_and_canonical_fields_without_an_index() {
-    let app = application("mutation-contract");
+    let project = TestProject::new("mutation-contract");
+    let app = project.application();
     app.initialize_sync(false).unwrap();
     let created = execute(
         &app,
@@ -250,12 +322,13 @@ fn application_mutations_preserve_revisions_and_canonical_fields_without_an_inde
         }),
     )
     .unwrap();
-    assert_eq!(task["tasks"][0]["text"], "Review this");
+    assert_eq!(task["content"]["text"], "Review this");
     let pin = execute(
         &app,
         "set_note_pin",
         json!({
-            "noteId": id, "version": task["version"], "pinned": true
+            "noteId": id, "version": tagged["version"], "pinned": true,
+            "scopeId":execute(&app,"read_workspace_context",json!({})).unwrap()["defaultWorkspace"]["id"]
         }),
     )
     .unwrap();
@@ -270,7 +343,13 @@ fn application_mutations_preserve_revisions_and_canonical_fields_without_an_inde
         .unwrap();
     assert_eq!(canonical["meta"]["state"], "archived");
     assert_eq!(canonical["content"], created["content"]);
-    assert_eq!(canonical["tasks"][0]["text"], "Review this");
+    assert!(canonical.get("tasks").is_none());
+    assert_eq!(
+        crate::engine::project::item::read_project_item(&app.root, task["id"].as_str().unwrap())
+            .unwrap()
+            .unwrap()["meta"]["state"],
+        "archived"
+    );
     let goal = json!({"scope": "all_notes", "startDate": "2026-10-01",
         "endDate": "2026-10-31", "dailyWordTarget": 500});
     assert_eq!(
@@ -284,7 +363,7 @@ fn application_mutations_preserve_revisions_and_canonical_fields_without_an_inde
     assert!(app.state().unwrap().index.is_none());
     app.stop_sync().unwrap();
     assert!(execute(&app, "create_item", json!({})).is_err());
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
@@ -293,14 +372,11 @@ fn application_mutations_preserve_revisions_and_canonical_fields_without_an_inde
     reason = "Keep each end-to-end scenario together so setup, failure checks and cleanup remain visible."
 )]
 fn typed_queries_share_cache_invalidation_and_keep_domain_errors() {
-    use crate::model::CachedResult;
+    use crate::indexing::state::CachedResult;
     use crate::{calendar, passages, relations, search, tasks};
 
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let app = application(&format!("typed-queries-{unique}"));
+    let project = TestProject::new("typed-queries");
+    let app = project.application();
     app.initialize_sync(false).unwrap();
     let id = "00000000-0000-7000-8000-000000000211";
     let first = crate::engine::project::write::write_item_input(
@@ -318,10 +394,9 @@ fn typed_queries_share_cache_invalidation_and_keep_domain_errors() {
         &app.activity_date().unwrap(),
     )
     .unwrap();
-    let with_task = crate::engine::project::task::mutate_note_task(
+    crate::engine::project::task::mutate_note_task(
         &app.root,
         id,
-        first["item"]["revision"].as_str().unwrap(),
         &json!({"kind": "create", "text": "Check the fixture"}),
         &app.activity_date().unwrap(),
     )
@@ -329,7 +404,7 @@ fn typed_queries_share_cache_invalidation_and_keep_domain_errors() {
     let direct = app
         .read_item(request::decode(format!(r#"{{"id":"{id}"}}"#).as_bytes()).unwrap())
         .unwrap();
-    assert_eq!(direct.version, with_task["item"]["revision"]);
+    assert_eq!(direct.version, first["item"]["revision"]);
     assert_eq!(direct.content["type"], "doc");
     let compact = app
         .read_items(request::decode(format!(r#"{{"ids":["{id}"]}}"#).as_bytes()).unwrap())
@@ -337,14 +412,21 @@ fn typed_queries_share_cache_invalidation_and_keep_domain_errors() {
     assert!(compact[0].content.is_empty());
     let opened = app.initialize_sync(true).unwrap();
     let index = opened["indexPath"].as_str().unwrap().to_owned();
-    let found =
-        search::search_service_sync(index.clone(), "searchable".to_owned(), 10, 0, None).unwrap();
+    let found = search::search_service_sync(
+        index.clone(),
+        crate::query::document::test_query("searchable"),
+        10,
+        0,
+        None,
+        true,
+    )
+    .unwrap();
     assert_eq!(found.count, 1);
     assert_eq!(found.hits[0].id, id);
     let public = app
         .query_items(
             request::decode(
-                br#"{"query":"searchable", "pinScopeId":"00000000-0000-7000-8000-000000000001"}"#,
+                json!({"query":crate::query::document::test_query("searchable"), "pinScopeId":"00000000-0000-7000-8000-000000000001"}).to_string().as_bytes(),
             )
             .unwrap(),
         )
@@ -356,19 +438,31 @@ fn typed_queries_share_cache_invalidation_and_keep_domain_errors() {
     );
     assert_eq!(public.pinned_count, Some(0));
     assert_eq!(
-        search::matching_item_ids_service_sync(index.clone(), "searchable".to_owned()).unwrap(),
+        search::matching_item_ids_service_sync(
+            index.clone(),
+            crate::query::document::test_query("searchable"),
+            None
+        )
+        .unwrap(),
         vec![id]
     );
     let cached = service::aggregation_cache(&index).unwrap();
     assert!(
         cached
-            .lock()
-            .unwrap()
             .values()
+            .unwrap()
+            .iter()
             .any(|entry| matches!(entry, CachedResult::Search(_)))
     );
-    let again =
-        search::search_service_sync(index.clone(), "searchable".to_owned(), 10, 0, None).unwrap();
+    let again = search::search_service_sync(
+        index.clone(),
+        crate::query::document::test_query("searchable"),
+        10,
+        0,
+        None,
+        true,
+    )
+    .unwrap();
     assert_eq!(again.hits[0].revision, found.hits[0].revision);
     let counts =
         relations::facet_service_sync(index.clone(), "tags".to_owned(), Vec::new(), None).unwrap();
@@ -377,7 +471,7 @@ fn typed_queries_share_cache_invalidation_and_keep_domain_errors() {
     let day = &first["item"]["createdAt"].as_str().unwrap()[..10];
     let buckets = calendar::calendar_buckets_service_sync(
         index.clone(),
-        String::new(),
+        crate::query::document::QueryDocument::active_pages(),
         "created".to_owned(),
         day.to_owned(),
         day.to_owned(),
@@ -387,11 +481,12 @@ fn typed_queries_share_cache_invalidation_and_keep_domain_errors() {
     .unwrap();
     assert_eq!(buckets.buckets[0].date, day);
     assert_eq!(buckets.buckets[0].count, 1);
-    let paragraphs = passages::query_service(index.clone(), "review".to_owned(), 10, 0).unwrap();
+    let paragraphs =
+        passages::query_service(index.clone(), "review".to_owned(), None, 10, 0, None).unwrap();
     assert_eq!(paragraphs.count, 1);
     assert_eq!(paragraphs.items[0].text, "Initial searchable paragraph");
     let selected = tasks::query_service(
-        index.clone(),
+        &service::query_snapshot(&index).unwrap(),
         Some(vec![id.to_owned()]),
         None,
         "open".to_owned(),
@@ -404,7 +499,7 @@ fn typed_queries_share_cache_invalidation_and_keep_domain_errors() {
     let selected = execute(
         &app,
         "query_note_tasks",
-        json!({"query": "#research", "status": "open"}),
+        json!({"query": crate::query::document::test_query("#research"), "status": "open"}),
     )
     .unwrap();
     assert_eq!(selected["count"], 1);
@@ -439,11 +534,16 @@ fn typed_queries_share_cache_invalidation_and_keep_domain_errors() {
     );
     let status = execute(&app, "cache_status", json!({})).unwrap();
     assert_eq!(status["structuralState"], "ready");
-    assert_eq!(status["documents"], 1);
+    assert_eq!(
+        status["documents"],
+        crate::engine::project::item::list_project_item_ids(&app.root)
+            .unwrap()
+            .len()
+    );
     assert_eq!(status["schemaVersion"], 1);
     assert_eq!(
         tasks::query_service(
-            index.clone(),
+            &service::query_snapshot(&index).unwrap(),
             Some(Vec::new()),
             None,
             "open".to_owned(),
@@ -455,13 +555,28 @@ fn typed_queries_share_cache_invalidation_and_keep_domain_errors() {
         0
     );
     for error in [
-        search::search_service_sync(index.clone(), "unregistered:value".to_owned(), 10, 0, None)
-            .unwrap_err(),
-        passages::query_service(index.clone(), String::new(), 10, 0).unwrap_err(),
-        tasks::query_service(index.clone(), None, None, "invalid".to_owned(), 10, 0).unwrap_err(),
+        search::search_service_sync(
+            index.clone(),
+            crate::query::document::test_query("unregistered:value"),
+            10,
+            0,
+            None,
+            true,
+        )
+        .unwrap_err(),
+        passages::query_service(index.clone(), String::new(), None, 10, 0, None).unwrap_err(),
+        tasks::query_service(
+            &service::query_snapshot(&index).unwrap(),
+            None,
+            None,
+            "invalid".to_owned(),
+            10,
+            0,
+        )
+        .unwrap_err(),
         calendar::calendar_buckets_service_sync(
             index.clone(),
-            String::new(),
+            crate::query::document::QueryDocument::empty(),
             "created".to_owned(),
             "invalid".to_owned(),
             day.to_owned(),
@@ -472,15 +587,18 @@ fn typed_queries_share_cache_invalidation_and_keep_domain_errors() {
         relations::facet_service_sync(index.clone(), "invalid".to_owned(), Vec::new(), None)
             .unwrap_err(),
     ] {
-        assert!(matches!(error, ApplicationError::InvalidRequest(_)));
+        assert!(matches!(
+            error,
+            ApplicationError::InvalidRequest(_) | ApplicationError::InvalidQuery(_)
+        ));
     }
     execute(
         &app,
         "update_item",
         json!({
-            "id": id, "version": with_task["item"]["revision"],
+            "id": id, "version": first["item"]["revision"],
             "meta": {"title": "Changed query fixture"}, "tags": ["changed"],
-            "content": with_task["item"]["content"]
+            "content": first["item"]["content"]
         }),
     )
     .unwrap();
@@ -502,12 +620,13 @@ fn typed_queries_share_cache_invalidation_and_keep_domain_errors() {
         std::thread::sleep(Duration::from_millis(10));
     }
     app.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn empty_application_queries_return_empty_results_and_keep_validation() {
-    let app = application("empty-queries");
+    let project = TestProject::new("empty-queries");
+    let app = project.application();
     app.initialize_sync(true).unwrap();
     for field in ["created", "modified", "meta.date", "completed"] {
         let result = execute(
@@ -515,6 +634,7 @@ fn empty_application_queries_return_empty_results_and_keep_validation() {
             "read_calendar_buckets",
             json!({
                 "field": field, "startDate": "2026-10-01", "endDate": "2026-10-31",
+                "query":crate::query::document::QueryDocument::active_pages(),
                 "granularity": "day"
             }),
         )
@@ -553,24 +673,26 @@ fn empty_application_queries_return_empty_results_and_keep_validation() {
             Err(ApplicationError::InvalidRequest(_))
         ));
     }
-    assert_eq!(
-        execute(
+    assert!(
+        !execute(
             &app,
-            "analyze_query",
-            json!({"query": "unregistered:value"})
+            "validate_query",
+            json!({"document":crate::query::document::test_query("unregistered:value")})
         )
-        .unwrap()["valid"],
-        false
+        .unwrap()["valid"]
+            .as_bool()
+            .unwrap()
     );
-    assert_eq!(
+    assert!(
         execute(
             &app,
-            "analyze_query",
-            json!({"query": "+type:page sort:modified-desc"})
+            "validate_query",
+            json!({"document":crate::query::document::test_query("+type:page sort:modified-desc")})
         )
-        .unwrap()["valid"],
-        true
+        .unwrap()["valid"]
+            .as_bool()
+            .unwrap()
     );
     app.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }

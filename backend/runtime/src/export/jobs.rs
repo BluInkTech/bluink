@@ -10,10 +10,11 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::engine::publication::{
-    article, note_pdf,
+    page::plan_page,
     plan::PublicationFormat,
     request::{ExportRequest, SourceKind},
-    theme::ThemeOrigin,
+    theme::ThemeSnapshot,
+    theme_preview,
 };
 use tempfile::TempDir;
 
@@ -45,6 +46,7 @@ pub(crate) struct Context {
     pub(crate) index: Option<String>,
     pub(crate) web_fonts: Option<String>,
     pub(crate) pdf_fonts: Option<String>,
+    pub(crate) docx_fonts: Option<String>,
     pub(crate) typst: Option<String>,
 }
 
@@ -53,6 +55,7 @@ impl Context {
         Resources {
             web_fonts: self.web_fonts.as_deref(),
             pdf_fonts: self.pdf_fonts.as_deref(),
+            docx_fonts: self.docx_fonts.as_deref(),
             typst: self.typst.as_deref(),
         }
     }
@@ -63,9 +66,10 @@ struct JobState {
     phase: &'static str,
     plan: Option<Arc<Plan>>,
     folder: Option<TempDir>,
+    source_folder: Option<TempDir>,
     output: Option<PathBuf>,
     preview: Option<preview::Preview>,
-    bundle: Option<Arc<Vec<u8>>>,
+    bundle: Option<tempfile::NamedTempFile>,
     error: Option<String>,
     busy: usize,
 }
@@ -76,14 +80,21 @@ struct Job {
     created: Instant,
     request: ExportRequest,
     context: Context,
+    theme_preview: Option<theme_preview::Guard>,
     state: Mutex<JobState>,
     idle: Condvar,
+    bundling: Mutex<()>,
     planning: Mutex<Option<JoinHandle<()>>>,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    // Work panics are caught outside these short critical sections. Recovering
-    // a poisoned lock still allows shutdown to reclaim owned resources.
+fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
+    mutex
+        .lock()
+        .map_err(crate::application::error::poison_error)
+}
+
+fn recover_for_cleanup<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    // Recovery is restricted to cancellation, failure reporting and cleanup.
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -112,12 +123,17 @@ impl Drop for Work {
         reason = "Keep job and registry state guarded through lifecycle updates and notifications."
     )]
     fn drop(&mut self) {
-        let mut state = lock(&self.0.state);
+        let mut state = recover_for_cleanup(&self.0.state);
+        if state.busy == 1 && state.state == State::Queued {
+            state.state = State::Failed;
+            state.phase = "Generation failed";
+            state.error = Some("Export queue stopped before generation began.".into());
+        }
         if state.busy == 1 && matches!(state.state, State::Failed | State::Cancelled) {
             // Cleanup belongs to the last tracked task; stop waits for it too.
             drop(state);
             self.0.dispose();
-            state = lock(&self.0.state);
+            state = recover_for_cleanup(&self.0.state);
         }
         state.busy -= 1;
         self.0.idle.notify_all();
@@ -125,6 +141,18 @@ impl Drop for Work {
 }
 
 impl Job {
+    fn review_theme<'a>(&'a self, plan: &'a Plan) -> &'a ThemeSnapshot {
+        self.theme_preview
+            .as_ref()
+            .map_or_else(|| plan.theme(), |preview| &preview.theme)
+    }
+
+    fn assert_preview_fresh(&self) -> Result<()> {
+        if let Some(preview) = &self.theme_preview {
+            preview.assert_fresh().map_err(internal_error)?;
+        }
+        Ok(())
+    }
     fn measuring(&self, phase: &'static str) -> Phase {
         Phase {
             started: Instant::now(),
@@ -134,12 +162,15 @@ impl Job {
     }
 
     fn cancelled(&self) -> bool {
-        lock(&self.state).state == State::Cancelled
+        self.state
+            .lock()
+            .map_or(true, |state| state.state == State::Cancelled)
     }
 
     fn phase(&self, phase: &'static str) {
-        let mut state = lock(&self.state);
-        if state.state != State::Cancelled {
+        if let Ok(mut state) = self.state.lock()
+            && state.state != State::Cancelled
+        {
             state.phase = phase;
         }
     }
@@ -151,7 +182,7 @@ impl Job {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(action))
             .unwrap_or_else(|_| Err(internal_error("Export generation panicked.")));
         if let Err(error) = outcome {
-            let mut state = lock(&self.state);
+            let mut state = recover_for_cleanup(&self.state);
             if state.state != State::Cancelled {
                 let phase = state.phase;
                 state.state = State::Failed;
@@ -165,7 +196,7 @@ impl Job {
 
     fn cancel(&self) {
         {
-            let mut state = lock(&self.state);
+            let mut state = recover_for_cleanup(&self.state);
             state.state = State::Cancelled;
             state.phase = "Cancelled";
         }
@@ -177,11 +208,15 @@ impl Job {
 
     fn dispose(&self) {
         let _phase = self.measuring("cleanup");
-        let (preview, folder) = {
-            let mut state = lock(&self.state);
+        let (preview, folder, source_folder) = {
+            let mut state = recover_for_cleanup(&self.state);
             state.output = None;
             state.bundle = None;
-            (state.preview.take(), state.folder.take())
+            (
+                state.preview.take(),
+                state.folder.take(),
+                state.source_folder.take(),
+            )
         };
         if let Some(preview) = preview
             && let Err(error) = preview.stop()
@@ -193,15 +228,21 @@ impl Job {
         {
             tracing::error!(target: "bluink.export", error = %error, "Export artifact cleanup failed");
         }
+        if let Some(folder) = source_folder
+            && let Err(error) = folder.close()
+        {
+            tracing::error!(target: "bluink.export", error = %error, "Theme preview source cleanup failed");
+        }
     }
 
     fn finish(&self) {
-        if let Some(planning) = lock(&self.planning).take()
+        let planning = recover_for_cleanup(&self.planning).take();
+        if let Some(planning) = planning
             && planning.join().is_err()
         {
             tracing::error!(target: "bluink.export", "Export planning thread failed");
         }
-        let mut state = lock(&self.state);
+        let mut state = recover_for_cleanup(&self.state);
         while state.busy != 0 {
             state = self
                 .idle
@@ -214,46 +255,52 @@ impl Job {
 
     fn plan(&self) -> Result<Plan> {
         let _phase = self.measuring("planning");
+        self.assert_preview_fresh()?;
         let request = &self.request;
         let context = &self.context;
         match request.source {
             SourceKind::Publication => {
-                self.phase("Waiting for the project index");
-                let index = context.index.as_deref().ok_or_else(|| {
-                    internal_error("Initialize the project index before preparing a Publication.")
-                })?;
-                let deadline = Instant::now() + INDEX_WAIT;
-                let readiness = self.measuring("readiness");
-                loop {
-                    if self.cancelled() {
-                        return Err(internal_error("Export cancelled."));
+                let index = context.index.as_deref();
+                if super::needs_index(&context.root, &request.id)? {
+                    self.phase("Waiting for the project index");
+                    let index = index.ok_or_else(|| {
+                        internal_error(
+                            "Initialize the project index before preparing a Publication.",
+                        )
+                    })?;
+                    let deadline = Instant::now() + INDEX_WAIT;
+                    let readiness = self.measuring("readiness");
+                    loop {
+                        if self.cancelled() {
+                            return Err(internal_error("Export cancelled."));
+                        }
+                        let status = crate::indexing::service::index_service_status_typed(index)?;
+                        if status.state == "ready" && status.pending == 0 {
+                            break;
+                        }
+                        if status.state == "error" {
+                            return Err(internal_error(
+                                status
+                                    .error
+                                    .unwrap_or_else(|| "Index reconciliation failed.".to_owned()),
+                            ));
+                        }
+                        if Instant::now() >= deadline {
+                            return Err(internal_error(
+                                "Project indexing exceeded five minutes. Retry generation.",
+                            ));
+                        }
+                        let state = lock(&self.state)?;
+                        let _wait = self
+                            .idle
+                            .wait_timeout(state, Duration::from_millis(100))
+                            .map_err(crate::application::error::poison_error)?;
                     }
-                    let status = crate::service::index_service_status_typed(index)?;
-                    if status.state == "ready" && status.pending == 0 {
-                        break;
-                    }
-                    if status.state == "error" {
-                        return Err(internal_error(
-                            status
-                                .error
-                                .unwrap_or_else(|| "Index reconciliation failed.".to_owned()),
-                        ));
-                    }
-                    if Instant::now() >= deadline {
-                        return Err(internal_error(
-                            "Project indexing exceeded five minutes. Retry generation.",
-                        ));
-                    }
-                    let state = lock(&self.state);
-                    let _wait = self
-                        .idle
-                        .wait_timeout(state, Duration::from_millis(100))
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    drop(readiness);
                 }
-                drop(readiness);
                 self.phase("Resolving page selections");
                 let resolution = self.measuring("resolve");
-                let inputs = super::resolve_inputs(&context.root, &request.id, Some(index))?;
+                let inputs = super::resolve_inputs(&context.root, &request.id, index)?;
                 drop(resolution);
                 self.phase("Validating pages, links, and assets");
                 let _validation = self.measuring("validate");
@@ -281,28 +328,17 @@ impl Job {
                     )?)));
                 }
                 self.phase("Checking page content");
-                if request.format == PublicationFormat::Pdf {
-                    Ok(Plan::NotePdf(Box::new(
-                        note_pdf::plan_note_pdf(
-                            &context.root,
-                            &request.id,
-                            &page.theme_id,
-                            page.profile,
-                            page.outside_links.clone(),
-                        )
-                        .map_err(internal_error)?,
-                    )))
-                } else {
-                    Ok(Plan::Article(Box::new(
-                        article::plan_article(
-                            &context.root,
-                            &request.id,
-                            &page.theme_id,
-                            page.outside_links.clone(),
-                        )
-                        .map_err(internal_error)?,
-                    )))
-                }
+                Ok(Plan::Page(Box::new(
+                    plan_page(
+                        &context.root,
+                        &request.id,
+                        &page.theme_id,
+                        page.outside_links.clone(),
+                        request.format,
+                        page.profile,
+                    )
+                    .map_err(internal_error)?,
+                )))
             }
         }
     }
@@ -312,8 +348,9 @@ impl Job {
     )]
     fn render(&self) -> Result<()> {
         let _phase = self.measuring("rendering");
+        self.assert_preview_fresh()?;
         let (plan, output) = {
-            let mut state = lock(&self.state);
+            let mut state = lock(&self.state)?;
             if state.state == State::Cancelled {
                 return Ok(());
             }
@@ -324,6 +361,8 @@ impl Job {
             state.state = State::Rendering;
             state.phase = match self.request.format {
                 PublicationFormat::Pdf => "Generating PDF",
+                PublicationFormat::Docx => "Generating Word document",
+                PublicationFormat::Epub => "Building EPUB book",
                 PublicationFormat::Html => "Building HTML document",
                 PublicationFormat::Site => "Building website",
             };
@@ -332,6 +371,8 @@ impl Job {
                 .tempdir()?;
             let output = folder.path().join(match self.request.format {
                 PublicationFormat::Pdf => "document.pdf",
+                PublicationFormat::Docx => "document.docx",
+                PublicationFormat::Epub => "document.epub",
                 PublicationFormat::Html => "document.html",
                 PublicationFormat::Site => "site",
             });
@@ -339,22 +380,49 @@ impl Job {
             state.folder = Some(folder);
             (plan, output)
         };
-        let hash = matches!(plan.theme().origin, ThemeOrigin::Project)
-            .then_some(plan.theme().sha256.as_str());
+        let hash = plan
+            .theme()
+            .requires_trust
+            .then_some(plan.theme().execution_sha256.as_str());
         let context = &self.context;
         match plan.as_ref() {
-            Plan::Article(plan) => {
-                super::render_article(
-                    &context.root,
-                    plan,
-                    Some(&output),
-                    hash,
-                    &context.resources(),
-                )?;
-            }
-            Plan::NotePdf(plan) => {
-                super::render_note_pdf(&context.root, plan, &output, hash, &context.resources())?;
-            }
+            Plan::Page(plan) => match plan.format {
+                PublicationFormat::Epub => {
+                    super::render_note_epub(&context.root, plan, &output, &context.resources())?;
+                }
+                PublicationFormat::Docx => {
+                    super::render_note_docx(
+                        &context.root,
+                        plan,
+                        &output,
+                        hash,
+                        &context.resources(),
+                    )?;
+                }
+                PublicationFormat::Html => {
+                    super::render_article(
+                        &context.root,
+                        plan,
+                        Some(&output),
+                        hash,
+                        &context.resources(),
+                    )?;
+                }
+                PublicationFormat::Pdf => {
+                    super::render_note_pdf(
+                        &context.root,
+                        plan,
+                        &output,
+                        hash,
+                        &context.resources(),
+                    )?;
+                }
+                PublicationFormat::Site => {
+                    return Err(internal_error(
+                        "A standalone plan cannot generate a website.",
+                    ));
+                }
+            },
             Plan::Publication(plan) => {
                 super::render_publication(
                     &context.root,
@@ -366,7 +434,8 @@ impl Job {
                 )?;
             }
         }
-        let mut state = lock(&self.state);
+        self.assert_preview_fresh()?;
+        let mut state = lock(&self.state)?;
         if state.state != State::Cancelled {
             state.state = State::Ready;
             state.phase = "Ready";
@@ -380,6 +449,10 @@ struct Registry {
     jobs: HashMap<String, Arc<Job>>,
     approved: HashSet<String>,
     stopped: bool,
+}
+
+#[derive(Default)]
+struct Lifecycle {
     sweeper: Option<JoinHandle<()>>,
 }
 
@@ -387,35 +460,56 @@ struct Registry {
 pub(crate) struct Manager {
     registry: Mutex<Registry>,
     changed: Condvar,
-    cleanup: Mutex<()>,
+    // Serializes creation with stop, including thread ownership publication.
+    // Workers never acquire this gate; registry users need not wait for spawning.
+    lifecycle: Mutex<Lifecycle>,
 }
 
 impl Manager {
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "Keep job and registry state guarded through lifecycle updates and notifications."
-    )]
     pub(crate) fn create(
         self: &Arc<Self>,
         context: Context,
         request: ExportRequest,
     ) -> Result<JobId> {
+        self.create_owned(context, request, None)
+    }
+
+    pub(crate) fn create_theme_preview(
+        self: &Arc<Self>,
+        mut context: Context,
+        request: ExportRequest,
+        source: theme_preview::Source,
+    ) -> Result<JobId> {
+        source.folder.path().clone_into(&mut context.root);
+        context.index = None;
+        self.create_owned(context, request, Some(source))
+    }
+
+    fn create_owned(
+        self: &Arc<Self>,
+        context: Context,
+        request: ExportRequest,
+        source: Option<theme_preview::Source>,
+    ) -> Result<JobId> {
         // Fail resource allocation before registering work, and serialize create
         // with stop so shutdown cannot miss an accepted planning thread.
         Scheduler::global()?;
-        let mut registry = lock(&self.registry);
-        if registry.stopped {
+        let mut lifecycle = lock(&self.lifecycle)?;
+        if lock(&self.registry)?.stopped {
             return Err(internal_error("The application is shutting down."));
         }
-        if registry.sweeper.is_none() {
+        if lifecycle.sweeper.is_none() {
             let manager = Arc::downgrade(self);
-            registry.sweeper = Some(
+            lifecycle.sweeper = Some(
                 thread::Builder::new()
                     .name("bluink-export-expiry".to_owned())
                     .spawn(move || Self::sweep(manager))?,
             );
         }
         let id = uuid::Uuid::now_v7().to_string();
+        let (theme_preview, source_folder) = source.map_or((None, None), |source| {
+            (Some(source.guard), Some(source.folder))
+        });
         let job = Arc::new(Job {
             id: id.clone(),
             span: tracing::info_span!(target: "bluink.export", "export.job",
@@ -423,11 +517,13 @@ impl Manager {
             created: Instant::now(),
             request,
             context,
+            theme_preview,
             state: Mutex::new(JobState {
                 state: State::Planning,
                 phase: "Preparing export",
                 plan: None,
                 folder: None,
+                source_folder,
                 output: None,
                 preview: None,
                 bundle: None,
@@ -435,6 +531,7 @@ impl Manager {
                 busy: 1,
             }),
             idle: Condvar::new(),
+            bundling: Mutex::new(()),
             planning: Mutex::new(None),
         });
         let work = Work(Arc::clone(&job));
@@ -447,20 +544,33 @@ impl Manager {
                 planning.attempt(|| manager.prepare(&planning));
                 drop(work);
             })?;
-        *lock(&job.planning) = Some(thread);
-        registry.jobs.insert(id.clone(), job);
+        *lock(&job.planning)? = Some(thread);
+        match lock(&self.registry) {
+            Ok(mut registry) => {
+                registry.jobs.insert(id.clone(), job);
+            }
+            Err(error) => {
+                job.cancel();
+                job.finish();
+                return Err(error);
+            }
+        }
+        drop(lifecycle);
         self.changed.notify_all();
         Ok(JobId { job_id: id })
     }
 
     fn prepare(&self, job: &Arc<Job>) -> Result<()> {
         let plan = Arc::new(job.plan()?);
-        let approved = lock(&self.registry).approved.contains(&plan.theme().sha256);
-        let mut state = lock(&job.state);
+        let theme = job.review_theme(&plan);
+        let approved = lock(&self.registry)?
+            .approved
+            .contains(&theme.execution_sha256);
+        let mut state = lock(&job.state)?;
         if state.state == State::Cancelled {
             return Ok(());
         }
-        let needs_approval = matches!(plan.theme().origin, ThemeOrigin::Project) && !approved;
+        let needs_approval = theme.requires_trust && !approved;
         state.plan = Some(plan);
         state.state = if needs_approval {
             State::AwaitingThemeApproval
@@ -480,40 +590,52 @@ impl Manager {
 
     fn enqueue(job: &Arc<Job>, state: &mut JobState) -> Result<()> {
         let scheduler = Scheduler::global()?;
-        state.state = State::Queued;
-        state.phase = "Waiting to generate";
-        let work = Work::begin(job, state);
         let rendering = Arc::clone(job);
         let queued = Instant::now();
         let _span = job.span.enter();
         scheduler.enqueue(
-            job.request.format == PublicationFormat::Pdf,
+            matches!(
+                job.request.format,
+                PublicationFormat::Pdf | PublicationFormat::Docx | PublicationFormat::Epub
+            ),
             job.id.clone(),
-            move || {
-                let _span = rendering.span.enter();
-                tracing::debug!(target: "bluink.export", event = "export_dequeued",
-                    queue_ms = queued.elapsed().as_secs_f64() * 1000.0);
-                rendering.attempt(|| rendering.render());
-                drop(work);
+            || {
+                state.state = State::Queued;
+                state.phase = "Waiting to generate";
+                let work = Work::begin(job, state);
+                move || {
+                    let _span = rendering.span.enter();
+                    tracing::debug!(target: "bluink.export", event = "export_dequeued",
+                        queue_ms = queued.elapsed().as_secs_f64() * 1000.0);
+                    rendering.attempt(|| rendering.render());
+                    drop(work);
+                }
             },
-        );
-        Ok(())
+        )
     }
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "Keep job and registry state guarded through lifecycle updates and notifications."
-    )]
+    fn find(&self, id: &str) -> Result<Option<Arc<Job>>> {
+        Ok(lock(&self.registry)?.jobs.get(id).cloned())
+    }
+
+    fn artifact_job(&self, id: &str) -> Result<Option<Arc<Job>>> {
+        Ok(self.find(id)?.filter(|job| {
+            let expired = job.created.elapsed() >= LIFETIME;
+            if expired {
+                self.changed.notify_all();
+            }
+            !expired
+        }))
+    }
+
     fn fresh(&self, id: &str) -> Result<Arc<Job>> {
-        let registry = lock(&self.registry);
-        let job = registry
-            .jobs
-            .get(id)
+        let job = self
+            .find(id)?
             .ok_or_else(|| internal_error("Export was not found."))?;
         if job.created.elapsed() >= LIFETIME {
             self.changed.notify_all();
             return Err(internal_error("Export expired. Prepare it again."));
         }
-        Ok(Arc::clone(job))
+        Ok(job)
     }
     #[expect(
         clippy::needless_pass_by_value,
@@ -521,20 +643,21 @@ impl Manager {
     )]
     pub(crate) fn read(&self, request: ReadRequest) -> Result<Status> {
         let job = self.fresh(&request.job_id)?;
-        let approved = lock(&self.registry).approved.clone();
-        let state = lock(&job.state);
+        let approved = lock(&self.registry)?.approved.clone();
+        let state = lock(&job.state)?;
         let theme_trust = state
             .plan
             .as_ref()
-            .filter(|plan| matches!(plan.theme().origin, ThemeOrigin::Project))
+            .filter(|plan| job.review_theme(plan).requires_trust)
             .map(|plan| ThemeTrust {
-                hash: plan.theme().sha256.clone(),
-                trusted: approved.contains(&plan.theme().sha256),
+                hash: job.review_theme(plan).execution_sha256.clone(),
+                trusted: approved.contains(&job.review_theme(plan).execution_sha256),
                 root: job
-                    .context
-                    .root
+                    .theme_preview
+                    .as_ref()
+                    .map_or(&job.context.root, |preview| &preview.project)
                     .join("themes")
-                    .join(&plan.theme().id)
+                    .join(&job.review_theme(plan).id)
                     .to_string_lossy()
                     .into_owned(),
             });
@@ -547,6 +670,14 @@ impl Manager {
             plan: request.include_plan.then(|| state.plan.clone()).flatten(),
             summary: state.plan.as_ref().map(|plan| plan.summary()),
             theme_trust,
+            theme_preview: job
+                .theme_preview
+                .as_ref()
+                .map(|preview| ThemePreviewSummary {
+                    theme_id: preview.theme.id.clone(),
+                    revision: preview.revision.clone(),
+                    draft_sha256: preview.theme.sha256.clone(),
+                }),
             artifact_url: ready.then(|| {
                 format!(
                     "/api/export_artifact/{}{}",
@@ -572,7 +703,7 @@ impl Manager {
     )]
     pub(crate) fn start(&self, request: JobRequest) -> Result<JobId> {
         let job = self.fresh(&request.job_id)?;
-        let mut state = lock(&job.state);
+        let mut state = lock(&job.state)?;
         if state.state != State::Prepared {
             return Err(internal_error(
                 "Prepare and approve the export before generating it.",
@@ -589,13 +720,14 @@ impl Manager {
     )]
     pub(crate) fn approve(&self, request: ApproveRequest) -> Result<Approved> {
         let job = self.fresh(&request.job_id)?;
-        let mut registry = lock(&self.registry);
-        let mut state = lock(&job.state);
+        job.assert_preview_fresh()?;
+        let mut registry = lock(&self.registry)?;
+        let mut state = lock(&job.state)?;
         if state.state != State::AwaitingThemeApproval
             || state
                 .plan
                 .as_ref()
-                .is_none_or(|plan| plan.theme().sha256 != request.hash)
+                .is_none_or(|plan| job.review_theme(plan).execution_sha256 != request.hash)
         {
             return Err(internal_error(
                 "The theme changed. Prepare again to review its current version.",
@@ -615,13 +747,18 @@ impl Manager {
         reason = "The service consumes its decoded request or owned work at the application boundary."
     )]
     pub(crate) fn cancel(&self, request: JobRequest) -> Cancelled {
-        let job = lock(&self.registry).jobs.get(&request.job_id).cloned();
+        let job = recover_for_cleanup(&self.registry)
+            .jobs
+            .get(&request.job_id)
+            .cloned();
         let Some(job) = job else {
             return Cancelled { cancelled: false };
         };
         {
-            let mut state = lock(&job.state);
-            if matches!(state.state, State::Ready | State::Failed | State::Cancelled) {
+            let mut state = recover_for_cleanup(&job.state);
+            if matches!(state.state, State::Failed | State::Cancelled)
+                || (state.state == State::Ready && job.theme_preview.is_none())
+            {
                 return Cancelled { cancelled: false };
             }
             state.state = State::Cancelled;
@@ -631,6 +768,9 @@ impl Manager {
         if let Ok(scheduler) = Scheduler::global() {
             scheduler.cancel(&job.id);
         }
+        if recover_for_cleanup(&job.state).busy == 0 {
+            job.dispose();
+        }
         Cancelled { cancelled: true }
     }
     #[expect(
@@ -639,7 +779,7 @@ impl Manager {
     )]
     pub(crate) fn preview(&self, request: JobRequest) -> Result<PreviewUrl> {
         let job = self.fresh(&request.job_id)?;
-        let mut state = lock(&job.state);
+        let mut state = lock(&job.state)?;
         if state.state != State::Ready || job.request.format != PublicationFormat::Site {
             return Err(internal_error("Generate the website before viewing it."));
         }
@@ -678,11 +818,11 @@ impl Manager {
         reason = "Keep job and registry state guarded through lifecycle updates and notifications."
     )]
     pub(crate) fn open_artifact(&self, id: &str, path: &str) -> Result<Option<OpenedArtifact>> {
-        let Ok(job) = self.fresh(id) else {
+        let Some(job) = self.artifact_job(id)? else {
             return Ok(None);
         };
         let (root, lease) = {
-            let mut state = lock(&job.state);
+            let mut state = lock(&job.state)?;
             if state.state != State::Ready {
                 return Ok(None);
             }
@@ -717,17 +857,14 @@ impl Manager {
         clippy::significant_drop_tightening,
         reason = "Keep job and registry state guarded through lifecycle updates and notifications."
     )]
-    pub(crate) fn site_zip(&self, id: &str) -> Result<Option<Arc<Vec<u8>>>> {
-        let Ok(job) = self.fresh(id) else {
+    pub(crate) fn site_zip(&self, id: &str) -> Result<Option<OpenedArtifact>> {
+        let Some(job) = self.artifact_job(id)? else {
             return Ok(None);
         };
         let (root, work) = {
-            let mut state = lock(&job.state);
+            let mut state = lock(&job.state)?;
             if state.state != State::Ready || job.request.format != PublicationFormat::Site {
                 return Ok(None);
-            }
-            if let Some(bundle) = &state.bundle {
-                return Ok(Some(Arc::clone(bundle)));
             }
             let root = state
                 .output
@@ -735,17 +872,42 @@ impl Manager {
                 .ok_or_else(|| internal_error("Generated site is unavailable."))?;
             (root, Work::begin(&job, &mut state))
         };
-        let bundle = Arc::new(artifacts::site_zip(&root)?);
-        let mut state = lock(&job.state);
-        let result = if state.state == State::Ready {
-            state.bundle = Some(Arc::clone(&bundle));
-            Some(bundle)
-        } else {
-            None
-        };
-        drop(state);
-        drop(work);
-        Ok(result)
+        // A separate lock serializes bundle preparation without blocking job
+        // status or cancellation. The lease protects the source throughout.
+        let _bundling = lock(&job.bundling)?;
+        {
+            let state = lock(&job.state)?;
+            if state.state != State::Ready {
+                return Ok(None);
+            }
+            if let Some(bundle) = &state.bundle {
+                return Ok(Some(OpenedArtifact {
+                    file: bundle.reopen()?,
+                    path: PathBuf::from("bluink-site.zip"),
+                    content_type: "application/zip",
+                    site: false,
+                    lease: work,
+                }));
+            }
+        }
+        let mut bundle = tempfile::NamedTempFile::new_in(
+            root.parent()
+                .ok_or_else(|| internal_error("Site has no output directory"))?,
+        )?;
+        artifacts::site_zip(&root, bundle.as_file_mut())?;
+        let file = bundle.reopen()?;
+        let mut state = lock(&job.state)?;
+        if state.state != State::Ready {
+            return Ok(None);
+        }
+        state.bundle = Some(bundle);
+        Ok(Some(OpenedArtifact {
+            file,
+            path: PathBuf::from("bluink-site.zip"),
+            content_type: "application/zip",
+            site: false,
+            lease: work,
+        }))
     }
     #[expect(
         clippy::significant_drop_tightening,
@@ -756,7 +918,7 @@ impl Manager {
         reason = "Collect expired ids before mutating the registry."
     )]
     fn expired(&self, now: Instant) -> Vec<Arc<Job>> {
-        let mut registry = lock(&self.registry);
+        let mut registry = recover_for_cleanup(&self.registry);
         let ids = registry
             .jobs
             .iter()
@@ -777,7 +939,7 @@ impl Manager {
                 job.cancel();
                 job.finish();
             }
-            let registry = lock(&manager.registry);
+            let registry = recover_for_cleanup(&manager.registry);
             if registry.stopped {
                 return;
             }
@@ -795,30 +957,26 @@ impl Manager {
     }
 
     pub(crate) fn stop(&self) {
-        let _cleanup = lock(&self.cleanup);
-        let (jobs, sweeper) = {
-            let mut registry = lock(&self.registry);
+        let mut lifecycle = recover_for_cleanup(&self.lifecycle);
+        let jobs = {
+            let mut registry = recover_for_cleanup(&self.registry);
             registry.stopped = true;
-            (
-                registry.jobs.values().cloned().collect::<Vec<_>>(),
-                registry.sweeper.take(),
-            )
+            std::mem::take(&mut registry.jobs)
         };
         self.changed.notify_all();
-        for job in &jobs {
+        for job in jobs.values() {
             job.cancel();
         }
-        if let Some(sweeper) = sweeper
+        if let Some(sweeper) = lifecycle.sweeper.take()
             && sweeper.join().is_err()
         {
             tracing::error!(target: "bluink.export", "Export expiry thread failed");
         }
-        for job in jobs {
+        for job in jobs.into_values() {
             job.finish();
         }
-        let mut registry = lock(&self.registry);
-        registry.jobs.clear();
-        registry.approved.clear();
+        recover_for_cleanup(&self.registry).approved.clear();
+        drop(lifecycle);
     }
 }
 
@@ -833,9 +991,9 @@ mod tests {
         use std::io::Read;
         let manager = Manager::default();
         let job = job(&manager, State::Ready);
-        let path = lock(&job.state).output.clone().unwrap();
+        let path = recover_for_cleanup(&job.state).output.clone().unwrap();
         let mut artifact = manager.open_artifact(&job.id, "").unwrap().unwrap();
-        assert_eq!(lock(&job.state).busy, 1);
+        assert_eq!(recover_for_cleanup(&job.state).busy, 1);
         let expired = manager.expired(Instant::now() + LIFETIME);
         assert_eq!(expired.len(), 1);
         job.cancel();
@@ -858,20 +1016,175 @@ mod tests {
     }
 
     fn job(manager: &Manager, state: State) -> Arc<Job> {
+        job_with_source(manager, state, None)
+    }
+
+    #[test]
+    fn concurrent_creation_and_stop_leave_no_registered_work_or_expiry_thread() {
+        let manager = Arc::new(Manager::default());
+        let fixture = job(&manager, State::Prepared);
+        recover_for_cleanup(&manager.registry)
+            .jobs
+            .remove(&fixture.id);
+        let accepted = manager.create(fixture.context.clone(), request()).unwrap();
+        let accepted = manager.find(&accepted.job_id).unwrap().unwrap();
+        let start = Arc::new(std::sync::Barrier::new(9));
+        let mut creators = Vec::new();
+        for _ in 0..8 {
+            let manager = Arc::clone(&manager);
+            let start = Arc::clone(&start);
+            let context = fixture.context.clone();
+            let request = request();
+            creators.push(thread::spawn(move || {
+                start.wait();
+                manager.create(context, request)
+            }));
+        }
+        start.wait();
+        manager.stop();
+        for creator in creators {
+            // Creation either publishes before stop or rejects stopped admission.
+            let _outcome = creator.join().unwrap();
+        }
+        let registry = recover_for_cleanup(&manager.registry);
+        assert!(registry.stopped);
+        assert!(registry.jobs.is_empty());
+        drop(registry);
+        assert_eq!(recover_for_cleanup(&accepted.state).busy, 0);
+        assert!(recover_for_cleanup(&accepted.planning).is_none());
+        assert!(recover_for_cleanup(&manager.lifecycle).sweeper.is_none());
+        assert!(manager.create(fixture.context.clone(), request()).is_err());
+        manager.stop();
+    }
+
+    fn request() -> ExportRequest {
+        serde_json::from_value(json!({"source": {"kind": "note", "id": "00000000-0000-7000-8000-000000000601"},
+            "format": "pdf", "start": false, "themeId": "classic", "outsideLinks": "error", "profile": "default"})).unwrap()
+    }
+
+    fn job_with_source(
+        manager: &Manager,
+        state: State,
+        source: Option<theme_preview::Source>,
+    ) -> Arc<Job> {
         let folder = tempfile::tempdir().unwrap();
         let output = folder.path().join("document.pdf");
         std::fs::write(&output, b"temporary output").unwrap();
         let id = uuid::Uuid::now_v7().to_string();
-        let job = Arc::new(Job {
-            id: id.clone(), span: tracing::Span::none(), created: Instant::now(),
-            request: serde_json::from_value(json!({"source": {"kind": "note", "id": "00000000-0000-7000-8000-000000000601"},
-                "format": "pdf", "start": false, "themeId": "classic", "outsideLinks": "error", "profile": "default"})).unwrap(),
-            context: Context { root: folder.path().to_owned(), index: None, web_fonts: None, pdf_fonts: None, typst: None },
-            state: Mutex::new(JobState { state, phase: "Test", plan: None, folder: Some(folder), output: Some(output), preview: None, bundle: None, error: None, busy: 0 }),
-            idle: Condvar::new(), planning: Mutex::new(None),
+        let (theme_preview, source_folder) = source.map_or((None, None), |source| {
+            (Some(source.guard), Some(source.folder))
         });
-        lock(&manager.registry).jobs.insert(id, Arc::clone(&job));
+        let job = Arc::new(Job {
+            id: id.clone(),
+            span: tracing::Span::none(),
+            created: Instant::now(),
+            request: request(),
+            context: Context {
+                root: folder.path().to_owned(),
+                index: None,
+                web_fonts: None,
+                pdf_fonts: None,
+                docx_fonts: None,
+                typst: None,
+            },
+            theme_preview,
+            state: Mutex::new(JobState {
+                state,
+                phase: "Test",
+                plan: None,
+                folder: Some(folder),
+                source_folder,
+                output: Some(output),
+                preview: None,
+                bundle: None,
+                error: None,
+                busy: 0,
+            }),
+            idle: Condvar::new(),
+            bundling: Mutex::new(()),
+            planning: Mutex::new(None),
+        });
+        recover_for_cleanup(&manager.registry)
+            .jobs
+            .insert(id, Arc::clone(&job));
         job
+    }
+
+    #[test]
+    fn poisoned_job_or_registry_rejects_operations_but_allows_shutdown_cleanup() {
+        fn poison<T>(mutex: &Mutex<T>) {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = mutex.lock().unwrap();
+                panic!("injected export state corruption");
+            }));
+            assert!(outcome.is_err());
+        }
+        for poison_registry in [false, true] {
+            let manager = Manager::default();
+            let prepared = job(&manager, State::Prepared);
+            let output = recover_for_cleanup(&prepared.state).output.clone().unwrap();
+            if poison_registry {
+                poison(&manager.registry);
+            } else {
+                poison(&prepared.state);
+            }
+            assert!(
+                manager
+                    .start(JobRequest {
+                        job_id: prepared.id.clone()
+                    })
+                    .is_err()
+            );
+            assert!(
+                manager
+                    .read(ReadRequest {
+                        job_id: prepared.id.clone(),
+                        include_plan: false,
+                    })
+                    .is_err()
+            );
+            assert!(manager.open_artifact(&prepared.id, "").is_err());
+            assert!(manager.site_zip(&prepared.id).is_err());
+            manager.stop();
+            assert!(!output.exists());
+            assert!(recover_for_cleanup(&manager.registry).jobs.is_empty());
+            assert_eq!(recover_for_cleanup(&prepared.state).busy, 0);
+        }
+    }
+
+    #[test]
+    fn missing_or_expired_artifacts_are_unavailable() {
+        let manager = Manager::default();
+        assert!(manager.open_artifact("missing", "").unwrap().is_none());
+        assert!(manager.site_zip("missing").unwrap().is_none());
+        let mut expired = job(&manager, State::Ready);
+        recover_for_cleanup(&manager.registry)
+            .jobs
+            .remove(&expired.id);
+        Arc::get_mut(&mut expired).unwrap().created = Instant::now().checked_sub(LIFETIME).unwrap();
+        recover_for_cleanup(&manager.registry)
+            .jobs
+            .insert(expired.id.clone(), Arc::clone(&expired));
+        assert!(manager.open_artifact(&expired.id, "").unwrap().is_none());
+        assert!(manager.site_zip(&expired.id).unwrap().is_none());
+        manager.stop();
+    }
+
+    #[test]
+    fn abandoned_queued_work_fails_and_reclaims_its_output() {
+        let manager = Manager::default();
+        let queued = job(&manager, State::Queued);
+        let output = recover_for_cleanup(&queued.state).output.clone().unwrap();
+        let work = Work::begin(&queued, &mut recover_for_cleanup(&queued.state));
+        drop(work);
+        let state = recover_for_cleanup(&queued.state);
+        assert_eq!(state.state, State::Failed);
+        assert_eq!(state.busy, 0);
+        assert_eq!(
+            state.error.as_deref(),
+            Some("Export queue stopped before generation began.")
+        );
+        assert!(!output.exists());
     }
 
     #[test]
@@ -889,7 +1202,10 @@ mod tests {
             State::Cancelled,
         ] {
             let job = job(&manager, state);
-            paths.push(lock(&job.state).output.clone().unwrap());
+            paths.push(recover_for_cleanup(&job.state).output.clone().unwrap());
+            let source = tempfile::tempdir().unwrap();
+            paths.push(source.path().to_owned());
+            recover_for_cleanup(&job.state).source_folder = Some(source);
         }
         assert!(manager.expired(Instant::now()).is_empty());
         let expired = manager.expired(Instant::now() + LIFETIME);
@@ -899,8 +1215,66 @@ mod tests {
             job.finish();
         }
         assert!(paths.iter().all(|path| !path.exists()));
-        assert!(lock(&manager.registry).jobs.is_empty());
+        assert!(recover_for_cleanup(&manager.registry).jobs.is_empty());
         manager.stop();
+        manager.stop();
+    }
+
+    #[test]
+    fn cancelling_a_ready_theme_preview_keeps_source_and_output_until_download_finishes() {
+        let project = tempfile::tempdir().unwrap();
+        crate::engine::project::config::open_or_create_project(project.path(), "UTC").unwrap();
+        let theme = crate::engine::publication::theme::capture_theme(
+            project.path(),
+            "classic",
+            PublicationFormat::Pdf,
+        )
+        .unwrap();
+        let source = theme_preview::capture(
+            project.path(),
+            "classic",
+            &theme.sha256,
+            &theme.definition,
+            PublicationFormat::Pdf,
+        )
+        .unwrap();
+        let source_path = source.folder.path().to_owned();
+        let manager = Manager::default();
+        let job = job_with_source(&manager, State::Ready, Some(source));
+        let output = recover_for_cleanup(&job.state).output.clone().unwrap();
+        let artifact = manager.open_artifact(&job.id, "").unwrap().unwrap();
+        assert!(
+            manager
+                .cancel(JobRequest {
+                    job_id: job.id.clone()
+                })
+                .cancelled
+        );
+        assert_eq!(recover_for_cleanup(&job.state).state, State::Cancelled);
+        assert!(source_path.exists());
+        assert!(output.exists());
+        assert!(manager.open_artifact(&job.id, "").unwrap().is_none());
+        drop(artifact);
+        assert!(!source_path.exists());
+        assert!(!output.exists());
+        manager.stop();
+    }
+
+    #[test]
+    fn cancelling_a_prepared_job_reclaims_owned_preview_sources_immediately() {
+        let manager = Manager::default();
+        let job = job(&manager, State::Prepared);
+        let source = tempfile::tempdir().unwrap();
+        let path = source.path().to_owned();
+        recover_for_cleanup(&job.state).source_folder = Some(source);
+        assert!(
+            manager
+                .cancel(JobRequest {
+                    job_id: job.id.clone()
+                })
+                .cancelled
+        );
+        assert!(!path.exists());
         manager.stop();
     }
 
@@ -911,28 +1285,36 @@ mod tests {
         let active = job(&first, State::Rendering);
         let queued = job(&second, State::Queued);
         let next = job(&second, State::Queued);
-        let output = lock(&active.state).output.clone().unwrap();
+        let output = recover_for_cleanup(&active.state).output.clone().unwrap();
         let scheduler = Scheduler::global().unwrap();
         let (started, events) = mpsc::channel();
         let (release, wait) = mpsc::channel();
-        let work = Work::begin(&active, &mut lock(&active.state));
+        let work = Work::begin(&active, &mut recover_for_cleanup(&active.state));
         let started_active = started.clone();
-        scheduler.enqueue(true, active.id.clone(), move || {
-            started_active.send("active").unwrap();
-            wait.recv().unwrap();
-            drop(work);
-        });
+        scheduler
+            .enqueue(true, active.id.clone(), || {
+                move || {
+                    started_active.send("active").unwrap();
+                    wait.recv().unwrap();
+                    drop(work);
+                }
+            })
+            .unwrap();
         assert_eq!(
             events.recv_timeout(Duration::from_secs(5)).unwrap(),
             "active"
         );
         for (job, label) in [(&queued, "cancelled"), (&next, "next")] {
-            let work = Work::begin(job, &mut lock(&job.state));
+            let work = Work::begin(job, &mut recover_for_cleanup(&job.state));
             let started = started.clone();
-            scheduler.enqueue(true, job.id.clone(), move || {
-                started.send(label).unwrap();
-                drop(work);
-            });
+            scheduler
+                .enqueue(true, job.id.clone(), || {
+                    move || {
+                        started.send(label).unwrap();
+                        drop(work);
+                    }
+                })
+                .unwrap();
         }
         assert!(
             first
@@ -948,7 +1330,7 @@ mod tests {
                 })
                 .cancelled
         );
-        assert_eq!(lock(&queued.state).busy, 0);
+        assert_eq!(recover_for_cleanup(&queued.state).busy, 0);
         assert!(events.try_recv().is_err());
         assert!(output.exists());
         let (stopped, completion) = mpsc::channel();
@@ -970,14 +1352,14 @@ mod tests {
     fn a_panicking_render_is_failed_and_its_tracked_output_is_removed() {
         let manager = Manager::default();
         let job = job(&manager, State::Rendering);
-        let output = lock(&job.state).output.clone().unwrap();
-        let work = Work::begin(&job, &mut lock(&job.state));
+        let output = recover_for_cleanup(&job.state).output.clone().unwrap();
+        let work = Work::begin(&job, &mut recover_for_cleanup(&job.state));
         job.attempt(|| panic!("injected render failure"));
-        assert_eq!(lock(&job.state).state, State::Failed);
+        assert_eq!(recover_for_cleanup(&job.state).state, State::Failed);
         assert!(output.exists());
         drop(work);
         assert!(!output.exists());
-        assert_eq!(lock(&job.state).busy, 0);
+        assert_eq!(recover_for_cleanup(&job.state).busy, 0);
         manager.stop();
     }
 
@@ -985,7 +1367,7 @@ mod tests {
     fn expiry_joins_a_preview_before_removing_its_site() {
         let manager = Manager::default();
         let job = job(&manager, State::Ready);
-        let mut state = lock(&job.state);
+        let mut state = recover_for_cleanup(&job.state);
         let folder = state.folder.as_ref().unwrap().path().to_owned();
         std::fs::write(folder.join("index.html"), "Preview").unwrap();
         let preview = preview::Preview::start(folder.clone()).unwrap();

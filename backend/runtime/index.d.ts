@@ -23,12 +23,15 @@ export declare class BluinkConsole {
 
 export interface ApplicationOptions {
   projectRoot: string
+  /** Packaged, UI-authored workspace starter JSON. */
+  workspaceTemplatePath: string
   timezone?: string
   cacheLocation?: string
   publicDir?: string
   dataDir?: string
   webFontFolder?: string
   pdfFontFolder?: string
+  docxFontFolder?: string
   typstBinary?: string
 }
 
@@ -57,6 +60,8 @@ export interface HttpAddress {
 /**
  * Embedded in every platform artifact so packaging can reject stale binaries
  * without having to execute a foreign architecture on the build machine.
+ *
+ * The build mode distinguishes development addons from packageable releases.
  */
 export declare function nativeBuildInfo(): string
 

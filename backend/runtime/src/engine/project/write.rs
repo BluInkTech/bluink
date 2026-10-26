@@ -2,12 +2,13 @@
 // Copyright (c) 2023–2026 BluInk
 
 use std::collections::HashSet;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::path::Path;
+use std::time::Instant;
 use std::time::{Duration, SystemTime};
 
+use crate::engine::project::io::{LockMode, lock_file};
 use chrono::{DateTime, Local, Timelike};
-use fs4::fs_std::FileExt;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -16,20 +17,49 @@ use crate::engine::project::activity::{
 };
 use crate::engine::project::assemble::assemble_item;
 use crate::engine::project::config::read_project_config;
+use crate::engine::project::identity::{ItemId, is_item_id};
 use crate::engine::project::io::write_json_atomic;
-use crate::engine::project::item::{is_item_id, parse_item, read_project_item};
+use crate::engine::project::item::{read_project_item, validate_item};
 use crate::engine::project::properties::with_validated_metadata;
 
 #[derive(Debug)]
 pub(crate) enum MutationError {
-    Expected(String),
-    Unexpected(String),
+    Validation(String),
+    NotFound(String),
+    RevisionConflict(String),
+    Internal(String),
+    Serialization(serde_json::Error),
+    Storage(super::storage_error::StorageError),
+    Read(super::item::ItemReadError),
+}
+
+impl From<super::storage_error::StorageError> for MutationError {
+    fn from(error: super::storage_error::StorageError) -> Self {
+        Self::Storage(error)
+    }
 }
 
 impl std::fmt::Display for MutationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Expected(message) | Self::Unexpected(message) => formatter.write_str(message),
+            Self::Validation(message)
+            | Self::NotFound(message)
+            | Self::RevisionConflict(message)
+            | Self::Internal(message) => formatter.write_str(message),
+            Self::Serialization(error) => std::fmt::Display::fmt(error, formatter),
+            Self::Storage(error) => std::fmt::Display::fmt(error, formatter),
+            Self::Read(error) => std::fmt::Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl std::error::Error for MutationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Serialization(error) => Some(error),
+            Self::Storage(error) => Some(error),
+            Self::Read(error) => Some(error),
+            _ => None,
         }
     }
 }
@@ -44,67 +74,72 @@ pub(crate) fn mutate_existing_item(
     activity_date: &str,
     change: impl FnOnce(&Value) -> Result<Value, MutationError>,
 ) -> Result<Value, MutationError> {
+    let _mutation = super::transaction::lock(root, LockMode::Exclusive)?;
+    super::transaction::recover(root).map_err(MutationError::Internal)?;
     if !is_item_id(id) {
-        return Err(MutationError::Expected(format!(
+        return Err(MutationError::Validation(format!(
             "Invalid Bluink item id: {id}"
         )));
     }
     let config = read_project_config(root)
-        .map_err(MutationError::Unexpected)?
-        .ok_or_else(|| MutationError::Unexpected("Project configuration is missing.".to_owned()))?;
-    let _lock = lock_item(root, id).map_err(MutationError::Unexpected)?;
+        .map_err(MutationError::Internal)?
+        .ok_or_else(|| MutationError::Internal("Project configuration is missing.".to_owned()))?;
+    let _lock = lock_item(root, id).map_err(MutationError::Storage)?;
     let existing = read_project_item(root, id)
-        .map_err(MutationError::Unexpected)?
-        .ok_or_else(|| MutationError::Expected(format!("Item {id} not found")))?;
+        .map_err(MutationError::Read)?
+        .ok_or_else(|| MutationError::NotFound(format!("Item {id} not found")))?;
     if let Some(revision) = expected_revision
         && existing["revision"].as_str() != Some(revision)
     {
-        return Err(MutationError::Expected(
+        return Err(MutationError::RevisionConflict(
             "Version conflict: the record was modified by another writer".to_owned(),
         ));
     }
     let input = change(&existing)?;
     let timezone = config["analytics"]["timezone"]
         .as_str()
-        .ok_or_else(|| MutationError::Unexpected("Project has no timezone".to_owned()))?;
-    let next = assemble_item(&input, Some(&existing), timezone).map_err(MutationError::Expected)?;
-    let warning = commit_locked(
+        .ok_or_else(|| MutationError::Internal("Project has no timezone".to_owned()))?;
+    let next =
+        assemble_item(&input, Some(&existing), timezone).map_err(MutationError::Validation)?;
+    let outcome = commit_locked(
         root,
-        next.clone(),
-        Some(existing.clone()),
+        &next,
+        Some(&existing),
         existing["revision"].as_str(),
         activity_date,
         &config,
     )?;
-    Ok(json!({"item": next, "activityWarning": warning}))
+    Ok(json!({"item": next, "activityWarning": outcome.warning, "relatedItems": outcome.related}))
 }
-
-pub(crate) const ALL_NOTES_PIN_SCOPE_ID: &str = "00000000-0000-7000-8000-000000000001";
 
 /// Commit a prepared item with a revision precondition. The per-item OS lock
 /// covers stale checks, history, and the atomic canonical replacement.
 #[cfg(test)]
 pub(crate) fn write_project_item(
     root: &Path,
-    next: Value,
+    next: &Value,
     expected_revision: Option<&str>,
     activity_date: &str,
 ) -> Result<Option<String>, String> {
+    let _mutation =
+        super::transaction::lock(root, LockMode::Exclusive).map_err(|error| error.to_string())?;
+    super::transaction::recover(root)?;
     let id = next.get("id").and_then(Value::as_str).unwrap_or("");
     if !is_item_id(id) {
         return Err(format!("Invalid Bluink item id: {id}"));
     }
     let config = read_project_config(root)?.ok_or("Project configuration is missing.")?;
-    let _lock = lock_item(root, id)?;
-    let existing = read_project_item(root, id)?;
+    let _lock = lock_item(root, id).map_err(|error| error.to_string())?;
+    let existing = read_project_item(root, id).map_err(|error| error.to_string())?;
     commit_locked(
         root,
         next,
-        existing,
+        existing.as_ref(),
         expected_revision,
         activity_date,
         &config,
     )
+    .map(|outcome| outcome.warning)
     .map_err(|error| error.to_string())
 }
 
@@ -128,176 +163,223 @@ pub(crate) fn write_item_input_typed(
     expected_revision: Option<&str>,
     activity_date: &str,
 ) -> Result<Value, MutationError> {
+    let _mutation = super::transaction::lock(root, LockMode::Exclusive)?;
+    super::transaction::recover(root).map_err(MutationError::Internal)?;
     let id = match input.get("id") {
         Some(Value::String(id)) => id.clone(),
         Some(_) => {
-            return Err(MutationError::Expected(
+            return Err(MutationError::Validation(
                 "Invalid Bluink item id.".to_owned(),
             ));
         }
         None => Uuid::now_v7().to_string(),
     };
     if !is_item_id(&id) {
-        return Err(MutationError::Expected(format!(
+        return Err(MutationError::Validation(format!(
             "Invalid Bluink item id: {id}"
         )));
     }
-    let input_map = input
-        .as_object_mut()
-        .ok_or_else(|| MutationError::Expected("Item write input must be an object.".to_owned()))?;
+    let input_map = input.as_object_mut().ok_or_else(|| {
+        MutationError::Validation("Item write input must be an object.".to_owned())
+    })?;
     input_map.insert("id".to_owned(), json!(id));
     let config = read_project_config(root)
-        .map_err(MutationError::Unexpected)?
-        .ok_or_else(|| MutationError::Unexpected("Project configuration is missing.".to_owned()))?;
-    let _lock = lock_item(root, &id).map_err(MutationError::Unexpected)?;
-    let existing = read_project_item(root, &id).map_err(MutationError::Unexpected)?;
+        .map_err(MutationError::Internal)?
+        .ok_or_else(|| MutationError::Internal("Project configuration is missing.".to_owned()))?;
+    let _lock = lock_item(root, &id).map_err(MutationError::Storage)?;
+    let existing = read_project_item(root, &id).map_err(MutationError::Read)?;
     let timezone = config["analytics"]["timezone"]
         .as_str()
-        .ok_or_else(|| MutationError::Unexpected("Project has no timezone".to_owned()))?;
+        .ok_or_else(|| MutationError::Internal("Project has no timezone".to_owned()))?;
     let next =
-        assemble_item(&input, existing.as_ref(), timezone).map_err(MutationError::Expected)?;
-    let warning = commit_locked(
+        assemble_item(&input, existing.as_ref(), timezone).map_err(MutationError::Validation)?;
+    let outcome = commit_locked(
         root,
-        next.clone(),
-        existing,
+        &next,
+        existing.as_ref(),
         expected_revision,
         activity_date,
         &config,
     )?;
-    Ok(json!({"item": next, "activityWarning": warning}))
+    Ok(json!({"item": next, "activityWarning": outcome.warning, "relatedItems": outcome.related}))
 }
 
-fn lock_item(root: &Path, id: &str) -> Result<std::fs::File, String> {
-    let lock_dir = root.join(".cache").join("item-locks");
-    fs::create_dir_all(&lock_dir).map_err(|error| format!("{}: {error}", lock_dir.display()))?;
-    let lock_path = lock_dir.join(format!("{id}.lock"));
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|error| format!("{}: {error}", lock_path.display()))?;
-    lock.lock_exclusive()
-        .map_err(|error| format!("{}: {error}", lock_path.display()))?;
-    Ok(lock)
+pub(crate) fn lock_item(
+    root: &Path,
+    id: &str,
+) -> Result<std::fs::File, super::storage_error::StorageError> {
+    lock_file(
+        &root.join(".cache/item-locks").join(format!("{id}.lock")),
+        LockMode::Exclusive,
+    )
 }
 
-pub(crate) fn lock_relationships(root: &Path) -> Result<std::fs::File, String> {
-    let directory = root.join(".cache");
-    fs::create_dir_all(&directory).map_err(|error| format!("{}: {error}", directory.display()))?;
-    let path = directory.join("relationships.lock");
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
-        .map_err(|error| format!("{}: {error}", path.display()))?;
-    lock.lock_exclusive()
-        .map_err(|error| format!("{}: {error}", path.display()))?;
-    Ok(lock)
+pub(crate) fn lock_relationships(
+    root: &Path,
+) -> Result<std::fs::File, super::storage_error::StorageError> {
+    lock_file(&root.join(".cache/relationships.lock"), LockMode::Exclusive)
 }
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "The operation consumes its input snapshot rather than exposing a borrowed transaction API."
-)]
+struct CommitOutcome {
+    warning: Option<String>,
+    related: Vec<Value>,
+}
+
 fn commit_locked(
     root: &Path,
-    next: Value,
-    existing: Option<Value>,
+    next: &Value,
+    existing: Option<&Value>,
     expected_revision: Option<&str>,
     activity_date: &str,
     config: &Value,
-) -> Result<Option<String>, MutationError> {
+) -> Result<CommitOutcome, MutationError> {
+    let started = Instant::now();
     let id = next
         .get("id")
         .and_then(Value::as_str)
-        .ok_or_else(|| MutationError::Expected("Item has no ID".to_owned()))?;
-    let source =
-        serde_json::to_vec(&next).map_err(|error| MutationError::Unexpected(error.to_string()))?;
-    parse_item(&source, id).map_err(MutationError::Expected)?;
-    if next["meta"]["type"] == "page" {
-        let document = next["content"]
-            .get("content")
-            .filter(|value| value.is_object())
-            .unwrap_or_else(|| &next["content"]);
+        .ok_or_else(|| MutationError::Validation("Item has no ID".to_owned()))?;
+    validate_item(next, id).map_err(MutationError::Validation)?;
+    if matches!(next["meta"]["type"].as_str(), Some("page" | "template")) {
+        let document = crate::engine::document::document_root(&next["content"]);
         crate::engine::document::links::validate_http_links(document, None)
-            .map_err(MutationError::Expected)?;
+            .map_err(MutationError::Validation)?;
     }
-    let actual_revision = existing.as_ref().and_then(|item| item["revision"].as_str());
+    let actual_revision = existing.and_then(|item| item["revision"].as_str());
     if actual_revision != expected_revision {
-        return Err(MutationError::Expected(format!(
+        return Err(MutationError::RevisionConflict(format!(
             "Item {id} changed since it was read. Reload it before saving."
         )));
     }
-    if let Some(existing) = &existing {
+    if let Some(existing) = existing {
         if next["meta"]["type"] != existing["meta"]["type"] {
-            return Err(MutationError::Expected(
+            return Err(MutationError::Validation(
                 "An item type cannot change after creation.".to_owned(),
             ));
         }
         if next["createdAt"] != existing["createdAt"] {
-            return Err(MutationError::Expected(
+            return Err(MutationError::Validation(
                 "An item's creation time cannot change.".to_owned(),
             ));
         }
         if next["revision"] == existing["revision"] {
-            return Err(MutationError::Expected(
+            return Err(MutationError::Validation(
                 "An item write needs a new revision.".to_owned(),
             ));
         }
         if existing["meta"]["type"] == "goal" && next["content"] != existing["content"] {
-            return Err(MutationError::Expected(
+            return Err(MutationError::Validation(
                 "Writing goal dates and targets cannot change. End this goal and create another."
                     .to_owned(),
             ));
         }
     }
     // Keep relationship and pin-scope validation serialized with the canonical write.
-    let _relationships = lock_relationships(root).map_err(MutationError::Unexpected)?;
-    if next["meta"]["type"] == "page" {
+    let _relationships = lock_relationships(root).map_err(MutationError::Storage)?;
+    super::task::validate_item_change(root, next, existing)?;
+    super::snippets::validate_transition(root, existing, next)?;
+    super::named_items::validate_mutation(root, existing, next)?;
+    if next["meta"]["type"] == "workspace" && next["meta"]["state"] != "active" {
+        let fresh = read_project_config(root)
+            .map_err(MutationError::Internal)?
+            .ok_or_else(|| MutationError::Internal("Project configuration is missing.".into()))?;
+        if fresh["defaultWorkspaceId"].as_str() == Some(id) {
+            return Err(MutationError::Validation("Choose another default workspace before removing this one. The last active workspace cannot be removed.".into()));
+        }
+    }
+    crate::engine::publication::theme_store::validate_publication_reference(root, next)
+        .map_err(MutationError::Validation)?;
+    if matches!(next["meta"]["type"].as_str(), Some("page" | "template")) {
         crate::engine::project::snippets::validate_page_snippet_references(
             root,
-            crate::engine::publication::source::document(&next),
+            crate::engine::publication::source::document(next),
         )
-        .map_err(MutationError::Expected)?;
+        .map_err(MutationError::Validation)?;
     }
-    crate::engine::project::goal::validate_goal_activation(root, existing.as_ref(), &next)?;
-    validate_new_pin_scopes(root, existing.as_ref(), &next).map_err(MutationError::Expected)?;
-    let activity = events_for_item_write(existing.as_ref(), &next, activity_date)
-        .map_err(MutationError::Unexpected)?;
+    crate::engine::project::goal::validate_goal_activation(root, existing, next)?;
+    validate_new_pin_scopes(root, existing, next).map_err(MutationError::Validation)?;
+    let activity =
+        events_for_item_write(existing, next, activity_date).map_err(MutationError::Internal)?;
     let meta = next["meta"]
         .as_object()
-        .ok_or_else(|| MutationError::Expected("Item metadata must be an object.".to_owned()))?;
-    with_validated_metadata(root, meta, || {
-        prepare_item_events(root, &activity)?;
-        let item_dir = root
-            .join("items")
-            .join(id[..2].to_ascii_lowercase())
-            .join(id);
-        fs::create_dir_all(item_dir.join("assets"))
-            .map_err(|error| format!("{}: {error}", item_dir.display()))?;
+        .ok_or_else(|| MutationError::Validation("Item metadata must be an object.".to_owned()))?;
+    let identity = ItemId::try_from(id).map_err(MutationError::Validation)?;
+    let timezone = config["analytics"]["timezone"]
+        .as_str()
+        .ok_or_else(|| MutationError::Internal("Project has no timezone".into()))?;
+    let related = super::task::archive_children(root, next, timezone)?;
+    let outcome = with_validated_metadata(root, meta, || {
+        prepare_item_events(root, &activity).map_err(MutationError::Internal)?;
+        let item_dir = identity.directory(root);
         if let Some(existing) = &existing
             && config["history"]["enabled"] == true
             && existing["analytics"]["current"]["contentHash"]
                 != next["analytics"]["current"]["contentHash"]
         {
-            let history_dir = item_dir.join("history");
-            let interval = config["history"]["interval"].as_str().unwrap_or("1h");
-            let bucket = history_bucket(Local::now(), interval);
-            write_json_atomic(&history_dir.join(format!("{bucket}.item.json")), existing)?;
-            let retention_days = config["history"]["retention"]["hourlyDays"]
-                .as_u64()
-                .unwrap_or(7);
-            prune_history(&history_dir, retention_days)?;
+            record_history(&item_dir, existing, config)?;
         }
-        write_json_atomic(&item_dir.join("item.json"), &next)?;
+        persist_item_group(root, next, &related)?;
         // The pending journal entry is already durable. If projection fails,
         // startup reconciliation can still apply it from the saved revision.
-        Ok(finish_item_events(root, &activity).err())
-    })
-    .map_err(MutationError::Unexpected)
+        Ok(CommitOutcome {
+            warning: finish_item_events(root, &activity).err(),
+            related,
+        })
+    })?;
+    tracing::debug!(
+        operation = "commit_item",
+        item_type = next["meta"]["type"].as_str().unwrap_or_default(),
+        related_items = outcome.related.len(),
+        elapsed_ms = started.elapsed().as_secs_f64() * 1000.0
+    );
+    Ok(outcome)
+}
+
+/// Save the one canonical record or recoverable cascade before publication.
+fn persist_item_group(root: &Path, next: &Value, related: &[Value]) -> Result<(), MutationError> {
+    if !related.is_empty() {
+        let mut group = vec![next.clone()];
+        group.extend_from_slice(related);
+        return super::transaction::write_group(root, group).map_err(MutationError::Internal);
+    }
+    persist_single_item(root, next)
+}
+
+/// Shared canonical replacement and observer notification for single items.
+/// Callers hold the project mutation gate and the item's lock.
+pub(crate) fn persist_single_item(root: &Path, next: &Value) -> Result<(), MutationError> {
+    let id = next["id"]
+        .as_str()
+        .ok_or_else(|| MutationError::Internal("Item has no ID".into()))?;
+    let revision = next["revision"]
+        .as_str()
+        .ok_or_else(|| MutationError::Internal("Item has no revision".into()))?;
+    let path = ItemId::try_from(id)
+        .map_err(MutationError::Validation)?
+        .path(root);
+    write_json_atomic(&path, next)?;
+    super::usage::pending(root, id, revision).map_err(MutationError::Internal)?;
+    if super::named_items::is_named(next["meta"]["type"].as_str().unwrap_or_default()) {
+        super::named_items::observe(root, id).map_err(MutationError::Internal)?;
+    }
+    Ok(())
+}
+
+fn record_history(item_dir: &Path, existing: &Value, config: &Value) -> Result<(), MutationError> {
+    let history_dir = item_dir.join("history");
+    let interval = config["history"]["interval"].as_str().ok_or_else(|| {
+        MutationError::Internal("Validated project configuration has no history interval.".into())
+    })?;
+    let bucket = history_bucket(Local::now(), interval);
+    write_json_atomic(&history_dir.join(format!("{bucket}.item.json")), existing)
+        .map_err(MutationError::Storage)?;
+    let retention_days = config["history"]["retention"]["hourlyDays"]
+        .as_u64()
+        .ok_or_else(|| {
+            MutationError::Internal(
+                "Validated project configuration has no history retention.".into(),
+            )
+        })?;
+    prune_history(&history_dir, retention_days).map_err(MutationError::Internal)?;
+    Ok(())
 }
 
 fn validate_new_pin_scopes(
@@ -318,12 +400,14 @@ fn validate_new_pin_scopes(
         .flatten()
         .filter_map(Value::as_str)
     {
-        if scope_id == ALL_NOTES_PIN_SCOPE_ID || previous.contains(scope_id) {
+        if previous.contains(scope_id) {
             continue;
         }
-        let scope = read_project_item(root, scope_id)?;
-        if !scope.is_some_and(|item| item["meta"]["type"] == "workspace") {
-            return Err("Pins can only target All Notes or an existing saved view.".to_owned());
+        let scope = read_project_item(root, scope_id).map_err(|error| error.to_string())?;
+        if !scope.is_some_and(|item| {
+            item["meta"]["type"] == "workspace" && item["meta"]["state"] == "active"
+        }) {
+            return Err("Pins can only target an active workspace.".to_owned());
         }
     }
     Ok(())
@@ -385,14 +469,14 @@ mod tests {
 
     #[test]
     fn assembles_and_commits_input_under_the_revision_lock() {
-        let root =
-            std::env::temp_dir().join(format!("bluink-core-input-write-{}", uuid::Uuid::now_v7()));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
         let config: serde_json::Value =
             serde_json::from_slice(&std::fs::read(fixture.join("bluink.json")).unwrap()).unwrap();
         create_project_config(&root, config).unwrap();
         crate::engine::test_support::seed_fixture_snippets(&root);
-        std::fs::create_dir_all(root.join("properties")).unwrap();
+        crate::engine::project::properties::initialize(&root).unwrap();
         let id = uuid::Uuid::now_v7().to_string();
         let input = serde_json::json!({
             "id": id,
@@ -431,18 +515,19 @@ mod tests {
                 .unwrap_err()
                 .contains("changed since it was read")
         );
-        std::fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 
     #[test]
     fn http_link_syntax_is_checked_before_save_without_contacting_servers() {
-        let root = std::env::temp_dir().join(format!("bluink-save-urls-{}", uuid::Uuid::now_v7()));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
         let config =
             serde_json::from_slice(&std::fs::read(fixture.join("bluink.json")).unwrap()).unwrap();
         create_project_config(&root, config).unwrap();
         crate::engine::test_support::seed_fixture_snippets(&root);
-        std::fs::create_dir_all(root.join("properties")).unwrap();
+        crate::engine::project::properties::initialize(&root).unwrap();
         let id = uuid::Uuid::now_v7().to_string();
         let make_input = |href: &str| {
             serde_json::json!({
@@ -488,7 +573,7 @@ mod tests {
         assert!(
             write_project_item(
                 &root,
-                prepared,
+                &prepared,
                 second["item"]["revision"].as_str(),
                 "2026-09-30"
             )
@@ -499,19 +584,19 @@ mod tests {
             read_project_item(&root, &id).unwrap().unwrap(),
             second["item"]
         );
-        std::fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 
     #[test]
     fn rejects_independently_authored_page_references() {
-        let root =
-            std::env::temp_dir().join(format!("bluink-core-relations-{}", uuid::Uuid::now_v7()));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
         let config: serde_json::Value =
             serde_json::from_slice(&std::fs::read(fixture.join("bluink.json")).unwrap()).unwrap();
         create_project_config(&root, config).unwrap();
         crate::engine::test_support::seed_fixture_snippets(&root);
-        std::fs::create_dir_all(root.join("properties")).unwrap();
+        crate::engine::project::properties::initialize(&root).unwrap();
         let id = uuid::Uuid::now_v7().to_string();
         let input = serde_json::json!({"id":id,"meta":{"type":"page","title":"Page"},
             "content":{"type":"doc","content":[{"type":"paragraph"}]}});
@@ -528,13 +613,13 @@ mod tests {
             .unwrap_err()
             .contains("authored in the document")
         );
-        std::fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 
     #[test]
     fn rejects_stale_writes_and_snapshots_changed_content() {
-        let root =
-            std::env::temp_dir().join(format!("bluink-core-item-write-{}", std::process::id()));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         let config: serde_json::Value = serde_json::from_slice(
             &std::fs::read(
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project/bluink.json"),
@@ -544,7 +629,7 @@ mod tests {
         .unwrap();
         create_project_config(&root, config).unwrap();
         crate::engine::test_support::seed_fixture_snippets(&root);
-        std::fs::create_dir_all(root.join("properties")).unwrap();
+        crate::engine::project::properties::initialize(&root).unwrap();
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join(
             "test-fixtures/pdf-project/items/01/01a0e2a0-0000-7000-8000-000000000001/item.json",
         );
@@ -552,21 +637,19 @@ mod tests {
             serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
         let id = item["id"].as_str().unwrap().to_owned();
         let first_revision = item["revision"].as_str().unwrap().to_owned();
-        write_project_item(&root, item.clone(), None, "2026-09-28").unwrap();
-        assert!(write_project_item(&root, item.clone(), None, "2026-09-28").is_err());
+        write_project_item(&root, &item, None, "2026-09-28").unwrap();
+        assert!(write_project_item(&root, &item, None, "2026-09-28").is_err());
         item["revision"] = serde_json::json!("01a0e2a7-d131-792d-a0bd-26a49033486e");
         item["analytics"]["current"]["contentHash"] = serde_json::json!("changed");
-        write_project_item(&root, item.clone(), Some(&first_revision), "2026-09-28").unwrap();
+        write_project_item(&root, &item, Some(&first_revision), "2026-09-28").unwrap();
         assert_eq!(
             read_project_item(&root, &id).unwrap().unwrap()["revision"],
             item["revision"]
         );
-        assert!(
-            write_project_item(&root, item.clone(), Some(&first_revision), "2026-09-28").is_err()
-        );
+        assert!(write_project_item(&root, &item, Some(&first_revision), "2026-09-28").is_err());
         let history = root.join("items").join("01").join(&id).join("history");
         assert_eq!(std::fs::read_dir(history).unwrap().count(), 1);
-        std::fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 
     #[test]
@@ -582,19 +665,17 @@ mod tests {
 
     #[test]
     fn checks_property_declarations_before_an_item_is_committed() {
-        let root = std::env::temp_dir().join(format!(
-            "bluink-core-property-write-{}",
-            uuid::Uuid::now_v7()
-        ));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
         let config: serde_json::Value =
             serde_json::from_slice(&std::fs::read(fixture.join("bluink.json")).unwrap()).unwrap();
         create_project_config(&root, config).unwrap();
         crate::engine::test_support::seed_fixture_snippets(&root);
-        std::fs::create_dir_all(root.join("properties")).unwrap();
-        std::fs::write(
-            root.join("properties/workflow.select.property"),
-            br#"{"format":"bluink.property","formatVersion":1,"options":["draft"]}"#,
+        crate::engine::project::properties::initialize(&root).unwrap();
+        crate::engine::project::properties::create_property(
+            &root,
+            serde_json::json!({"key":"workflow","valueType":"select","options":["draft"]}),
         )
         .unwrap();
         let mut item: serde_json::Value = serde_json::from_slice(
@@ -604,27 +685,27 @@ mod tests {
         .unwrap();
         item["meta"]["workflow"] = serde_json::json!("review");
         assert!(
-            write_project_item(&root, item.clone(), None, "2026-09-28")
+            write_project_item(&root, &item, None, "2026-09-28")
                 .unwrap_err()
                 .contains("declared option")
         );
         let id = item["id"].as_str().unwrap();
         assert!(read_project_item(&root, id).unwrap().is_none());
         item["meta"]["workflow"] = serde_json::json!("draft");
-        write_project_item(&root, item, None, "2026-09-28").unwrap();
-        std::fs::remove_dir_all(root).unwrap();
+        write_project_item(&root, &item, None, "2026-09-28").unwrap();
+        temporary.close().unwrap();
     }
 
     #[test]
     fn checks_new_pin_targets_in_the_item_transaction() {
-        let root =
-            std::env::temp_dir().join(format!("bluink-core-pin-write-{}", uuid::Uuid::now_v7()));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
         let config: serde_json::Value =
             serde_json::from_slice(&std::fs::read(fixture.join("bluink.json")).unwrap()).unwrap();
         create_project_config(&root, config).unwrap();
         crate::engine::test_support::seed_fixture_snippets(&root);
-        std::fs::create_dir_all(root.join("properties")).unwrap();
+        crate::engine::project::properties::initialize(&root).unwrap();
         let mut item: serde_json::Value = serde_json::from_slice(
             &std::fs::read(fixture.join("items/01/01a0e2a0-0000-7000-8000-000000000001/item.json"))
                 .unwrap(),
@@ -633,19 +714,19 @@ mod tests {
         let missing_scope = "01a0e2a7-d131-792d-a0bd-26a49033486e";
         item["pins"] = serde_json::json!([missing_scope]);
         assert!(
-            write_project_item(&root, item.clone(), None, "2026-09-28")
+            write_project_item(&root, &item, None, "2026-09-28")
                 .unwrap_err()
-                .contains("saved view")
+                .contains("active workspace")
         );
         let mut scope = item.clone();
         let scope_id = "01a0e2a7-d131-792d-a0bd-26a49033486f";
         scope["id"] = serde_json::json!(scope_id);
         scope["meta"]["type"] = serde_json::json!("workspace");
-        scope["content"] = serde_json::json!({});
+        scope["content"] = crate::engine::project::workspace::initial_content();
         scope.as_object_mut().unwrap().remove("pins");
-        write_project_item(&root, scope, None, "2026-09-28").unwrap();
-        item["pins"] = serde_json::json!([scope_id, super::ALL_NOTES_PIN_SCOPE_ID]);
-        write_project_item(&root, item, None, "2026-09-28").unwrap();
-        std::fs::remove_dir_all(root).unwrap();
+        write_project_item(&root, &scope, None, "2026-09-28").unwrap();
+        item["pins"] = serde_json::json!([scope_id]);
+        write_project_item(&root, &item, None, "2026-09-28").unwrap();
+        temporary.close().unwrap();
     }
 }

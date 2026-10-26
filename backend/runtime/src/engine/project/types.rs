@@ -21,23 +21,43 @@ macro_rules! vocabulary {
         #[allow(dead_code, reason = "Wire vocabularies also supply generated browser constants.")]
         impl $name {
             pub(crate) const fn as_str(self) -> &'static str { match self { $(Self::$variant => $value),+ } }
-            #[cfg(test)]
             pub(crate) const VALUES: &'static [(&'static str, &'static str)] = &[$((stringify!($variant), $value)),+];
         }
     };
 }
-vocabulary!(ItemType { Page => "page", Workspace => "workspace", Goal => "goal", Widget => "widget", Query => "query", Setting => "setting", Publication => "publication" });
+vocabulary!(ItemType { Page => "page", Workspace => "workspace", Goal => "goal", Widget => "widget", Query => "query", Setting => "setting", Publication => "publication", Task => "task", Tag => "tag", Label => "label", Property => "property", Snippet => "snippet", Template => "template" });
 vocabulary!(ItemState { Active => "active", Archived => "archived" });
 vocabulary!(FacetKind { Tag => "tag", Label => "label" });
+vocabulary!(ChoiceColor { Neutral => "neutral", Blue => "blue", Green => "green", Amber => "amber", Purple => "purple", Rose => "rose", Cyan => "cyan" });
 vocabulary!(MetadataFieldValueType { Text => "text", Url => "url", Email => "email", Tel => "tel", Number => "number", Checkbox => "checkbox", Date => "date", DateTime => "dateTime", Timestamp => "timestamp", Select => "select", MultiSelect => "multiSelect", Language => "language", Color => "color", Image => "image", Rating => "rating" });
 vocabulary!(FieldSource { Registered => "registered", Inferred => "inferred", Builtin => "builtin" });
-vocabulary!(ViewPresentationMode { Cards => "cards", Table => "table", Kanban => "kanban", Dashboard => "dashboard" });
+vocabulary!(ViewPresentationMode { Cards => "cards", Table => "table", Kanban => "kanban", List => "list" });
 vocabulary!(CalendarZoom { Month => "month", Week => "week" });
-vocabulary!(CardFieldLayout { Inline => "inline", Stacked => "stacked", Body => "body" });
-vocabulary!(ImageFit { Cover => "cover", Fit => "fit" });
 vocabulary!(TaskStatus { Open => "open", Completed => "completed" });
 vocabulary!(CalendarGranularity { Day => "day", Month => "month", Year => "year" });
 vocabulary!(GoalScope { AllNotes => "all_notes", View => "view" });
+vocabulary!(CoverGradient { Dawn => "dawn", Sea => "sea", Meadow => "meadow", Dusk => "dusk", Bloom => "bloom", Grove => "grove" });
+
+/// An item's icon: a bundled symbol tinted by the item's colour, an emoji, or
+/// an image uploaded to the item's own assets.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub(crate) enum ItemIcon {
+    Symbol { name: String },
+    Emoji { value: String },
+    Image { url: String },
+}
+
+/// An item's cover. Without one, the cover is a wash of the item's colour.
+/// An image's `position` is its vertical focal point, as a percentage.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub(crate) enum ItemCover {
+    Gradient { name: CoverGradient },
+    Image { url: String, position: u8 },
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,22 +76,15 @@ pub(crate) struct Metadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) icon: Option<ItemIcon>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cover: Option<ItemCover>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) property_keys: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) lang: Option<String>,
     #[serde(flatten)]
     pub(crate) properties: BTreeMap<String, OpaqueJson>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
-pub(crate) struct NoteTask {
-    pub(crate) id: String,
-    pub(crate) text: String,
-    pub(crate) created_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) completed_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -84,19 +97,23 @@ pub(crate) enum TaskChange {
     Edit {
         #[serde(rename = "taskId")]
         task_id: String,
+        revision: String,
         text: String,
     },
     Complete {
         #[serde(rename = "taskId")]
         task_id: String,
+        revision: String,
     },
     Reopen {
         #[serde(rename = "taskId")]
         task_id: String,
+        revision: String,
     },
     Delete {
         #[serde(rename = "taskId")]
         task_id: String,
+        revision: String,
     },
 }
 
@@ -139,24 +156,42 @@ pub(crate) struct LinkAttributes {
     pub(crate) href: String,
 }
 
+/// How one choice of a select property looks wherever it shows. Without an
+/// entry, the browser picks its colour.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub(crate) struct ChoiceAppearance {
+    pub(crate) color: ChoiceColor,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 pub(crate) struct ViewContent {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) mode: Option<ViewPresentationMode>,
+    pub(crate) query: Option<crate::engine::project::query::QueryDocument>,
+    /// The workspace's widgets, each with its own settings, in Home's order.
+    /// Those pinned to the top bar are also shortcuts there.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) query: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) cards: Option<ViewCardPresentation>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) table: Option<ViewTablePresentation>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) kanban: Option<ViewKanbanPresentation>,
+    pub(crate) widgets: Option<Vec<super::workspace::WorkspaceWidget>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) calendar: Option<ViewCalendarPresentation>,
+    /// The note templates the workspace's New menu offers, in order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) templates: Option<WorkspaceTemplates>,
     #[serde(flatten)]
     pub(crate) extra: BTreeMap<String, OpaqueJson>,
+}
+/// References are soft: a template archived later stays listed until the
+/// person removes it, and the browser skips it.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub(crate) struct WorkspaceTemplates {
+    pub(crate) offered: Vec<String>,
+    /// The template the main New action uses; none creates a plain note.
+    pub(crate) default: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -180,22 +215,6 @@ pub(crate) struct ViewTableColumn {
     pub(crate) width: Option<f64>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
-pub(crate) struct ViewCardField {
-    pub(crate) field: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) label: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) hidden: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) max_lines: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) layout: Option<CardFieldLayout>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) max_items: Option<u8>,
-}
-#[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 pub(crate) struct ViewKanbanColumn {
     pub(crate) id: String,
@@ -207,21 +226,6 @@ pub(crate) struct ViewKanbanColumn {
 pub(crate) struct ViewTablePresentation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) columns: Option<Vec<ViewTableColumn>>,
-}
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
-pub(crate) struct ViewCardPresentation {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) fields: Option<Vec<ViewCardField>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) show_media: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) media_height: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) image_fit: Option<ImageFit>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) title_lines: Option<u8>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -243,7 +247,7 @@ pub(crate) struct WritingGoalContent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) view_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) query: Option<String>,
+    pub(crate) query: Option<crate::engine::project::query::QueryDocument>,
     pub(crate) start_date: String,
     pub(crate) end_date: String,
     pub(crate) daily_word_target: u64,

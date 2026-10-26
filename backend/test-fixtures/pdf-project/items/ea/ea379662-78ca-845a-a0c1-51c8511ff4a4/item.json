@@ -1,0 +1,25 @@
+{
+  "format": "bluink.item",
+  "formatVersion": 17,
+  "id": "ea379662-78ca-845a-a0c1-51c8511ff4a4",
+  "revision": "ea379662-78ca-845a-a0c1-51c8511ff4a4",
+  "createdAt": "1970-01-01T00:00:00.000Z",
+  "modifiedAt": "1970-01-01T00:00:00.000Z",
+  "meta": {
+    "type": "property",
+    "state": "active",
+    "title": "progress"
+  },
+  "content": {
+    "key": "progress",
+    "valueType": "number"
+  },
+  "analytics": {
+    "analyzerVersion": 1,
+    "timezone": "UTC",
+    "current": {
+      "contentHash": "e3b0c44298fc1c14",
+      "wordCount": 0
+    }
+  }
+}

@@ -1,0 +1,608 @@
+{
+	"format": "bluink.workspace-setup",
+	"version": 1,
+	"name": "Research notes",
+	"summary": "Sources, reading notes and the questions they answer.",
+	"description": "Keep a note per source, track how far you have read it, and gather what you learn under the questions you are trying to answer.",
+	"properties": [
+		{
+			"key": "research_status",
+			"valueType": "select",
+			"options": [
+				"cited",
+				"noted",
+				"reading",
+				"to_read"
+			],
+			"optionAppearance": {
+				"to_read": {
+					"color": "neutral"
+				},
+				"reading": {
+					"color": "amber"
+				},
+				"noted": {
+					"color": "blue"
+				},
+				"cited": {
+					"color": "green"
+				}
+			}
+		},
+		{
+			"key": "source_type",
+			"valueType": "select",
+			"options": [
+				"article",
+				"book",
+				"interview",
+				"paper",
+				"video"
+			]
+		},
+		{
+			"key": "author",
+			"valueType": "text"
+		},
+		{
+			"key": "source_url",
+			"valueType": "url"
+		}
+	],
+	"templates": [
+		{
+			"key": "source",
+			"title": "Source note",
+			"values": {
+				"research_status": "to_read"
+			},
+			"propertyKeys": [
+				"source_type",
+				"author",
+				"source_url"
+			],
+			"document": {
+				"type": "doc",
+				"content": [
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Summary"
+							}
+						]
+					},
+					{
+						"type": "paragraph",
+						"content": [
+							{
+								"type": "text",
+								"text": "The argument in a few sentences, in your own words."
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Key points"
+							}
+						]
+					},
+					{
+						"type": "list",
+						"attrs": {
+							"kind": "bullet"
+						},
+						"content": [
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "A point, with its page"
+											}
+										]
+									}
+								]
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Quotes"
+							}
+						]
+					},
+					{
+						"type": "blockquote",
+						"content": [
+							{
+								"type": "paragraph",
+								"content": [
+									{
+										"type": "text",
+										"text": "A passage worth keeping."
+									}
+								]
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Questions it answers"
+							}
+						]
+					},
+					{
+						"type": "paragraph",
+						"content": [
+							{
+								"type": "text",
+								"text": "Link the questions this source speaks to."
+							}
+						]
+					}
+				]
+			}
+		},
+		{
+			"key": "question",
+			"title": "Question",
+			"values": {
+				"research_status": "noted"
+			},
+			"document": {
+				"type": "doc",
+				"content": [
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "The question"
+							}
+						]
+					},
+					{
+						"type": "paragraph",
+						"content": [
+							{
+								"type": "text",
+								"text": "What do you want to know?"
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "What the sources say"
+							}
+						]
+					},
+					{
+						"type": "list",
+						"attrs": {
+							"kind": "bullet"
+						},
+						"content": [
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "Source — what it adds"
+											}
+										]
+									}
+								]
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Current answer"
+							}
+						]
+					},
+					{
+						"type": "paragraph",
+						"content": [
+							{
+								"type": "text",
+								"text": "Your answer so far, and how sure you are."
+							}
+						]
+					}
+				]
+			}
+		}
+	],
+	"workspace": {
+		"title": "Research notes",
+		"summary": "Sources, reading notes and open questions.",
+		"icon": {
+			"kind": "symbol",
+			"name": "flask"
+		},
+		"color": "cyan",
+		"cover": {
+			"kind": "gradient",
+			"name": "sea"
+		},
+		"query": {
+			"version": 1,
+			"clauses": [
+				{
+					"polarity": "required",
+					"predicate": {
+						"kind": "field",
+						"field": "type",
+						"operator": "match",
+						"value": "page"
+					}
+				},
+				{
+					"polarity": "required",
+					"predicate": {
+						"kind": "field",
+						"field": "state",
+						"operator": "match",
+						"value": "active"
+					}
+				},
+				{
+					"polarity": "required",
+					"predicate": {
+						"kind": "has",
+						"field": "research_status"
+					}
+				}
+			],
+			"sort": [
+				{
+					"field": "title",
+					"direction": "asc"
+				}
+			]
+		},
+		"widgets": [
+			{
+				"title": "How it works",
+				"home": {
+					"span": 12,
+					"height": "compact"
+				},
+				"config": {
+					"kind": "introduction",
+					"title": "",
+					"description": "Every source gets a note. Move it from to read to cited as you work through it, and collect what you learn under the questions you are answering."
+				}
+			},
+			{
+				"title": "Start",
+				"home": {
+					"span": 8,
+					"height": "compact"
+				},
+				"config": {
+					"kind": "create_buttons",
+					"templateIds": [
+						"source",
+						"question"
+					]
+				}
+			},
+			{
+				"title": "Still to read",
+				"home": {
+					"span": 4,
+					"height": "compact"
+				},
+				"config": {
+					"kind": "count",
+					"query": {
+						"version": 1,
+						"clauses": [
+							{
+								"polarity": "required",
+								"predicate": {
+									"kind": "field",
+									"field": "research_status",
+									"operator": "match",
+									"value": "to_read"
+								}
+							}
+						],
+						"sort": []
+					}
+				}
+			},
+			{
+				"title": "Reading pipeline",
+				"home": {
+					"span": 12,
+					"height": "regular"
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [],
+						"sort": []
+					},
+					"mode": "kanban",
+					"kanban": {
+						"groupBy": "meta.research_status",
+						"columns": [
+							{
+								"id": "to_read"
+							},
+							{
+								"id": "reading"
+							},
+							{
+								"id": "noted"
+							},
+							{
+								"id": "cited"
+							}
+						]
+					},
+					"cards": {
+						"version": 1,
+						"media": {
+							"position": "none",
+							"height": 176,
+							"fit": "cover"
+						},
+						"titleLines": 2,
+						"header": {
+							"start": {
+								"field": "modified",
+								"show": "text"
+							}
+						},
+						"body": [
+							{
+								"start": {
+									"field": "summary",
+									"show": "text",
+									"lines": 2
+								}
+							}
+						],
+						"footer": {
+							"start": {
+								"field": "meta.source_type",
+								"show": "chips",
+								"maxItems": 1
+							}
+						}
+					}
+				}
+			},
+			{
+				"title": "Sources",
+				"home": {
+					"span": 8,
+					"height": "regular"
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [
+							{
+								"polarity": "required",
+								"predicate": {
+									"kind": "has",
+									"field": "source_type"
+								}
+							}
+						],
+						"sort": []
+					},
+					"mode": "table",
+					"table": {
+						"columns": [
+							{
+								"field": "title"
+							},
+							{
+								"field": "source_type"
+							},
+							{
+								"field": "author"
+							},
+							{
+								"field": "research_status"
+							}
+						]
+					}
+				}
+			},
+			{
+				"home": {
+					"span": 4,
+					"height": "regular"
+				},
+				"config": {
+					"kind": "pinned_notes",
+					"count": 5,
+					"presentation": "list"
+				}
+			},
+			{
+				"home": {
+					"span": 4
+				},
+				"config": {
+					"kind": "recent_notes",
+					"count": 5,
+					"presentation": "list"
+				}
+			},
+			{
+				"home": {
+					"span": 8
+				},
+				"config": {
+					"kind": "tasks",
+					"status": "open",
+					"count": 5
+				}
+			},
+			{
+				"title": "Sources",
+				"topBar": true,
+				"home": {
+					"span": 12,
+					"height": "tall",
+					"hidden": true
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [],
+						"sort": []
+					},
+					"mode": "table",
+					"table": {
+						"columns": [
+							{
+								"field": "title"
+							},
+							{
+								"field": "source_type"
+							},
+							{
+								"field": "author"
+							},
+							{
+								"field": "research_status"
+							},
+							{
+								"field": "modified"
+							}
+						]
+					}
+				}
+			},
+			{
+				"title": "Pipeline",
+				"topBar": true,
+				"home": {
+					"span": 12,
+					"height": "tall",
+					"hidden": true
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [],
+						"sort": []
+					},
+					"mode": "kanban",
+					"kanban": {
+						"groupBy": "meta.research_status",
+						"columns": [
+							{
+								"id": "to_read"
+							},
+							{
+								"id": "reading"
+							},
+							{
+								"id": "noted"
+							},
+							{
+								"id": "cited"
+							}
+						]
+					},
+					"cards": {
+						"version": 1,
+						"media": {
+							"position": "none",
+							"height": 176,
+							"fit": "cover"
+						},
+						"titleLines": 2,
+						"header": {
+							"start": {
+								"field": "modified",
+								"show": "text"
+							}
+						},
+						"body": [
+							{
+								"start": {
+									"field": "summary",
+									"show": "text",
+									"lines": 2
+								}
+							}
+						],
+						"footer": {
+							"start": {
+								"field": "meta.source_type",
+								"show": "chips",
+								"maxItems": 1
+							}
+						}
+					}
+				}
+			}
+		],
+		"templates": {
+			"offered": [
+				"source",
+				"question"
+			],
+			"default": "source"
+		}
+	}
+}

@@ -1,34 +1,46 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2023–2026 BluInk
 
-use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
-
-use minijinja::context;
-use minijinja::value::Value as TemplateValue;
+use super::render::{
+    self, Destination, ExportError, Formatter, Kind, Mark, NodeInfo, PreparedPage, ReferenceScope,
+    RenderEvent,
+};
 use serde_json::Value;
-use url::Url;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write;
 
-use crate::engine::document::validation::validate_document;
-use crate::engine::publication::macros::RenderMacros;
-
-/// All destinations and dynamic values come from a completed source plan.
-/// Missing entries are errors; the walker never guesses a destination.
 pub(crate) struct HtmlResources<'a> {
+    pub(crate) page_id: &'a str,
     pub(crate) links: &'a HashMap<String, String>,
     pub(crate) assets: &'a HashMap<String, String>,
     pub(crate) fields: &'a HashMap<String, String>,
     pub(crate) snippets: &'a HashMap<String, Value>,
     pub(crate) excluded_block_ids: &'a HashSet<String>,
-    pub(crate) macros: Option<&'a RenderMacros>,
 }
 
 #[derive(Default)]
 pub(crate) struct HtmlState {
-    footnotes: Vec<String>,
-    citation_numbers: HashMap<String, usize>,
-    reference_counts: HashMap<usize, usize>,
-    anchor_prefix: String,
+    scope: ReferenceScope,
+    notes: BTreeMap<usize, String>,
+    occurrences: BTreeMap<usize, usize>,
+    xhtml: bool,
+}
+
+/// EPUB uses the same semantic renderer, with XML-compatible void elements
+/// and ebook reference semantics. Each chapter owns its reference scope.
+pub(crate) fn render_xhtml_document(
+    document: &Value,
+    resources: &HtmlResources<'_>,
+    heading_offset: i16,
+) -> Result<String, String> {
+    let mut state = HtmlState {
+        xhtml: true,
+        ..HtmlState::default()
+    };
+    let mut body = render_html_document_in_scope(document, resources, heading_offset, &mut state)?;
+    body.push_str(&html_endnotes(&state));
+    crate::engine::xml::valid_characters(&body)?;
+    Ok(body)
 }
 
 pub(crate) fn render_html_document(
@@ -36,19 +48,7 @@ pub(crate) fn render_html_document(
     resources: &HtmlResources<'_>,
     heading_offset: i16,
 ) -> Result<String, String> {
-    render_html_document_with_prefix(document, resources, heading_offset, "")
-}
-
-pub(crate) fn render_html_document_with_prefix(
-    document: &Value,
-    resources: &HtmlResources<'_>,
-    heading_offset: i16,
-    anchor_prefix: &str,
-) -> Result<String, String> {
-    let mut state = HtmlState {
-        anchor_prefix: anchor_prefix.to_owned(),
-        ..Default::default()
-    };
+    let mut state = HtmlState::default();
     let mut html = render_html_document_in_scope(document, resources, heading_offset, &mut state)?;
     html.push_str(&html_endnotes(&state));
     Ok(html)
@@ -60,793 +60,367 @@ pub(crate) fn render_html_document_in_scope(
     heading_offset: i16,
     state: &mut HtmlState,
 ) -> Result<String, String> {
-    validate_document(document).map_err(|error| error.to_string())?;
-    for (id, paragraph) in resources.snippets {
-        crate::engine::project::snippets::validate_reference_paragraph(paragraph, true)
-            .map_err(|error| format!("Snippet {id}: {error}"))?;
-    }
-    let mut html = String::new();
-    render_node(document, resources, heading_offset, state, &mut html)?;
+    let prepared = prepare_html_document(document, resources, heading_offset, &mut state.scope)?;
+    render_prepared_in_scope(&prepared, state)
+}
+
+pub(crate) fn prepare_html_document(
+    document: &Value,
+    resources: &HtmlResources<'_>,
+    heading_offset: i16,
+    scope: &mut ReferenceScope,
+) -> Result<PreparedPage, String> {
+    let links = resources
+        .links
+        .iter()
+        .map(|(source, target)| {
+            (
+                source.clone(),
+                if target.is_empty() {
+                    Destination::PlainText
+                } else {
+                    Destination::Url(target.clone())
+                },
+            )
+        })
+        .collect();
+    render::prepare_page(
+        resources.page_id,
+        document,
+        &render::Resources {
+            links: &links,
+            assets: resources.assets,
+            fields: resources.fields,
+            snippets: resources.snippets,
+            excluded_block_ids: resources.excluded_block_ids,
+        },
+        heading_offset,
+        scope,
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Reuse the exact prepared page for HTML, search and on-page navigation.
+pub(crate) fn render_prepared_html_document(page: &PreparedPage) -> Result<String, String> {
+    let mut state = HtmlState::default();
+    let mut html = render_prepared_in_scope(page, &mut state)?;
+    html.push_str(&html_endnotes(&state));
     Ok(html)
 }
 
-pub(crate) fn html_endnotes(state: &HtmlState) -> String {
-    let mut html = String::new();
-    if !state.footnotes.is_empty() {
-        html.push_str(
-            "<section class=\"footnotes\" aria-label=\"Footnotes\" role=\"doc-endnotes\"><ol>\n",
-        );
-        for (index, note) in state.footnotes.iter().enumerate() {
-            let number = index + 1;
-            write!(
-                html,
-                "<li id=\"{}fn-{number}\" role=\"doc-footnote\">",
-                state.anchor_prefix
-            )
-            .expect("writing to a String cannot fail");
-            html.push_str(note);
-            writeln!(html, " <a href=\"#{}fnref-{number}-1\" aria-label=\"Back to reference {number}\">↩</a></li>", state.anchor_prefix).expect("writing to a String cannot fail");
-        }
-        html.push_str("</ol></section>\n");
-    }
-    html
-}
-
-fn render_node(
-    node: &Value,
-    resources: &HtmlResources<'_>,
-    heading_offset: i16,
-    state: &mut HtmlState,
-    output: &mut String,
-) -> Result<(), String> {
-    render_node_inner(node, resources, heading_offset, state, output, None).map_err(|error| {
-        let kind = node["type"].as_str().unwrap_or("unknown");
-        let id = node["attrs"]["id"]
-            .as_str()
-            .map(|value| format!(" {value}"))
-            .unwrap_or_default();
-        format!("HTML node {kind}{id}: {error}")
-    })
+fn render_prepared_in_scope(page: &PreparedPage, state: &mut HtmlState) -> Result<String, String> {
+    render::render(
+        page,
+        HtmlFormatter {
+            state,
+            frames: Vec::new(),
+            output: String::new(),
+        },
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[expect(
-    clippy::too_many_lines,
-    reason = "Keep the complete format or operation dispatch together for contract review."
+    clippy::unwrap_used,
+    reason = "Formatting only strings and primitive values into String is infallible."
 )]
-fn render_node_inner(
-    node: &Value,
-    resources: &HtmlResources<'_>,
-    heading_offset: i16,
-    state: &mut HtmlState,
-    output: &mut String,
-    title: Option<&str>,
-) -> Result<(), String> {
-    let kind = node["type"].as_str().ok_or("Document node has no type.")?;
-    let attrs = &node["attrs"];
-    if attrs["id"]
-        .as_str()
-        .is_some_and(|id| resources.excluded_block_ids.contains(id))
-    {
-        return Ok(());
+pub(crate) fn html_endnotes(state: &HtmlState) -> String {
+    let mut html = String::new();
+    if state.notes.is_empty() {
+        return html;
     }
-    if kind == "figure" {
-        let parts = children(node);
-        let title_node = parts
-            .first()
-            .filter(|child| child["type"] == "blockTitle")
-            .ok_or("Figure has no title node.")?;
-        let title = children(title_node)
-            .iter()
-            .map(|child| child["text"].as_str().ok_or("Title child has no text."))
-            .collect::<Result<String, _>>()?;
-        let content = parts.get(1).ok_or("Figure has no body.")?;
-        output.push_str("<div class=\"titled-block\"");
-        write_id(attrs, output);
-        output.push('>');
-        render_node_inner(
-            content,
-            resources,
-            heading_offset,
-            state,
-            output,
-            Some(title.as_str()).filter(|title| !title.trim().is_empty()),
-        )?;
-        output.push_str("</div>\n");
-        return Ok(());
-    }
-    let mut body = String::new();
-    let html = &mut body;
-    if let Some(macros) = resources.macros.filter(|_| {
-        matches!(
-            kind,
-            "heading" | "paragraph" | "image" | "list" | "table" | "code_block"
+    html.push_str(
+        "<section class=\"footnotes\" aria-label=\"Footnotes\" role=\"doc-endnotes\"><ol>\n",
+    );
+    for (number, note) in &state.notes {
+        let tag = if state.xhtml {
+            html.push_str("<li>");
+            "aside"
+        } else {
+            "li"
+        };
+        let semantic = if state.xhtml {
+            " epub:type=\"footnote\""
+        } else {
+            ""
+        };
+        write!(
+            html,
+            "<{tag} id=\"fn-{number}\" role=\"doc-footnote\"{semantic}>{note}"
         )
-    }) {
-        html.push_str(&render_macro_node(
-            kind,
-            (node, title),
-            resources,
-            heading_offset,
-            state,
-            macros,
-        )?);
-    } else {
-        match kind {
-            "doc" => render_children(node, resources, heading_offset, state, html)?,
-            "text" => escape_into(node["text"].as_str().ok_or("Text node has no text.")?, html),
-            "hard_break" => html.push_str("<br>"),
-            "horizontal_rule" | "image" | "embed" => {
-                render_leaf(kind, attrs, resources, heading_offset, state, html, title)?;
+        .unwrap();
+        for occurrence in 1..=state.occurrences[number] {
+            write!(html," <a href=\"#fnref-{number}-{occurrence}\" aria-label=\"Back to reference {number}, occurrence {occurrence}\">↩</a>").unwrap();
+        }
+        if state.xhtml {
+            html.push_str("</aside>");
+        }
+        html.push_str("</li>\n");
+    }
+    html.push_str("</ol></section>\n");
+    html
+}
+
+struct Frame {
+    body: String,
+    title: Option<String>,
+    caption: Option<String>,
+}
+struct HtmlFormatter<'a> {
+    state: &'a mut HtmlState,
+    frames: Vec<Frame>,
+    output: String,
+}
+
+impl HtmlFormatter<'_> {
+    fn append(&mut self, value: &str) {
+        if let Some(frame) = self.frames.last_mut() {
+            frame.body.push_str(value);
+        } else {
+            self.output.push_str(value);
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Exhaustive serialization of typed node events without source traversal."
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "Formatting only strings and primitive values into String is infallible."
+    )]
+    fn node(&mut self, node: &NodeInfo, body: &str, title: Option<&str>) -> String {
+        let mut html = String::new();
+        let close = if self.state.xhtml { " />" } else { ">" };
+        let id = node
+            .id
+            .as_deref()
+            .map(|id| format!(" id=\"block-{}\"", escape_html(id)))
+            .unwrap_or_default();
+        match &node.kind {
+            Kind::Document => html.push_str(body),
+            Kind::Text(text) => html.push_str(&escape_html(text)),
+            Kind::HardBreak => write!(html, "<br{close}").unwrap(),
+            Kind::Rule => writeln!(html, "<hr{id}{close}").unwrap(),
+            Kind::Figure { .. } => {
+                writeln!(html, "<div class=\"titled-block\"{id}>{body}</div>").unwrap();
             }
-            "field" => {
-                let key = attrs["key"].as_str().ok_or("Field has no key.")?;
-                let value = resources
-                    .fields
-                    .get(key)
-                    .ok_or_else(|| format!("Field {key} was not resolved by preflight."))?;
-                escape_into(value, html);
-            }
-            "code_block" => {
-                let titled = title.is_some();
-                if titled {
-                    html.push_str("<figure class=\"code-block\">");
-                    write_caption(title, "figcaption", html);
+            Kind::Embed { .. } => write!(
+                html,
+                "<section class=\"embedded-passage\"{id}>\n{body}</section>\n"
+            )
+            .unwrap(),
+            Kind::Image(image) => {
+                if title.is_some() {
+                    html.push_str("<figure>");
                 }
-                html.push_str("<pre");
-                write_id(attrs, html);
-                if let Some(language) = attrs["language"].as_str() {
-                    html.push_str(" data-language=\"");
-                    escape_into(language, html);
-                    html.push('"');
+                write!(
+                    html,
+                    "<img{id} src=\"{}\" alt=\"{}\"",
+                    escape_html(&image.asset),
+                    escape_html(&image.alt)
+                )
+                .unwrap();
+                for (name, size) in [("width", image.width_pt), ("height", image.height_pt)] {
+                    if let Some(size) = size {
+                        write!(html, " {name}=\"{:.0}\"", size / 0.75).unwrap();
+                    }
                 }
-                html.push_str("><code>");
-                for child in children(node) {
-                    escape_into(
-                        child["text"].as_str().ok_or("Code child has no text.")?,
+                html.push_str(close);
+                html.push('\n');
+                if let Some(title) = title {
+                    writeln!(
                         html,
-                    );
-                }
-                html.push_str("</code></pre>\n");
-                if titled {
-                    html.push_str("</figure>\n");
+                        "<figcaption>{}</figcaption></figure>",
+                        escape_html(title)
+                    )
+                    .unwrap();
                 }
             }
-            "paragraph" | "heading" | "blockquote" | "box" | "boxHeading" | "list" | "listItem"
-            | "table" | "table_row" | "table_cell" | "table_header" => {
-                let (tag, extra) = container_tag(kind, attrs, heading_offset)?;
-                html.push('<');
-                html.push_str(&tag);
-                write_id(attrs, html);
-                html.push_str(&extra);
-                html.push('>');
-                if kind == "table" {
-                    write_caption(title, "caption", html);
-                    write_column_group(attrs, html)?;
-                    html.push_str("<tbody>");
+            Kind::CodeBlock { text, language } => {
+                if title.is_some() {
+                    html.push_str("<figure class=\"code-block\">");
                 }
-                render_children(node, resources, heading_offset, state, html)?;
-                if kind == "table" {
+                write!(html, "<pre{id}").unwrap();
+                if language != "plain" {
+                    write!(html, " data-language=\"{}\"", escape_html(language)).unwrap();
+                }
+                writeln!(html, "><code>{}</code></pre>", escape_html(text)).unwrap();
+                if let Some(title) = title {
+                    writeln!(
+                        html,
+                        "<figcaption>{}</figcaption></figure>",
+                        escape_html(title)
+                    )
+                    .unwrap();
+                }
+            }
+            Kind::Reference(reference) => {
+                if reference.first {
+                    self.state.notes.insert(reference.number, body.to_owned());
+                }
+                self.state
+                    .occurrences
+                    .insert(reference.number, reference.occurrence);
+                let semantic = if self.state.xhtml {
+                    " epub:type=\"noteref\""
+                } else {
+                    ""
+                };
+                write!(html,"<sup><a id=\"fnref-{}-{}\" href=\"#fn-{}\" role=\"doc-noteref\"{semantic}>{}</a></sup>",reference.number,reference.occurrence,reference.number,reference.number).unwrap();
+            }
+            kind => {
+                let (tag, extra) = match kind {
+                    Kind::Paragraph => ("p".to_owned(), String::new()),
+                    Kind::Heading { level } => (format!("h{}", level.min(&6)), String::new()),
+                    Kind::Quote => ("blockquote".into(), String::new()),
+                    Kind::Box(kind) => (
+                        "aside".into(),
+                        format!(" class=\"callout\" data-kind=\"{}\"", kind.name()),
+                    ),
+                    Kind::BoxHeading => ("p".into(), " class=\"callout-title\"".into()),
+                    Kind::List {
+                        ordered: true,
+                        start,
+                    } => ("ol".into(), format!(" start=\"{start}\"")),
+                    Kind::List { .. } => ("ul".into(), String::new()),
+                    Kind::ListItem => ("li".into(), String::new()),
+                    Kind::Table { .. } => ("table".into(), String::new()),
+                    Kind::TableRow { .. } => ("tr".into(), String::new()),
+                    Kind::TableCell(cell) => {
+                        let mut extra = if cell.header {
+                            " scope=\"col\"".to_owned()
+                        } else {
+                            String::new()
+                        };
+                        for (name, value) in [("colspan", cell.colspan), ("rowspan", cell.rowspan)]
+                        {
+                            if value > 1 {
+                                write!(extra, " {name}=\"{value}\"").unwrap();
+                            }
+                        }
+                        (if cell.header { "th" } else { "td" }.into(), extra)
+                    }
+                    _ => unreachable!("Leaf cases handled above"),
+                };
+                write!(html, "<{tag}{id}{extra}>").unwrap();
+                if let Kind::Table { widths_percent, .. } = kind {
+                    if let Some(title) = title {
+                        write!(html, "<caption>{}</caption>", escape_html(title)).unwrap();
+                    }
+                    html.push_str("<colgroup>");
+                    for width in widths_percent {
+                        write!(html, "<col style=\"width: {width}%\"{close}").unwrap();
+                    }
+                    html.push_str("</colgroup><tbody>");
+                }
+                html.push_str(body);
+                if matches!(kind, Kind::Table { .. }) {
                     html.push_str("</tbody>");
                 }
-                html.push_str("</");
-                html.push_str(&tag);
-                html.push('>');
-                if !matches!(kind, "table_cell" | "table_header") {
+                write!(html, "</{tag}>").unwrap();
+                if !matches!(kind, Kind::TableCell(_)) {
                     html.push('\n');
                 }
             }
-            "footnote" | "citation" => {
-                let label = if kind == "citation" && attrs["source"].as_str() == Some("snippet") {
-                    Some(
-                        attrs["snippetId"]
-                            .as_str()
-                            .ok_or("Snippet citation has no label key.")?,
-                    )
+        }
+        html
+    }
+}
+
+impl Formatter for HtmlFormatter<'_> {
+    type Output = String;
+    fn emit(&mut self, event: RenderEvent<'_>) -> Result<(), ExportError> {
+        match event {
+            RenderEvent::Enter(node) => {
+                let title = self.frames.last().and_then(|frame| frame.caption.clone());
+                let caption = if let Kind::Figure { caption } = &node.kind {
+                    Some(caption.clone()).filter(|value| !value.trim().is_empty())
                 } else {
                     None
                 };
-                let number =
-                    if let Some(existing) = label.and_then(|key| state.citation_numbers.get(key)) {
-                        *existing
-                    } else {
-                        let number = state.footnotes.len() + 1;
-                        state.footnotes.push(String::new());
-                        let mut content = String::new();
-                        if let Some(key) = label {
-                            render_snippet(key, resources, heading_offset, state, &mut content)?;
-                            state.citation_numbers.insert(key.to_owned(), number);
-                        } else {
-                            let fragment = attrs["paragraph"]
-                                .as_object()
-                                .map(|_| &attrs["paragraph"])
-                                .ok_or("Reference has no local paragraph.")?;
-                            render_node(fragment, resources, heading_offset, state, &mut content)?;
-                        }
-                        state.footnotes[number - 1] = content;
-                        number
-                    };
-                let occurrence = state.reference_counts.entry(number).or_insert(0);
-                *occurrence += 1;
-                write!(html, "<sup><a id=\"{}fnref-{number}-{occurrence}\" href=\"#{}fn-{number}\" role=\"doc-noteref\">{number}</a></sup>", state.anchor_prefix, state.anchor_prefix).expect("writing to a String cannot fail");
+                self.frames.push(Frame {
+                    body: String::new(),
+                    title,
+                    caption,
+                });
             }
-            _ => return Err(format!("Unsupported HTML node: {kind}.")),
-        }
-    }
-    if let Some(marks) = node["marks"].as_array() {
-        for mark in marks.iter().rev() {
-            let name = mark["type"].as_str().ok_or("Mark has no type.")?;
-            body = match name {
-                "strong" | "superscript" | "subscript" if resources.macros.is_some() => resources
-                    .macros
-                    .unwrap()
-                    .render(name, TemplateValue::from(()), &body)?,
-                "link" if resources.macros.is_some() => {
-                    let href = mark["attrs"]["href"]
-                        .as_str()
-                        .ok_or("Link has no destination.")?;
-                    let target = resources
-                        .links
-                        .get(href)
-                        .ok_or_else(|| format!("Link {href} was not resolved by preflight."))?;
-                    if target.is_empty() {
-                        continue;
-                    }
-                    if !safe_output_url(target, false) {
-                        return Err(format!("Unsafe resolved link destination: {target}."));
-                    }
-                    let mut escaped = String::new();
-                    escape_into(target, &mut escaped);
-                    resources.macros.unwrap().render(
-                        "link",
-                        context! {target => TemplateValue::from_safe_string(escaped)},
-                        &body,
-                    )?
-                }
-                "link" => {
-                    let href = mark["attrs"]["href"]
-                        .as_str()
-                        .ok_or("Link has no destination.")?;
-                    let target = resources
-                        .links
-                        .get(href)
-                        .ok_or_else(|| format!("Link {href} was not resolved by preflight."))?;
-                    if target.is_empty() {
-                        continue;
-                    }
-                    if !safe_output_url(target, false) {
-                        return Err(format!("Unsafe resolved link destination: {target}."));
-                    }
-                    let mut escaped = String::new();
-                    escape_into(target, &mut escaped);
-                    format!("<a href=\"{escaped}\" rel=\"noopener noreferrer\">{body}</a>")
-                }
-                "strong" => format!("<strong>{body}</strong>"),
-                "emphasis" => format!("<em>{body}</em>"),
-                "underline" => format!("<u>{body}</u>"),
-                "strike" => format!("<s>{body}</s>"),
-                "code" => format!("<code>{body}</code>"),
-                "superscript" => format!("<sup>{body}</sup>"),
-                "subscript" => format!("<sub>{body}</sub>"),
-                _ => return Err(format!("Unsupported HTML mark: {name}.")),
-            };
-        }
-    }
-    output.push_str(&body);
-    Ok(())
-}
-
-fn render_macro_node(
-    kind: &str,
-    titled_node: (&Value, Option<&str>),
-    resources: &HtmlResources<'_>,
-    heading_offset: i16,
-    state: &mut HtmlState,
-    macros: &RenderMacros,
-) -> Result<String, String> {
-    let (node, title) = titled_node;
-    let attrs = &node["attrs"];
-    if kind == "image" {
-        let mut content = String::new();
-        render_leaf(
-            kind,
-            attrs,
-            resources,
-            heading_offset,
-            state,
-            &mut content,
-            None,
-        )?;
-        let rendered = macros.render(kind, context! {title => title}, &content)?;
-        require_block_anchor(attrs, &rendered)?;
-        return Ok(rendered);
-    }
-    let (tag, extra) = if kind == "code_block" {
-        ("figure".to_owned(), " class=\"code-block\"".to_owned())
-    } else {
-        container_tag(kind, attrs, heading_offset)?
-    };
-    let mut attributes = String::new();
-    write_id(attrs, &mut attributes);
-    attributes.push_str(&extra);
-    let mut children_html = String::new();
-    render_children(node, resources, heading_offset, state, &mut children_html)?;
-    let rendered = macros.render(
-        kind,
-        context! {
-            tag => tag,
-            attributes => TemplateValue::from_safe_string(attributes),
-            title => title,
-            language => attrs["language"].as_str().unwrap_or("plain"),
-            columns => attrs["columnWidthsPercent"].as_array().map(Vec::len),
-            column_widths_percent => attrs["columnWidthsPercent"].as_array(),
-        },
-        &children_html,
-    )?;
-    require_block_anchor(attrs, &rendered)?;
-    Ok(rendered)
-}
-
-fn require_block_anchor(attrs: &Value, rendered: &str) -> Result<(), String> {
-    if let Some(id) = attrs["id"].as_str()
-        && !rendered.contains(&format!("id=\"block-{id}\""))
-    {
-        return Err(format!(
-            "Macro output omitted the required block anchor for {id}."
-        ));
-    }
-    Ok(())
-}
-
-fn render_leaf(
-    kind: &str,
-    attrs: &Value,
-    resources: &HtmlResources<'_>,
-    heading_offset: i16,
-    state: &mut HtmlState,
-    html: &mut String,
-    title: Option<&str>,
-) -> Result<(), String> {
-    match kind {
-        "horizontal_rule" => html.push_str("<hr>\n"),
-        "image" => render_image(attrs, resources, html, title)?,
-        "embed" => {
-            let label = attrs["snippetId"]
-                .as_str()
-                .ok_or("Snippet embed has no key.")?;
-            html.push_str("<section class=\"embedded-passage\">\n");
-            render_snippet(label, resources, heading_offset, state, html)?;
-            html.push_str("</section>\n");
-        }
-        _ => return Err(format!("Unsupported HTML leaf: {kind}.")),
-    }
-    Ok(())
-}
-
-fn render_children(
-    node: &Value,
-    resources: &HtmlResources<'_>,
-    heading_offset: i16,
-    state: &mut HtmlState,
-    html: &mut String,
-) -> Result<(), String> {
-    for child in children(node) {
-        render_node(child, resources, heading_offset, state, html)?;
-    }
-    Ok(())
-}
-
-fn render_snippet(
-    id: &str,
-    resources: &HtmlResources<'_>,
-    heading_offset: i16,
-    state: &mut HtmlState,
-    output: &mut String,
-) -> Result<(), String> {
-    let paragraph = resources
-        .snippets
-        .get(id)
-        .ok_or_else(|| format!("Snippet {id} was not resolved by preflight."))?;
-    render_node(paragraph, resources, heading_offset, state, output)
-}
-
-fn children(node: &Value) -> &[Value] {
-    node["content"].as_array().map_or(&[][..], Vec::as_slice)
-}
-
-fn container_tag(
-    kind: &str,
-    attrs: &Value,
-    heading_offset: i16,
-) -> Result<(String, String), String> {
-    let result = match kind {
-        "paragraph" => ("p".to_owned(), String::new()),
-        "heading" => {
-            let level = i16::try_from(attrs["level"].as_u64().unwrap_or(1))
-                .map_err(|_| "Heading level is too large.")?
-                + heading_offset;
-            if level < 1 {
-                return Err("Heading level fell below 1 after article nesting.".to_owned());
+            RenderEvent::EnterMark(_) => self.frames.push(Frame {
+                body: String::new(),
+                title: None,
+                caption: None,
+            }),
+            RenderEvent::Exit(node) => {
+                let frame = self
+                    .frames
+                    .pop()
+                    .ok_or_else(|| ExportError::new("Unbalanced HTML node event"))?;
+                let value = self.node(node, &frame.body, frame.title.as_deref());
+                self.append(&value);
             }
-            let level = level.min(6);
-            (format!("h{level}"), String::new())
-        }
-        "blockquote" => ("blockquote".to_owned(), String::new()),
-        "box" => {
-            let kind = attrs["kind"].as_str().unwrap_or("info");
-            let mut extra = " class=\"callout\" data-kind=\"".to_owned();
-            escape_into(kind, &mut extra);
-            extra.push('"');
-            ("aside".to_owned(), extra)
-        }
-        "boxHeading" => ("p".to_owned(), " class=\"callout-title\"".to_owned()),
-        "list" if attrs["kind"].as_str() == Some("ordered") => {
-            let order = attrs["order"].as_u64().unwrap_or(1);
-            ("ol".to_owned(), format!(" start=\"{order}\""))
-        }
-        "list" => ("ul".to_owned(), String::new()),
-        "listItem" => ("li".to_owned(), String::new()),
-        "table" => ("table".to_owned(), String::new()),
-        "table_row" => ("tr".to_owned(), String::new()),
-        "table_cell" | "table_header" => {
-            let tag = if kind == "table_header" { "th" } else { "td" };
-            let mut extra = if tag == "th" {
-                " scope=\"col\"".to_owned()
-            } else {
-                String::new()
-            };
-            for name in ["colspan", "rowspan"] {
-                if let Some(value) = attrs[name].as_u64().filter(|value| *value > 1) {
-                    write!(extra, " {name}=\"{value}\"").expect("writing to a String cannot fail");
-                }
+            RenderEvent::ExitMark(mark) => {
+                let frame = self
+                    .frames
+                    .pop()
+                    .ok_or_else(|| ExportError::new("Unbalanced HTML mark event"))?;
+                let (tag, extra) = match mark {
+                    Mark::Strong => ("strong", String::new()),
+                    Mark::Emphasis => ("em", String::new()),
+                    Mark::Underline => ("u", String::new()),
+                    Mark::Strike => ("s", String::new()),
+                    Mark::Code => ("code", String::new()),
+                    Mark::Superscript => ("sup", String::new()),
+                    Mark::Subscript => ("sub", String::new()),
+                    Mark::Link(destination) => {
+                        let target = match destination {
+                            Destination::Url(url) => url.clone(),
+                            Destination::Anchor(anchor) => format!("#{anchor}"),
+                            Destination::PlainText => unreachable!(),
+                        };
+                        (
+                            "a",
+                            format!(
+                                " href=\"{}\" rel=\"noopener noreferrer\"",
+                                escape_html(&target)
+                            ),
+                        )
+                    }
+                };
+                self.append(&format!("<{tag}{extra}>{}</{tag}>", frame.body));
             }
-            (tag.to_owned(), extra)
         }
-        _ => return Err(format!("Unsupported HTML container: {kind}.")),
-    };
-    Ok(result)
-}
-
-fn render_image(
-    attrs: &Value,
-    resources: &HtmlResources<'_>,
-    html: &mut String,
-    title: Option<&str>,
-) -> Result<(), String> {
-    let src = attrs["src"].as_str().ok_or("Image has no source.")?;
-    let alt = attrs["alt"]
-        .as_str()
-        .filter(|text| !text.trim().is_empty())
-        .ok_or("Image needs descriptive alt text.")?;
-    let uri = resources
-        .assets
-        .get(src)
-        .ok_or_else(|| format!("Image {src} was not resolved by preflight."))?;
-    if !safe_output_url(uri, true) {
-        return Err(format!("Unsafe resolved image destination: {uri}."));
+        Ok(())
     }
-    let caption = resources.macros.is_none() && title.is_some();
-    if caption {
-        html.push_str("<figure>");
-    }
-    html.push_str("<img");
-    write_id(attrs, html);
-    html.push_str(" src=\"");
-    escape_into(uri, html);
-    html.push_str("\" alt=\"");
-    escape_into(alt, html);
-    html.push('"');
-    for name in ["width", "height"] {
-        if let Some(value) = attrs[name].as_u64() {
-            write!(html, " {name}=\"{value}\"").expect("writing to a String cannot fail");
-        }
-    }
-    html.push_str(">\n");
-    if caption {
-        write_caption(title, "figcaption", html);
-        html.push_str("</figure>\n");
-    }
-    Ok(())
-}
-
-fn write_caption(title: Option<&str>, tag: &str, html: &mut String) {
-    if let Some(title) = title {
-        write!(html, "<{tag}>").expect("writing to a String cannot fail");
-        escape_into(title, html);
-        write!(html, "</{tag}>").expect("writing to a String cannot fail");
-    }
-}
-
-fn write_column_group(attrs: &Value, html: &mut String) -> Result<(), String> {
-    let widths = attrs["columnWidthsPercent"]
-        .as_array()
-        .ok_or("Table column percentages are required.")?;
-    html.push_str("<colgroup>");
-    for width in widths {
-        let width = width.as_f64().ok_or("Invalid table column percentage.")?;
-        write!(html, "<col style=\"width: {width}%\">").expect("writing to a String cannot fail");
-    }
-    html.push_str("</colgroup>");
-    Ok(())
-}
-
-fn write_id(attrs: &Value, html: &mut String) {
-    if let Some(id) = attrs["id"].as_str() {
-        html.push_str(" id=\"block-");
-        escape_into(id, html);
-        html.push('"');
-    }
-}
-
-fn safe_output_url(value: &str, image: bool) -> bool {
-    if value.is_empty()
-        || value.starts_with("//")
-        || value.contains('\\')
-        || value.chars().any(char::is_control)
-    {
-        return false;
-    }
-    if let Ok(url) = Url::parse(value) {
-        return if image {
-            (matches!(url.scheme(), "http" | "https") && url.has_host())
-                || [
-                    "data:image/png;base64,",
-                    "data:image/jpeg;base64,",
-                    "data:image/webp;base64,",
-                    "data:image/gif;base64,",
-                    "data:image/svg+xml;base64,",
-                ]
-                .iter()
-                .any(|prefix| {
-                    value.strip_prefix(prefix).is_some_and(|data| {
-                        !data.is_empty()
-                            && data.bytes().all(|byte| {
-                                byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')
-                            })
-                    })
-                })
+    fn finish(self) -> Result<String, ExportError> {
+        if self.frames.is_empty() {
+            Ok(self.output)
         } else {
-            (matches!(url.scheme(), "http" | "https") && url.has_host())
-                || (url.scheme() == "mailto" && !url.path().is_empty())
-        };
-    }
-    !value
-        .split('/')
-        .next()
-        .is_some_and(|part| part.contains(':'))
-}
-
-fn escape_into(value: &str, html: &mut String) {
-    for character in value.chars() {
-        match character {
-            '&' => html.push_str("&amp;"),
-            '<' => html.push_str("&lt;"),
-            '>' => html.push_str("&gt;"),
-            '"' => html.push_str("&quot;"),
-            '\'' => html.push_str("&#39;"),
-            _ => html.push(character),
+            Err(ExportError::new("Unclosed HTML events"))
         }
     }
 }
 
 #[must_use]
 pub(crate) fn escape_html(value: &str) -> String {
-    let mut html = String::new();
-    escape_into(value, &mut html);
-    html
+    let mut output = String::new();
+    for character in value.chars() {
+        match character {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            '"' => output.push_str("&quot;"),
+            '\'' => output.push_str("&#39;"),
+            value => output.push(value),
+        }
+    }
+    output
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
-
-    use serde_json::json;
-
     use super::{HtmlResources, render_html_document};
-    use crate::engine::publication::macros::RenderMacros;
-
-    #[test]
-    fn figure_titles_reach_body_macros_without_entering_verbatim_content() {
-        let id = "01a0e2a0-0000-7000-8000-000000000005";
-        let document = json!({"type":"doc","content":[
-            {"type":"figure","attrs":{"id":id},"content":[
-                {"type":"blockTitle","content":[{"type":"text","text":"Code <script> & title"}]},
-                {"type":"code_block","attrs":{"language":"rust"},"content":[{"type":"text","text":"let x = \"<code>\";"}]}
-            ]},
-            {"type":"figure","content":[
-                {"type":"blockTitle","content":[{"type":"text","text":"Image <title>"}]},
-                {"type":"image","attrs":{"src":"asset","alt":"Diagram"}}
-            ]},
-            {"type":"figure","content":[
-                {"type":"blockTitle","content":[{"type":"text","text":"Table & title"}]},
-                {"type":"table","attrs":{"columnWidthsPercent":[100]},"content":[{"type":"table_row","content":[{"type":"table_header","content":[{"type":"paragraph","content":[{"type":"text","text":"Cell"}]}]}]}]}
-            ]}
-        ]});
-        let empty = HashMap::new();
-        let assets = HashMap::from([("asset".to_owned(), "assets/image.png".to_owned())]);
-        let snippets = HashMap::new();
-        let excluded = HashSet::new();
-        let defaults = RenderMacros::new("html", None).unwrap();
-        for macros in [None, Some(&defaults)] {
-            let output = render_html_document(
-                &document,
-                &HtmlResources {
-                    links: &empty,
-                    assets: &assets,
-                    fields: &empty,
-                    snippets: &snippets,
-                    excluded_block_ids: &excluded,
-                    macros,
-                },
-                0,
-            )
-            .unwrap();
-            assert!(output.contains(&format!("id=\"block-{id}\"")));
-            assert!(output.contains("<figcaption>Code &lt;script&gt; &amp; title</figcaption>"));
-            assert!(output.contains("<figcaption>Image &lt;title&gt;</figcaption>"));
-            assert!(output.contains("<caption>Table &amp; title</caption>"));
-            assert!(output.contains("<code>let x = &quot;&lt;code&gt;&quot;;</code>"));
-            assert!(!output.contains("<code>Code"));
-            assert!(!output.contains("<script>"));
-        }
-        let overrides = RenderMacros::new("html", Some(
-            "{% macro start_code_block(ctx) %}<figure{{ ctx.attributes }}><figcaption class=\"brand-title\">{{ ctx.title }}</figcaption><pre><code>{% endmacro %}"
-        )).unwrap();
-        let output = render_html_document(
-            &document,
-            &HtmlResources {
-                links: &empty,
-                assets: &assets,
-                fields: &empty,
-                snippets: &snippets,
-                excluded_block_ids: &excluded,
-                macros: Some(&overrides),
-            },
-            0,
-        )
-        .unwrap();
-        assert!(output.contains("class=\"brand-title\">Code &lt;script&gt; &amp; title"));
-        let excluded = HashSet::from([id.to_owned()]);
-        let output = render_html_document(
-            &document,
-            &HtmlResources {
-                links: &empty,
-                assets: &assets,
-                fields: &empty,
-                snippets: &snippets,
-                excluded_block_ids: &excluded,
-                macros: Some(&defaults),
-            },
-            0,
-        )
-        .unwrap();
-        assert!(!output.contains("Code &lt;script&gt;"));
-        assert!(!output.contains("let x"));
-    }
-
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Keep each end-to-end scenario together so setup, failure checks and cleanup remain visible."
-    )]
-    fn custom_macros_wrap_nested_content_after_rust_resolves_it() {
-        let macros = RenderMacros::new(
-            "html",
-            Some(r#"
-{% macro heading(ctx, children) %}<{{ ctx.tag }}{{ ctx.attributes }} class="brand-heading">{{ children }}</{{ ctx.tag }}>{% endmacro %}
-{% macro paragraph(ctx, children) %}<p{{ ctx.attributes }} class="brand-copy">{{ children }}</p>{% endmacro %}
-{% macro strong(ctx, children) %}<b class="brand-strong">{{ children }}</b>{% endmacro %}
-{% macro link(ctx, children) %}<a class="brand-link" href="{{ ctx.target }}">{{ children }}</a>{% endmacro %}
-{% macro image(ctx, children) %}<figure class="brand-image">{{ children }}</figure>{% endmacro %}
-{% macro list(ctx, children) %}<{{ ctx.tag }}{{ ctx.attributes }} class="brand-list">{{ children }}</{{ ctx.tag }}>{% endmacro %}
-{% macro table(ctx, children) %}<table{{ ctx.attributes }} class="brand-table"><tbody>{{ children }}</tbody></table>{% endmacro %}
-"#),
-        )
-        .unwrap();
-        let document = json!({"type":"doc","content":[
-            {"type":"heading","attrs":{"id":"01a0e2a0-0000-7000-8000-000000000001","level":1},"content":[{"type":"text","text":"Head <one>"}]},
-            {"type":"paragraph","content":[
-                {"type":"text","text":"Bold & safe","marks":[{"type":"strong"}]},
-                {"type":"text","text":" Link","marks":[{"type":"link","attrs":{"href":"target"}}]}
-            ]},
-            {"type":"list","attrs":{"kind":"bullet"},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"Nested"}]}]}]},
-            {"type":"table","attrs":{"columnWidthsPercent":[100]},"content":[{"type":"table_row","content":[{"type":"table_header","content":[{"type":"paragraph","content":[{"type":"text","text":"Cell"}]}]}]}]},
-            {"type":"image","attrs":{"src":"asset","alt":"Sky <blue>"}}
-        ]});
-        let links = HashMap::from([(
-            "target".to_owned(),
-            "https://example.com/?a=1&b=2".to_owned(),
-        )]);
-        let assets = HashMap::from([("asset".to_owned(), "assets/sky.png".to_owned())]);
-        let empty = HashMap::new();
-        let snippets = HashMap::new();
-        let rendered = render_html_document(
-            &document,
-            &HtmlResources {
-                links: &links,
-                assets: &assets,
-                fields: &empty,
-                snippets: &snippets,
-                excluded_block_ids: &HashSet::new(),
-                macros: Some(&macros),
-            },
-            0,
-        )
-        .unwrap();
-        assert!(rendered.contains("class=\"brand-heading\">Head &lt;one&gt;</h1>"));
-        assert!(rendered.contains("<b class=\"brand-strong\">Bold &amp; safe</b>"));
-        assert!(
-            rendered.contains("href=\"https://example.com/?a=1&amp;b=2\"> Link</a>"),
-            "{rendered}"
-        );
-        assert!(rendered.contains("class=\"brand-list\"><li><p class=\"brand-copy\">Nested</p>"));
-        assert!(rendered.contains(
-            "class=\"brand-table\"><tbody><tr><th scope=\"col\"><p class=\"brand-copy\">Cell</p>"
-        ));
-        assert!(rendered.contains(
-            "<figure class=\"brand-image\"><img src=\"assets/sky.png\" alt=\"Sky &lt;blue&gt;\">"
-        ));
-        assert!(!rendered.contains("<one>"));
-        let missing_anchor = RenderMacros::new(
-            "html",
-            Some("{% macro heading(ctx, children) %}<h1>{{ children }}</h1>{% endmacro %}"),
-        )
-        .unwrap();
-        let error = render_html_document(
-            &document,
-            &HtmlResources {
-                links: &links,
-                assets: &assets,
-                fields: &empty,
-                snippets: &snippets,
-                excluded_block_ids: &HashSet::new(),
-                macros: Some(&missing_anchor),
-            },
-            0,
-        )
-        .unwrap_err();
-        assert!(error.contains("heading 01a0e2a0-0000-7000-8000-000000000001"));
-        assert!(error.contains("omitted the required block anchor"));
-
-        let omit_children = RenderMacros::new(
-            "html",
-            Some("{% macro paragraph(ctx, children) %}<p>Hidden</p>{% endmacro %}"),
-        )
-        .unwrap();
-        let missing_field = json!({"type":"doc","content":[
-            {"type":"paragraph","content":[{"type":"field","attrs":{"key":"missing"}}]}
-        ]});
-        let error = render_html_document(
-            &missing_field,
-            &HtmlResources {
-                links: &links,
-                assets: &assets,
-                fields: &empty,
-                snippets: &snippets,
-                excluded_block_ids: &HashSet::new(),
-                macros: Some(&omit_children),
-            },
-            0,
-        )
-        .unwrap_err();
-        assert!(error.contains("Field missing was not resolved"));
-
-        let unsafe_links = HashMap::from([("target".to_owned(), "javascript:alert(1)".to_owned())]);
-        let error = render_html_document(
-            &document,
-            &HtmlResources {
-                links: &unsafe_links,
-                assets: &assets,
-                fields: &empty,
-                snippets: &snippets,
-                excluded_block_ids: &HashSet::new(),
-                macros: Some(&macros),
-            },
-            0,
-        )
-        .unwrap_err();
-        assert!(error.contains("Unsafe resolved link destination"));
-    }
-
+    use serde_json::json;
+    use std::collections::{HashMap, HashSet};
     #[test]
     fn renders_nested_blocks_and_escapes_authored_values() {
         let document = json!({"type":"doc","content":[
@@ -866,12 +440,12 @@ mod tests {
         let html = render_html_document(
             &document,
             &HtmlResources {
+                page_id: "test-page",
                 links: &links,
                 assets: &assets,
                 fields: &fields,
                 snippets: &snippets,
                 excluded_block_ids: &excluded_block_ids,
-                macros: None,
             },
             1,
         )
@@ -893,12 +467,12 @@ mod tests {
         let error = render_html_document(
             &document,
             &HtmlResources {
+                page_id: "test-page",
                 links: &empty,
                 assets: &empty,
                 fields: &empty,
                 snippets: &snippets,
                 excluded_block_ids: &exclusions,
-                macros: None,
             },
             0,
         )
@@ -919,12 +493,12 @@ mod tests {
         let html = render_html_document(
             &document,
             &HtmlResources {
+                page_id: "test-page",
                 links: &good,
                 assets: &assets,
                 fields: &fields,
                 snippets: &snippets,
                 excluded_block_ids: &exclusions,
-                macros: None,
             },
             0,
         )
@@ -936,12 +510,12 @@ mod tests {
             render_html_document(
                 &document,
                 &HtmlResources {
+                    page_id: "test-page",
                     links: &bad,
                     assets: &assets,
                     fields: &fields,
                     snippets: &snippets,
                     excluded_block_ids: &exclusions,
-                    macros: None,
                 },
                 0
             )
@@ -970,12 +544,12 @@ mod tests {
         let html = render_html_document(
             &document,
             &HtmlResources {
+                page_id: "test-page",
                 links: &empty,
                 assets: &empty,
                 fields: &empty,
                 snippets: &snippets,
                 excluded_block_ids: &exclusions,
-                macros: None,
             },
             0,
         )
@@ -999,12 +573,12 @@ mod tests {
         let missing = render_html_document(
             &document,
             &HtmlResources {
+                page_id: "test-page",
                 links: &empty,
                 assets: &empty,
                 fields: &empty,
                 snippets: &empty_passages,
                 excluded_block_ids: &exclusions,
-                macros: None,
             },
             0,
         )
@@ -1017,12 +591,12 @@ mod tests {
         let cyclic = render_html_document(
             &document,
             &HtmlResources {
+                page_id: "test-page",
                 links: &empty,
                 assets: &empty,
                 fields: &empty,
                 snippets: &snippets,
                 excluded_block_ids: &exclusions,
-                macros: None,
             },
             0,
         )
@@ -1047,12 +621,12 @@ mod tests {
         let html = render_html_document(
             &document,
             &HtmlResources {
+                page_id: "test-page",
                 links: &host_links,
                 assets: &empty,
                 fields: &empty,
                 snippets: &snippets,
                 excluded_block_ids: &exclusions,
-                macros: None,
             },
             0,
         )

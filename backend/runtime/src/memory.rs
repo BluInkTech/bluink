@@ -9,7 +9,10 @@ pub(crate) fn release_unused() {
     // pointer preconditions, and releases only unallocated whole heap pages.
     // This deliberately excludes other platforms and allocators. The exception
     // is confined to this one platform call; the crate still denies unsafe code.
-    #[allow(unsafe_code)]
+    #[allow(
+        unsafe_code,
+        reason = "The audited glibc malloc_trim call has no pointer preconditions and is MT-Safe."
+    )]
     unsafe {
         libc::malloc_trim(0);
     }

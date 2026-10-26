@@ -2,7 +2,7 @@
 // Copyright (c) 2023–2026 BluInk
 
 use super::{OutsideLinks, PdfProfile, plan::PublicationFormat};
-use crate::engine::project::item::is_item_id;
+use crate::engine::project::identity::is_item_id;
 use serde::{Deserialize, Deserializer, de::Error};
 const INVALID_SOURCE: &str = "Choose a saved source and output type.";
 const INVALID_PAGE_SETTINGS: &str = "Choose valid page export settings.";
@@ -97,6 +97,8 @@ source!(PublicationSource, "publication");
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub(crate) enum NoteFormat {
     Pdf,
+    Docx,
+    Epub,
     Html,
 }
 #[derive(Debug, Deserialize)]
@@ -104,6 +106,8 @@ pub(crate) enum NoteFormat {
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub(crate) enum LinkedFormat {
     Pdf,
+    Docx,
+    Epub,
     Site,
 }
 impl TryFrom<ExportInput> for ExportRequest {
@@ -124,6 +128,8 @@ impl TryFrom<ExportInput> for ExportRequest {
                 let NoteSource::Source { id } = request.source;
                 let format = match request.format {
                     NoteFormat::Pdf => PublicationFormat::Pdf,
+                    NoteFormat::Docx => PublicationFormat::Docx,
+                    NoteFormat::Epub => PublicationFormat::Epub,
                     NoteFormat::Html => PublicationFormat::Html,
                 };
                 (
@@ -142,6 +148,8 @@ impl TryFrom<ExportInput> for ExportRequest {
                 let LinkedSource::Source { id } = request.source;
                 let format = match request.format {
                     LinkedFormat::Pdf => PublicationFormat::Pdf,
+                    LinkedFormat::Docx => PublicationFormat::Docx,
+                    LinkedFormat::Epub => PublicationFormat::Epub,
                     LinkedFormat::Site => PublicationFormat::Site,
                 };
                 (
@@ -160,10 +168,11 @@ impl TryFrom<ExportInput> for ExportRequest {
         if !is_item_id(&id) {
             return Err(INVALID_SOURCE);
         }
-        if page
-            .as_ref()
-            .is_some_and(|settings| settings.theme_id.trim().is_empty())
-        {
+        if page.as_ref().is_some_and(|settings| {
+            settings.theme_id.trim().is_empty()
+                || (format != PublicationFormat::Pdf
+                    && matches!(settings.profile, PdfProfile::Accessible))
+        }) {
             return Err(INVALID_PAGE_SETTINGS);
         }
         Ok(Self {
@@ -205,10 +214,16 @@ mod tests {
     fn accepts_only_supported_source_and_format_pairs() {
         for (kind, format) in [
             ("note", "pdf"),
+            ("note", "docx"),
+            ("note", "epub"),
             ("note", "html"),
             ("linked-pages", "pdf"),
+            ("linked-pages", "docx"),
+            ("linked-pages", "epub"),
             ("linked-pages", "site"),
             ("publication", "pdf"),
+            ("publication", "docx"),
+            ("publication", "epub"),
             ("publication", "html"),
             ("publication", "site"),
         ] {
@@ -244,6 +259,18 @@ mod tests {
         ] {
             let mut invalid = request("note", "pdf");
             invalid[field] = value;
+            assert!(validate_export_request(&invalid).is_err());
+        }
+        for (kind, format) in [
+            ("note", "docx"),
+            ("note", "epub"),
+            ("linked-pages", "docx"),
+            ("linked-pages", "epub"),
+            ("note", "html"),
+            ("linked-pages", "site"),
+        ] {
+            let mut invalid = request(kind, format);
+            invalid["profile"] = json!("accessible");
             assert!(validate_export_request(&invalid).is_err());
         }
     }

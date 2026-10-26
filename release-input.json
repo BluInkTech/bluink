@@ -1,21 +1,21 @@
 {
   "format": "bluink.release-input",
   "formatVersion": 1,
-  "version": "26.10.7-alpha",
+  "version": "26.10.11-alpha",
   "publicRepository": "https://github.com/BluInkTech/bluink",
   "frontend": {
     "name": "@bluink/web",
-    "version": "26.10.7-alpha",
-    "integrity": "sha512-flCKSD7m7Vrx4xgKuL2VWDX1SNfnTnpKl7tTsNU3lJxdLYpnGsuVgwVkxqOlRxAghnhB+FhJ5+fHaescJiry5Q==",
-    "sha256": "fc7978a8c0356bbe282aa027dbbd3cf29c20fc1512d9c40f7a04e67bdc3ac2d4",
-    "url": "https://github.com/BluInkTech/bluink/releases/download/web/v26.10.7-alpha/bluink-web-26.10.7-alpha.tgz"
+    "version": "26.10.11-alpha",
+    "integrity": "sha512-cLk6d2fxdu7Hinp5np5dxCxR0oOB+obXEmwRrUZuTgrIXnpSug7+Ax6E3orB6eSqQPyzkJeX6vk9u/fdPYLIWQ==",
+    "sha256": "0cf79e29fea4b8e2313529366c64f452c15f5ba88d440f3f70a8a2edb61d2f46",
+    "url": "https://github.com/BluInkTech/bluink/releases/download/web/v26.10.11-alpha/bluink-web-26.10.11-alpha.tgz"
   },
   "dependencies": [
     {
       "name": "@bluink/fonts",
-      "version": "26.10.2",
-      "integrity": "sha512-yOpUxEbnEDb2FzTV8ilVrDAoGDywUc8gdrWnM/2W+pmfGySUjaCkpvDtdFdIhsTfs/C4D3+g8fHzrmUfNFPFgA==",
-      "sha256": "0768f51132a98042190065a1507ca5ebb86f23f86bd7e1da474fc6b40fda1b2f"
+      "version": "26.10.5",
+      "integrity": "sha512-KtpxaLOtvZgzg5jGJZH16moXPmsFFMV5mC44H9NkpxiSg7thMDUvNBqtVLybvkm3MuK9ltkK4xjwHiOD+HgEHg==",
+      "sha256": "540982ae99a5b0ffccd85a748c280d9d1a6d9ddc200f543382059af32854b1fa"
     },
     {
       "name": "@bluink/typst",

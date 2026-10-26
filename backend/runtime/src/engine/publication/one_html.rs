@@ -3,12 +3,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::fs;
 use std::path::Path;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use sha2::{Digest, Sha256};
 
 use crate::engine::project::item::read_project_item;
 use crate::engine::publication::article::{image_mime, publish_article};
@@ -16,13 +14,12 @@ use crate::engine::publication::html::{
     HtmlResources, HtmlState, escape_html, html_endnotes, render_html_document_in_scope,
 };
 use crate::engine::publication::plan::{
-    PlannedPage, PlannedStructureNode, PublicationFormat, PublicationPlan, assert_plan_fresh,
+    PlannedPage, PublicationFormat, PublicationPlan, assert_plan_fresh,
+    reading::{BookEntry, body_heading_level, entries},
 };
 use crate::engine::publication::preflight::LinkResolution;
 use crate::engine::publication::source::{document, min_heading_level, resolved_fields};
-use crate::engine::publication::theme::{
-    HtmlShellContext, HtmlShellKind, load_html_macros, render_html_shell,
-};
+use crate::engine::publication::theme::{HtmlShellContext, HtmlShellKind, render_html_shell};
 
 const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_HTML_BYTES: usize = 128 * 1024 * 1024;
@@ -34,6 +31,10 @@ const MAX_HTML_BYTES: usize = 128 * 1024 * 1024;
     clippy::too_many_lines,
     reason = "Keep the complete format or operation dispatch together for contract review."
 )]
+#[expect(
+    clippy::expect_used,
+    reason = "Formatting only strings and primitive values into String is infallible."
+)]
 pub(crate) fn render_publication_html(
     root: &Path,
     plan: &PublicationPlan,
@@ -43,12 +44,6 @@ pub(crate) fn render_publication_html(
         return Err("A combined HTML renderer needs an HTML Publication plan.".to_owned());
     }
     assert_plan_fresh(root, plan)?;
-    let macros = load_html_macros(
-        root,
-        &plan.theme,
-        HtmlShellKind::Article,
-        trust_project_theme,
-    )?;
     let mut assets = HashMap::new();
     let mut total_asset_bytes = 0u64;
     for asset in &plan.assets {
@@ -60,35 +55,13 @@ pub(crate) fn render_publication_html(
         }
         let mime = image_mime(&asset.filename)
             .ok_or_else(|| format!("Unsupported offline HTML image: {}", asset.src))?;
-        let path = root
-            .join("items")
-            .join(&asset.owner_id[..2])
-            .join(&asset.owner_id)
-            .join("assets")
-            .join(&asset.filename);
-        let bytes =
-            fs::read(path).map_err(|error| format!("Cannot read image {}: {error}", asset.src))?;
-        let digest: String = super::digest_hex(&Sha256::digest(&bytes));
-        if bytes.len() as u64 != asset.bytes || digest != asset.sha256 {
-            return Err(format!(
-                "Image {} changed during HTML rendering.",
-                asset.src
-            ));
-        }
+        let bytes = super::render::read_asset(root, asset)?;
         assets.insert(
             asset.src.clone(),
             format!("data:{mime};base64,{}", STANDARD.encode(bytes)),
         );
     }
 
-    let mut sources = HashMap::new();
-    for page in &plan.pages {
-        sources.insert(
-            page.id.clone(),
-            read_project_item(root, &page.id)?
-                .ok_or_else(|| format!("Publication page {} disappeared.", page.id))?,
-        );
-    }
     let snippets: HashMap<String, serde_json::Value> = plan
         .snippets
         .iter()
@@ -96,50 +69,84 @@ pub(crate) fn render_publication_html(
         .collect();
     let mut body = String::new();
     let mut citation_scope = HtmlState::default();
-    let mut contents = String::from(
-        "<nav class=\"publication-contents\" aria-label=\"Contents\"><h2>Contents</h2><ol>",
-    );
-    let mut rendered = HashSet::new();
+    let mut contents = Contents::default();
+    let mut sections = Vec::new();
+    let mut contents_position = None;
     let root_page = plan.pages.first().ok_or("Publication has no home page.")?;
-    write!(
-        contents,
-        "<li><a href=\"#note-{}\">{}</a></li>",
-        root_page.id,
-        escape_html(&root_page.title)
-    )
-    .expect("writing to a String cannot fail");
-    render_page(
-        root_page,
-        plan,
-        &sources,
-        &assets,
-        &snippets,
-        &macros,
-        &mut body,
-        &mut citation_scope,
-    )?;
-    rendered.insert(root_page.id.as_str());
-    render_outline(
-        &plan.structure,
-        plan,
-        &sources,
-        &assets,
-        &snippets,
-        &macros,
-        &mut rendered,
-        &mut contents,
-        &mut body,
-        &mut citation_scope,
-    )?;
-    contents.push_str("</ol></nav>\n");
-    body.push_str(&html_endnotes(&citation_scope));
-    if rendered.len() != plan.pages.len() {
-        return Err("Publication outline does not account for every planned page.".to_owned());
+    for entry in entries(plan)? {
+        let depth = match &entry {
+            BookEntry::Section { depth, .. } => *depth,
+            BookEntry::Page { id, .. } => planned_page(plan, id)?.depth,
+        };
+        while sections.last().is_some_and(|level| *level >= depth) {
+            sections.pop();
+            body.push_str("</section>\n");
+        }
+        match entry {
+            BookEntry::Section {
+                id,
+                title,
+                number,
+                depth,
+            } => {
+                let title = format!("{number}. {title}");
+                let anchor = format!("section-{id}");
+                contents.push(depth, &anchor, &title);
+                let level = depth.clamp(1, 6);
+                writeln!(
+                    body,
+                    "<section class=\"publication-section publication-chapter\" id=\"{}\"><h{level}>{}</h{level}>",
+                    escape_html(&anchor),
+                    escape_html(&title)
+                )
+                .expect("writing to a String cannot fail");
+                sections.push(depth);
+            }
+            BookEntry::Page { id, number, intro } => {
+                let page = planned_page(plan, &id)?;
+                let first = id == plan.root_page_id;
+                let title = if intro {
+                    None
+                } else if first {
+                    Some(plan.title.clone())
+                } else {
+                    Some(format!(
+                        "{}. {}",
+                        number.ok_or("Chapter has no authored number.")?,
+                        page.title
+                    ))
+                };
+                if !first && let Some(title) = &title {
+                    contents.push(page.depth, &format!("note-{id}"), title);
+                }
+                render_page(
+                    page,
+                    title.as_deref(),
+                    plan,
+                    root,
+                    &assets,
+                    &snippets,
+                    &mut body,
+                    &mut citation_scope,
+                )?;
+                if first {
+                    contents_position = Some(body.len());
+                }
+            }
+        }
     }
-    let language = sources
-        .get(&root_page.id)
-        .and_then(|item| item["meta"]["lang"].as_str())
-        .unwrap_or("und");
+    for _ in sections {
+        body.push_str("</section>\n");
+    }
+    body.insert_str(
+        contents_position.ok_or("Publication has no home page.")?,
+        &contents.finish(),
+    );
+    body.push_str(&html_endnotes(&citation_scope));
+    let root_item = read_project_item(root, &root_page.id)
+        .map_err(|error| error.to_string())?
+        .ok_or("Publication home page disappeared.")?;
+    let language = root_item["meta"]["lang"].as_str().unwrap_or("und");
     let html = render_html_shell(
         root,
         &plan.theme,
@@ -147,7 +154,7 @@ pub(crate) fn render_publication_html(
         HtmlShellContext {
             title: &plan.title,
             language,
-            body: &format!("{contents}{body}"),
+            body: &body,
             navigation: "",
             contents: "",
             role: "publication",
@@ -166,168 +173,51 @@ pub(crate) fn publish_publication_html(html: &str, destination: &Path) -> Result
     publish_article(html, destination)
 }
 
-#[allow(clippy::too_many_arguments)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "Keep the complete format or operation dispatch together for contract review."
-)]
-fn render_outline<'a>(
-    nodes: &[PlannedStructureNode],
-    plan: &'a PublicationPlan,
-    sources: &HashMap<String, serde_json::Value>,
-    assets: &HashMap<String, String>,
-    snippets: &HashMap<String, serde_json::Value>,
-    macros: &crate::engine::publication::macros::RenderMacros,
-    rendered: &mut HashSet<&'a str>,
-    contents: &mut String,
-    body: &mut String,
-    citation_scope: &mut HtmlState,
-) -> Result<(), String> {
-    for node in nodes {
-        match node {
-            PlannedStructureNode::Page {
-                page_id, children, ..
-            } => {
-                let page = planned_page(plan, page_id)?;
-                write!(
-                    contents,
-                    "<li><a href=\"#note-{}\">{}</a>",
-                    page.id,
-                    escape_html(&page.title)
-                )
-                .expect("writing to a String cannot fail");
-                if rendered.insert(page.id.as_str()) {
-                    render_page(
-                        page,
-                        plan,
-                        sources,
-                        assets,
-                        snippets,
-                        macros,
-                        body,
-                        citation_scope,
-                    )?;
-                }
-                if !children.is_empty() {
-                    contents.push_str("<ol>");
-                    render_outline(
-                        children,
-                        plan,
-                        sources,
-                        assets,
-                        snippets,
-                        macros,
-                        rendered,
-                        contents,
-                        body,
-                        citation_scope,
-                    )?;
-                    contents.push_str("</ol>");
-                }
-                contents.push_str("</li>");
-            }
-            PlannedStructureNode::Section {
-                id,
-                title,
-                intro_page_id,
-                children,
-            } => {
-                write!(
-                    contents,
-                    "<li><a href=\"#section-{id}\">{}</a>",
-                    escape_html(title)
-                )
-                .expect("writing to a String cannot fail");
-                writeln!(
-                    body,
-                    "<section class=\"publication-section\" id=\"section-{id}\"><h2>{}</h2>",
-                    escape_html(title)
-                )
-                .expect("writing to a String cannot fail");
-                contents.push_str("<ol>");
-                if let Some(page_id) = intro_page_id {
-                    let page = planned_page(plan, page_id)?;
-                    write!(
-                        contents,
-                        "<li><a href=\"#note-{}\">{}</a></li>",
-                        page.id,
-                        escape_html(&page.title)
-                    )
-                    .expect("writing to a String cannot fail");
-                    if rendered.insert(page.id.as_str()) {
-                        render_page(
-                            page,
-                            plan,
-                            sources,
-                            assets,
-                            snippets,
-                            macros,
-                            body,
-                            citation_scope,
-                        )?;
-                    }
-                }
-                render_outline(
-                    children,
-                    plan,
-                    sources,
-                    assets,
-                    snippets,
-                    macros,
-                    rendered,
-                    contents,
-                    body,
-                    citation_scope,
-                )?;
-                contents.push_str("</ol></li>");
-                body.push_str("</section>\n");
-            }
-            PlannedStructureNode::Collection {
-                id,
-                title,
-                page_ids,
-                ..
-            } => {
-                write!(
-                    contents,
-                    "<li><a href=\"#collection-{id}\">{}</a><ol>",
-                    escape_html(title)
-                )
-                .expect("writing to a String cannot fail");
-                writeln!(
-                    body,
-                    "<section class=\"publication-section\" id=\"collection-{id}\"><h2>{}</h2>",
-                    escape_html(title)
-                )
-                .expect("writing to a String cannot fail");
-                for page_id in page_ids {
-                    let page = planned_page(plan, page_id)?;
-                    write!(
-                        contents,
-                        "<li><a href=\"#note-{}\">{}</a></li>",
-                        page.id,
-                        escape_html(&page.title)
-                    )
-                    .expect("writing to a String cannot fail");
-                    if rendered.insert(page.id.as_str()) {
-                        render_page(
-                            page,
-                            plan,
-                            sources,
-                            assets,
-                            snippets,
-                            macros,
-                            body,
-                            citation_scope,
-                        )?;
-                    }
-                }
-                contents.push_str("</ol></li>");
-                body.push_str("</section>\n");
+#[derive(Default)]
+struct Contents {
+    html: String,
+    depth: usize,
+}
+
+impl Contents {
+    #[expect(
+        clippy::expect_used,
+        reason = "Formatting only strings and primitive values into String is infallible."
+    )]
+    fn push(&mut self, depth: usize, anchor: &str, title: &str) {
+        let depth = depth.clamp(1, self.depth + 1);
+        if self.depth == 0 {
+            self.html.push_str(
+                "<nav class=\"publication-contents\" aria-label=\"Contents\"><h2>Contents</h2>",
+            );
+        }
+        if depth > self.depth {
+            self.html.push_str("<ol>");
+        } else {
+            self.html.push_str("</li>");
+            for _ in depth..self.depth {
+                self.html.push_str("</ol></li>");
             }
         }
+        write!(
+            self.html,
+            "<li><a href=\"#{}\">{}</a>",
+            escape_html(anchor),
+            escape_html(title)
+        )
+        .expect("writing to a String cannot fail");
+        self.depth = depth;
     }
-    Ok(())
+
+    fn finish(mut self) -> String {
+        if self.depth > 0 {
+            for _ in 0..self.depth {
+                self.html.push_str("</li></ol>");
+            }
+            self.html.push_str("</nav>\n");
+        }
+        self.html
+    }
 }
 
 fn planned_page<'a>(plan: &'a PublicationPlan, id: &str) -> Result<&'a PlannedPage, String> {
@@ -337,47 +227,65 @@ fn planned_page<'a>(plan: &'a PublicationPlan, id: &str) -> Result<&'a PlannedPa
         .ok_or_else(|| format!("Outline page {id} was not captured."))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep the explicit publication context together at the planning/rendering boundary."
+)]
+#[expect(
+    clippy::expect_used,
+    reason = "Formatting only strings and primitive values into String is infallible."
+)]
 fn render_page(
     page: &PlannedPage,
+    title: Option<&str>,
     plan: &PublicationPlan,
-    sources: &HashMap<String, serde_json::Value>,
+    root: &Path,
     assets: &HashMap<String, String>,
     snippets: &HashMap<String, serde_json::Value>,
-    macros: &crate::engine::publication::macros::RenderMacros,
+
     body: &mut String,
     citation_scope: &mut HtmlState,
 ) -> Result<(), String> {
-    let source = sources
-        .get(&page.id)
+    let source = read_project_item(root, &page.id)
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Publication page {} disappeared.", page.id))?;
     let exclusions: HashSet<String> = page.excluded_block_ids.iter().cloned().collect();
-    let is_root = page.id == plan.root_page_id;
-    let offset = (if is_root { 2 } else { 3 })
-        - i16::try_from(min_heading_level(document(source), &exclusions).unwrap_or(1))
+    let offset = body_heading_level(page.depth)?
+        - i16::try_from(min_heading_level(document(&source), &exclusions).unwrap_or(1))
             .map_err(|_| "Page heading level is too large.")?;
     let html = render_html_document_in_scope(
-        document(source),
+        document(&source),
         &HtmlResources {
+            page_id: &page.id,
             links: &resolved_links(plan, &page.id)?,
             assets,
-            fields: &resolved_fields(source, document(source))?,
+            fields: &resolved_fields(&source, document(&source))?,
             snippets,
             excluded_block_ids: &exclusions,
-            macros: Some(macros),
         },
         offset,
         citation_scope,
     )
     .map_err(|error| format!("Page {}: {error}", page.id))?;
-    let heading = if is_root { "h1" } else { "h2" };
-    write!(
-        body,
-        "<article id=\"note-{}\"><header><{heading}>{}</{heading}></header>\n{html}</article>\n",
-        page.id,
-        escape_html(if is_root { &plan.title } else { &page.title })
-    )
-    .expect("writing to a String cannot fail");
+    let chapter_class = if title.is_none() {
+        ""
+    } else if page.id == plan.root_page_id {
+        " class=\"publication-chapter publication-chapter--first\""
+    } else {
+        " class=\"publication-chapter\""
+    };
+    write!(body, "<article id=\"note-{}\"{chapter_class}>", page.id)
+        .expect("writing to a String cannot fail");
+    if let Some(title) = title {
+        let level = page.depth.clamp(1, 6);
+        write!(
+            body,
+            "<header><h{level}>{}</h{level}></header>",
+            escape_html(title)
+        )
+        .expect("writing to a String cannot fail");
+    }
+    write!(body, "\n{html}</article>\n").expect("writing to a String cannot fail");
     Ok(())
 }
 
@@ -437,10 +345,85 @@ mod tests {
             plan.pages.len()
         );
         for page in &plan.pages {
-            assert!(html.contains(&format!("href=\"#note-{}\"", page.id)));
+            if page.id != plan.root_page_id {
+                assert!(html.contains(&format!("href=\"#note-{}\"", page.id)));
+            }
             assert!(html.contains(&format!("id=\"note-{}\"", page.id)));
         }
         assert!(html.contains("aria-label=\"Contents\""));
+        let contents = html
+            .split("aria-label=\"Contents\"")
+            .nth(1)
+            .unwrap()
+            .split("</nav>")
+            .next()
+            .unwrap();
+        assert!(contents.contains("1. Chapter one"));
+        assert!(contents.contains("1.1. A deeper section"));
+        assert!(!contents.contains(&plan.title));
+        assert!(
+            html.contains(
+                "<h2 id=\"block-01a0e2a7-d131-757d-8cdc-b07ace421ea7\">Introduction</h2>"
+            )
+        );
+        assert!(html.find("</article>").unwrap() < html.find("aria-label=\"Contents\"").unwrap());
+    }
+
+    #[test]
+    fn reading_entries_share_section_intros_collections_and_page_deduplication() {
+        use crate::engine::publication::plan::PlannedStructureNode;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
+        let mut plan = plan_publication(
+            &root,
+            "01a0e7f5-d342-7f23-bd3d-6e27064a16cd",
+            PublicationFormat::Html,
+        )
+        .unwrap();
+        let intro = plan.pages[1].id.clone();
+        let chapter = plan.pages[2].id.clone();
+        plan.pages[1].depth = 2;
+        plan.pages[2].depth = 3;
+        let collection = |id: &str| PlannedStructureNode::Collection {
+            id: id.into(),
+            title: "Collected".into(),
+            page_ids: vec![chapter.clone()],
+            show_pages_in_navigation: true,
+            listing_slug: None,
+            page_size: 20,
+            feed: false,
+            archives: false,
+        };
+        plan.structure = vec![PlannedStructureNode::Section {
+            id: "part".into(),
+            title: "Part <one>".into(),
+            intro_page_id: Some(intro.clone()),
+            children: vec![collection("first"), collection("second")],
+        }];
+        let html = render_publication_html(&root, &plan, false).unwrap();
+        assert_eq!(html.matches("<article id=\"note-").count(), 3);
+        assert!(html.contains("<h1>1. Part &lt;one&gt;</h1>"));
+        assert!(html.contains("<h3>1.1.1. A deeper section</h3>"));
+        assert!(!html.contains("<header><h2>Chapter one</h2>"));
+        let contents = html
+            .split("aria-label=\"Contents\"")
+            .nth(1)
+            .unwrap()
+            .split("</nav>")
+            .next()
+            .unwrap();
+        assert!(!contents.contains(&format!("#note-{intro}")));
+        assert_eq!(contents.matches(&format!("#note-{chapter}")).count(), 1);
+        assert!(contents.contains("#section-first"));
+        assert!(contents.contains("#section-second"));
+        assert_eq!(
+            html.matches("<section class=\"publication-section publication-chapter\"")
+                .count(),
+            3
+        );
+        assert_eq!(
+            html.matches("</section>").count(),
+            html.matches("<section").count()
+        );
     }
 
     #[test]
@@ -462,12 +445,12 @@ mod tests {
         let values = HashMap::new();
         let excluded = HashSet::new();
         let resources = HtmlResources {
+            page_id: "test-page",
             links: &values,
             assets: &values,
             fields: &values,
             snippets: &snippets,
             excluded_block_ids: &excluded,
-            macros: None,
         };
         let mut scope = HtmlState::default();
         let first = render_html_document_in_scope(&document, &resources, 0, &mut scope).unwrap();
@@ -483,18 +466,18 @@ mod tests {
         }
         let links = HashMap::new();
         let resources = TypstResources {
+            page_id: "test-page",
             links: &links,
             assets: &values,
             fields: &values,
             snippets: &snippets,
             excluded_block_ids: &excluded,
-            macros: None,
         };
         let mut scope = TypstState::default();
         let first = render_typst_document_in_scope(&document, &resources, 0, &mut scope).unwrap();
         let second = render_typst_document_in_scope(&document, &resources, 0, &mut scope).unwrap();
         assert!(first.contains("A shared source"));
         assert!(!second.contains("A shared source"));
-        assert!(second.contains("#footnote(label(\"citation-1\"))"));
+        assert!(second.contains("#footnote(label(\"reference-1\"))"));
     }
 }

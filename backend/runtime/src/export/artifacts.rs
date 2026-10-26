@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2023–2026 BluInk
 
-use std::io::{Cursor, Write};
+use std::io::{Seek, Write};
 use std::path::Path;
 
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
@@ -78,14 +78,14 @@ fn collect(root: &Path, relative: &Path, files: &mut Vec<String>) -> Result<()> 
     Ok(())
 }
 
-pub(super) fn site_zip(root: &Path) -> Result<Vec<u8>> {
+pub(super) fn site_zip<W: Write + Seek>(root: &Path, output: W) -> Result<W> {
     if std::fs::symlink_metadata(root)?.file_type().is_symlink() {
         return Err(internal_error("Unsupported generated site root."));
     }
     let mut files = Vec::new();
     collect(root, Path::new(""), &mut files)?;
     files.sort_unstable();
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let mut writer = ZipWriter::new(output);
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Stored)
         .large_file(false);
@@ -93,21 +93,28 @@ pub(super) fn site_zip(root: &Path) -> Result<Vec<u8>> {
     for name in files {
         let file = super::preview::file(root, &name)
             .ok_or_else(|| internal_error("Generated site changed while bundling."))?;
-        let bytes = std::fs::read(file)?;
+        let mut file = std::fs::File::open(file)?;
+        let length = file.metadata()?.len();
         size = size
-            .checked_add(bytes.len() as u64 + 30 + name.len() as u64)
+            .checked_add(length + 30 + name.len() as u64)
             .filter(|size| u32::try_from(*size).is_ok())
             .ok_or_else(|| internal_error("Site bundle exceeds ZIP32 size limit."))?;
         writer.start_file(name, options).map_err(internal_error)?;
-        writer.write_all(&bytes)?;
+        if std::io::copy(&mut file, &mut writer)? != length {
+            return Err(internal_error("Generated site changed while bundling."));
+        }
     }
-    Ok(writer.finish().map_err(internal_error)?.into_inner())
+    writer.finish().map_err(internal_error)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read;
+    use std::io::{Cursor, Read};
+
+    fn site_zip(root: &Path) -> Result<Vec<u8>> {
+        super::site_zip(root, Cursor::new(Vec::new())).map(Cursor::into_inner)
+    }
 
     #[test]
     fn zip_roundtrip_is_deterministic_and_rejects_unexpected_files() {

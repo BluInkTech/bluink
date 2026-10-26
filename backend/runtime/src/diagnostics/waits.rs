@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 pub(crate) struct Timings {
     pub(crate) admission: Duration,
     pub(crate) readiness: Duration,
+    pub(crate) storage_lock: Duration,
+    pub(crate) publication: Duration,
 }
 
 thread_local! {
@@ -33,6 +35,8 @@ pub(crate) fn capture<T>(action: impl FnOnce() -> T) -> (T, Timings) {
 pub(crate) enum Kind {
     Admission,
     Readiness,
+    StorageLock,
+    Publication,
 }
 
 pub(crate) struct Wait {
@@ -55,6 +59,8 @@ impl Drop for Wait {
             match self.kind {
                 Kind::Admission => timings.admission += self.started.elapsed(),
                 Kind::Readiness => timings.readiness += self.started.elapsed(),
+                Kind::StorageLock => timings.storage_lock += self.started.elapsed(),
+                Kind::Publication => timings.publication += self.started.elapsed(),
             }
             CURRENT.set(Some(timings));
         }
@@ -78,10 +84,23 @@ mod tests {
         });
         assert!(measured.admission >= Duration::from_millis(2));
         assert_eq!(measured.readiness, Duration::ZERO);
+        let ((), storage) = capture(|| {
+            {
+                let _wait = Wait::new(Kind::StorageLock);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let _wait = Wait::new(Kind::Publication);
+            std::thread::sleep(Duration::from_millis(2));
+        });
+        assert!(storage.storage_lock >= Duration::from_millis(2));
+        assert!(storage.publication >= Duration::from_millis(2));
+        assert_eq!(storage.admission, Duration::ZERO);
         assert!(CURRENT.get().is_none());
         let _ = std::panic::catch_unwind(|| capture(|| panic!("injected")));
         assert!(CURRENT.get().is_none());
         let ((), empty) = capture(|| ());
         assert_eq!(empty.admission, Duration::ZERO);
+        assert_eq!(empty.storage_lock, Duration::ZERO);
+        assert_eq!(empty.publication, Duration::ZERO);
     }
 }

@@ -20,4 +20,8 @@ if (!artifact) {
   )
 }
 
-module.exports = require(path.join(__dirname, artifact))
+const mode = process.env.BLUINK_NATIVE_MODE ?? 'release'
+if (!['development', 'release'].includes(mode)) {
+  throw new Error(`Unknown BLUINK_NATIVE_MODE: ${mode}. Choose development or release.`)
+}
+module.exports = require(path.join(__dirname, mode === 'development' ? 'development' : '', artifact))

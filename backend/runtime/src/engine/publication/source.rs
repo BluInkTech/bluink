@@ -6,10 +6,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
 pub(crate) fn document(item: &Value) -> &Value {
-    item["content"]
-        .get("content")
-        .filter(|value| value.is_object())
-        .unwrap_or_else(|| &item["content"])
+    crate::engine::document::document_root(&item["content"])
 }
 
 pub(crate) fn resolved_fields(

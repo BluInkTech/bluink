@@ -6,13 +6,12 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self' data:; script-src 'self'; base-uri 'none'; form-action 'none'">
   <title>{{ title }}</title>
   <style>{{ theme_css }}
-  article > .field-note-paragraph { padding-inline-start: .75rem; border-inline-start: .1rem solid var(--publication-accent); }
   </style>
 </head>
 <body class="publication publication--field-notes publication--site">
   <a href="#main-content" class="skip-link">Skip to content</a>
   <nav aria-label="Chapters">{{ navigation }}</nav>
-  <main id="main-content">
+  <main id="main-content" class="publication-content">
     <header class="publication-masthead"><span>Field notes</span><strong>{{ title }}</strong></header>
     {{ contents }}
     {{ body }}

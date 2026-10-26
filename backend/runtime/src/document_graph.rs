@@ -2,270 +2,259 @@
 // Copyright (c) 2023–2026 BluInk
 
 //! Capture one index generation, then overlay changed canonical files. Neither
-//! pending writes nor files changed outside Bluink may hide relationships.
+//! pending writes nor stale indexed owners may hide relationships.
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::engine::document::projection::project_document;
 use crate::engine::project::item::read_project_item;
+use crate::indexing::fast::Strings;
 use serde_json::Value as JsonValue;
-use tantivy::DocAddress;
-use tantivy::Term;
 use tantivy::collector::DocSetCollector;
-use tantivy::query::{BooleanQuery, TermQuery};
-use tantivy::schema::IndexRecordOption;
-use tantivy::schema::{TantivyDocument, Value};
 
-use crate::project::{all_item_paths, file_stamp, index_stamp, item_id_from_path};
-
-#[derive(Default)]
-pub(crate) struct Edges {
-    pub(crate) pages: Vec<String>,
-}
-
-pub(crate) fn snapshot(root: &Path) -> Result<Option<HashMap<String, Edges>>, String> {
-    let Some((index, reader, dirty)) =
-        crate::service::project_index(root).map_err(|error| error.to_string())?
+/// Read-only theme catalogues need Publication candidates, not every page's
+/// document. Include pending writes and hydrate canonical values at the caller.
+/// Without a running index, the engine retains its ordinary canonical walk.
+pub(crate) fn publication_candidates(root: &Path) -> Result<Option<Vec<String>>, String> {
+    let Some(snapshot) =
+        crate::indexing::service::project_index(root).map_err(|error| error.to_string())?
     else {
         return Ok(None);
     };
-    let dirty: HashSet<_> = dirty
-        .lock()
-        .map_err(|error| error.to_string())?
-        .keys()
-        .cloned()
-        .collect();
-    let schema = index.schema();
-    let fields = ["id", "item_type", "reference_targets"]
-        .map(|name| schema.get_field(name).map_err(|error| error.to_string()))
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?;
-    let searcher = reader.searcher();
-    let mut edges = HashMap::new();
-    let mut stamps = HashMap::new();
-    for (ordinal, segment) in searcher.segment_readers().iter().enumerate() {
-        let fast_stamps = segment
-            .fast_fields()
-            .str("index_stamp")
-            .map_err(|error| error.to_string())?
-            .ok_or("Index stamp field is missing.")?;
-        for doc_id in segment.doc_ids_alive() {
-            let doc: TantivyDocument = searcher
-                .doc(DocAddress::new(
-                    u32::try_from(ordinal).map_err(|error| error.to_string())?,
-                    doc_id,
-                ))
-                .map_err(|error| error.to_string())?;
-            let Some(id) = doc.get_first(fields[0]).and_then(|value| value.as_str()) else {
-                continue;
-            };
-            let mut stamp = String::new();
-            if let Some(term) = fast_stamps.term_ords(doc_id).next() {
-                fast_stamps
-                    .ord_to_str(term, &mut stamp)
-                    .map_err(|error| error.to_string())?;
-            }
-            stamps.insert(id.to_owned(), stamp);
-            if doc.get_first(fields[1]).and_then(|value| value.as_str()) != Some("page") {
-                continue;
-            }
-            let targets = |field| {
-                doc.get_all(field)
-                    .filter_map(|value| value.as_str().map(str::to_owned))
-                    .collect()
-            };
-            edges.insert(
-                id.to_owned(),
-                Edges {
-                    pages: targets(fields[2]),
-                },
-            );
-        }
+    crate::catalogue_usage::item_candidates(&snapshot, "publication")
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+/// All requested counts share one index generation and one read of each changed
+/// canonical page. A page referring to the same snippet twice still counts once.
+pub(crate) fn snippet_usage_counts(
+    root: &Path,
+    ids: &[&str],
+) -> Result<HashMap<String, usize>, String> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for id in ids {
+        crate::engine::project::snippets::validate_snippet_id(id)?;
+        counts.insert((*id).into(), 0);
     }
-    let mut present = HashSet::new();
-    for path in all_item_paths(root)? {
-        let id = item_id_from_path(&path)?;
-        present.insert(id.clone());
-        let current_stamp = index_stamp(&file_stamp(&path)?);
-        if stamps.get(&id) == Some(&current_stamp) && !dirty.contains(&id) {
-            continue;
+    if counts.is_empty() {
+        return Ok(counts);
+    }
+    let snapshot =
+        crate::indexing::service::project_index(root).map_err(|error| error.to_string())?;
+    let mut changed = HashSet::new();
+    if let Some(snapshot) = snapshot {
+        changed.extend(snapshot.dirty.keys().cloned());
+        let queries = ids
+            .iter()
+            .map(|id| {
+                crate::catalogue_usage::reference_query(
+                    &snapshot.index.schema(),
+                    crate::engine::project::usage::Usage::Snippet(id),
+                )
+                .map(|query| Box::new(query) as Box<dyn tantivy::query::Query>)
+                .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let query = tantivy::query::BooleanQuery::union(queries);
+        let searcher = snapshot.reader.searcher();
+        let mut hits: Vec<_> = searcher
+            .search(&query, &DocSetCollector)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .collect();
+        hits.sort_unstable();
+        for group in hits.chunk_by(|a, b| a.segment_ord == b.segment_ord) {
+            let segment = searcher.segment_reader(group[0].segment_ord);
+            let read =
+                |name| Strings::open(segment, name)?.rows(group.iter().map(|hit| hit.doc_id));
+            let owners = read("id")?;
+            let stamps = read("index_stamp")?;
+            let kinds = read("item_type")?;
+            let citations = read("snippet_citation_targets")?;
+            let embeds = read("snippet_embed_targets")?;
+            for row in 0..group.len() {
+                let (Some(id), Some(stamp), Some(kind)) =
+                    (owners[row].first(), stamps[row].first(), kinds[row].first())
+                else {
+                    continue;
+                };
+                if kind != "page" {
+                    continue;
+                }
+                let identity = crate::engine::project::identity::ItemId::try_from(id.as_str())?;
+                let Some(current) = crate::projection::FileStamp::read(&identity.path(root))?
+                else {
+                    continue;
+                };
+                if snapshot.dirty.contains_key(id)
+                    || crate::projection::FileStamp::parse_index(stamp) != Some(current)
+                {
+                    changed.insert(id.clone());
+                    continue;
+                }
+                let targets: HashSet<_> = citations[row].iter().chain(&embeds[row]).collect();
+                for target in targets {
+                    if let Some(count) = counts.get_mut(target) {
+                        *count += 1;
+                    }
+                }
+            }
         }
-        let Some(item) = read_project_item(root, &id)? else {
-            edges.remove(&id);
+    } else {
+        changed.extend(crate::engine::project::item::list_project_item_ids(root)?);
+    }
+    for id in changed {
+        let Some(item) = read_project_item(root, &id).map_err(|error| error.to_string())? else {
             continue;
         };
         if item["meta"]["type"] != "page" {
-            edges.remove(&id);
             continue;
         }
-        let projection = project_document(
-            item["content"]
-                .get("doc")
-                .unwrap_or_else(|| &item["content"]),
-        );
-        edges.insert(
-            id,
-            Edges {
-                pages: projection.page_links,
-            },
-        );
-    }
-    edges.retain(|id, _| present.contains(id));
-    Ok(Some(edges))
-}
-
-pub(crate) fn snippet_usages(root: &Path, id: &str) -> Result<Vec<JsonValue>, String> {
-    snippet_usages_inner(root, id, false)
-}
-
-fn snippet_query(schema: &tantivy::schema::Schema, id: &str) -> Result<BooleanQuery, String> {
-    Ok(BooleanQuery::union(
-        ["snippet_citation_targets", "snippet_embed_targets"]
+        let projection = project_document(crate::engine::publication::source::document(&item));
+        let targets: HashSet<_> = projection
+            .snippet_citations
             .into_iter()
-            .map(|name| {
-                let field = schema.get_field(name).map_err(|error| error.to_string())?;
-                Ok(Box::new(TermQuery::new(
-                    Term::from_field_text(field, id),
-                    IndexRecordOption::Basic,
-                )) as Box<dyn tantivy::query::Query>)
-            })
-            .collect::<Result<Vec<_>, String>>()?,
-    ))
-}
-
-/// Counts need no note text or occurrence lists for unchanged indexed pages.
-pub(crate) fn snippet_usage_count(root: &Path, id: &str) -> Result<usize, String> {
-    crate::engine::project::snippets::validate_snippet_id(id)?;
-    let Some((index, reader, dirty)) =
-        crate::service::project_index(root).map_err(|error| error.to_string())?
-    else {
-        return Ok(crate::engine::project::snippets::snippet_usages(root, id)?.len());
-    };
-    let mut changed: HashSet<String> = dirty
-        .lock()
-        .map_err(|error| error.to_string())?
-        .keys()
-        .cloned()
-        .collect();
-    let pending = changed.clone();
-    let searcher = reader.searcher();
-    let query = snippet_query(&index.schema(), id)?;
-    let mut unchanged = HashSet::new();
-    let (mut page_id, mut stamp, mut kind) = (String::new(), String::new(), String::new());
-    for address in searcher
-        .search(&query, &DocSetCollector)
-        .map_err(|error| error.to_string())?
-    {
-        let fields = searcher.segment_reader(address.segment_ord).fast_fields();
-        let ids = fields
-            .str("id")
-            .map_err(|error| error.to_string())?
-            .ok_or("Missing item ID fast field")?;
-        let stamps = fields
-            .str("index_stamp")
-            .map_err(|error| error.to_string())?
-            .ok_or("Missing item stamp fast field")?;
-        let kinds = fields
-            .str("item_type")
-            .map_err(|error| error.to_string())?
-            .ok_or("Missing item type fast field")?;
-        let (Some(id_ord), Some(stamp_ord), Some(kind_ord)) = (
-            ids.term_ords(address.doc_id).next(),
-            stamps.term_ords(address.doc_id).next(),
-            kinds.term_ords(address.doc_id).next(),
-        ) else {
-            continue;
-        };
-        ids.ord_to_str(id_ord, &mut page_id)
-            .map_err(|error| error.to_string())?;
-        stamps
-            .ord_to_str(stamp_ord, &mut stamp)
-            .map_err(|error| error.to_string())?;
-        kinds
-            .ord_to_str(kind_ord, &mut kind)
-            .map_err(|error| error.to_string())?;
-        if kind != "page" {
-            continue;
-        }
-        let Some(current) =
-            crate::project::FileStamp::read(&crate::project::item_path(root, &page_id))?
-        else {
-            continue;
-        };
-        if !pending.contains(&page_id)
-            && crate::project::FileStamp::parse_index(&stamp) == Some(current)
-        {
-            unchanged.insert(page_id.clone());
-        } else {
-            changed.insert(page_id.clone());
-        }
-    }
-    unchanged.retain(|id| !changed.contains(id));
-    let changed = changed
-        .into_iter()
-        .filter(|id| crate::project::item_path(root, id).is_file())
-        .collect::<Vec<_>>();
-    Ok(unchanged.len()
-        + crate::engine::project::snippets::snippet_usages_in_pages(root, id, &changed)?.len())
-}
-
-pub(crate) fn verified_snippet_usages(root: &Path, id: &str) -> Result<Vec<JsonValue>, String> {
-    snippet_usages_inner(root, id, true)
-}
-
-fn snippet_usages_inner(
-    root: &Path,
-    id: &str,
-    verify_files: bool,
-) -> Result<Vec<JsonValue>, String> {
-    crate::engine::project::snippets::validate_snippet_id(id)?;
-    let Some((index, reader, dirty)) =
-        crate::service::project_index(root).map_err(|error| error.to_string())?
-    else {
-        return crate::engine::project::snippets::snippet_usages(root, id);
-    };
-    // Capture dirty IDs before the reader: a committed write is represented by
-    // either this overlay or the captured index generation (and possibly both).
-    let mut ids: HashSet<String> = dirty
-        .lock()
-        .map_err(|error| error.to_string())?
-        .keys()
-        .cloned()
-        .collect();
-    let schema = index.schema();
-    let id_field = schema.get_field("id").map_err(|error| error.to_string())?;
-    let query = snippet_query(&schema, id)?;
-    let searcher = reader.searcher();
-    if verify_files {
-        let stamps = crate::index::indexed_stamps_in_searcher(&searcher, &schema, |_, _| {})?;
-        for path in all_item_paths(root)? {
-            let page_id = item_id_from_path(&path)?;
-            if stamps.get(&page_id) != Some(&index_stamp(&file_stamp(&path)?)) {
-                ids.insert(page_id);
+            .chain(projection.snippet_embeds)
+            .collect();
+        for target in targets {
+            if let Some(count) = counts.get_mut(&target) {
+                *count += 1;
             }
         }
     }
-    for address in searcher
-        .search(&query, &DocSetCollector)
-        .map_err(|error| error.to_string())?
-    {
-        let doc: TantivyDocument = searcher.doc(address).map_err(|error| error.to_string())?;
-        if let Some(id) = doc.get_first(id_field).and_then(|value| value.as_str()) {
-            ids.insert(id.to_owned());
-        }
-    }
+    Ok(counts)
+}
+
+pub(crate) fn snippet_usages(root: &Path, id: &str) -> Result<Vec<JsonValue>, String> {
+    crate::engine::project::snippets::validate_snippet_id(id)?;
+    let snapshot =
+        crate::indexing::service::project_index(root).map_err(|error| error.to_string())?;
+    let Some(snapshot) = snapshot else {
+        return crate::engine::project::snippets::snippet_usages(root, id);
+    };
+    let ids = crate::catalogue_usage::candidates(
+        &snapshot,
+        crate::engine::project::usage::Usage::Snippet(id),
+    )
+    .map_err(|error| error.to_string())?;
     // Read only matching/pending pages. Canonical content corrects removed
     // references, changed titles and files removed before the watcher catches up.
-    let mut ids: Vec<_> = ids
-        .into_iter()
-        .filter(|id| {
-            root.join("items")
-                .join(&id[..2])
-                .join(id)
-                .join("item.json")
-                .is_file()
-        })
-        .collect();
-    ids.sort();
-    crate::engine::project::snippets::snippet_usages_in_pages(root, id, &ids)
+    let mut existing = Vec::new();
+    for candidate in ids {
+        let identity = crate::engine::project::identity::ItemId::try_from(candidate.as_str())?;
+        if crate::projection::FileStamp::read(&identity.path(root))?.is_some() {
+            existing.push(candidate);
+        }
+    }
+    existing.sort();
+    crate::engine::project::snippets::snippet_usages_in_pages(root, id, &existing)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::engine::project::{config::open_or_create_project, write::write_item_input};
+    use crate::engine::publication::theme_store::{list, read};
+    use serde_json::json;
+    use std::fs;
+    #[test]
+    fn indexed_catalogue_reads_only_publications_and_pending_canonical_items() {
+        struct Stop(String);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                crate::indexing::service::shutdown_index_service(self.0.clone()).unwrap();
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        open_or_create_project(root.path(), "UTC").unwrap();
+        let page = write_item_input(
+            root.path(),
+            json!({"meta":{"type":"page","title":"Unrelated prose"},"content":{"type":"doc","content":[{"type":"paragraph"}]}}),
+            None,
+            "2026-10-17",
+        )
+        .unwrap();
+        let mut publication: serde_json::Value = serde_json::from_str(include_str!("../../test-fixtures/pdf-project/items/01/01a0e7f5-d342-7f23-bd3d-6e27064a16cd/item.json")).unwrap();
+        let saved = write_item_input(
+            root.path(),
+            json!({"id":publication["id"],"meta":publication["meta"],"content":publication["content"]}),
+            None,
+            "2026-10-17",
+        )
+        .unwrap();
+        let path = root
+            .path()
+            .join(".cache/catalogue-test")
+            .to_str()
+            .unwrap()
+            .to_owned();
+        crate::indexing::service::start_index_service_typed(
+            root.path().to_str().unwrap().to_owned(),
+            &path,
+        )
+        .unwrap();
+        let stop = Stop(path.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let status = crate::indexing::service::index_service_status_typed(&path).unwrap();
+            assert_ne!(status.state, "error", "{:?}", status.error);
+            if status.state == "ready" && status.pending == 0 {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // If catalogue reads scan prose, this malformed unrelated page fails the
+        // request. No watcher runs in this fixture: the captured index is stable.
+        fs::write(
+            crate::engine::project::identity::ItemId::try_from(
+                page["item"]["id"].as_str().unwrap(),
+            )
+            .unwrap()
+            .path(root.path()),
+            b"unrelated prose must not be read",
+        )
+        .unwrap();
+        let original_id = saved["item"]["id"].as_str().unwrap();
+        publication = saved["item"].clone();
+        let new_id = uuid::Uuid::now_v7().to_string();
+        publication["id"] = json!(new_id);
+        publication["meta"]["title"] = json!("Pending archived Publication");
+        publication["meta"]["state"] = json!("archived");
+        let pending_path = crate::engine::project::identity::ItemId::try_from(new_id.as_str())
+            .unwrap()
+            .path(root.path());
+        fs::create_dir_all(pending_path.parent().unwrap()).unwrap();
+        fs::write(pending_path, serde_json::to_vec(&publication).unwrap()).unwrap();
+        crate::indexing::service::mark_pending_write(
+            root.path(),
+            new_id.clone(),
+            publication["revision"].as_str().unwrap().to_owned(),
+        )
+        .unwrap();
+        let themes = list(
+            root.path(),
+            crate::document_graph::publication_candidates(root.path()).unwrap(),
+        )
+        .unwrap();
+        let classic = themes.iter().find(|theme| theme.id == "classic").unwrap();
+        assert_eq!(classic.usages.len(), 2);
+        assert!(classic.usages.iter().any(|usage| usage.id == original_id));
+        assert!(classic.usages.iter().any(|usage| usage.id == new_id
+            && usage.archived
+            && usage.title == "Pending archived Publication"));
+        assert_eq!(
+            read(
+                root.path(),
+                "classic",
+                crate::document_graph::publication_candidates(root.path()).unwrap()
+            )
+            .unwrap()
+            .summary
+            .usages
+            .len(),
+            2
+        );
+        drop(stop);
+        root.close().unwrap();
+    }
 }

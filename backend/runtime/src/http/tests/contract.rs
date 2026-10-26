@@ -6,6 +6,18 @@ use axum::http::{StatusCode, header};
 use serde_json::{Value, json};
 
 #[test]
+fn packaged_analysis_workers_are_allowed_without_broadening_document_scripts() {
+    let fixture = Fixture::new(false);
+    let (_, headers, _) = fixture.request("GET", "/", "");
+    let policy = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+    let directives: Vec<_> = policy.split(';').collect();
+    assert!(directives.contains(&"worker-src 'self' blob:"));
+    assert!(directives.contains(&"script-src 'self' 'wasm-unsafe-eval'"));
+    assert!(directives.contains(&"script-src-attr 'none'"));
+    assert!(directives.contains(&"object-src 'none'"));
+}
+
+#[test]
 fn every_rpc_preserves_methods_and_required_fields_through_the_production_router() {
     let fixture = Fixture::new(true);
     let contract: Value =
@@ -25,7 +37,7 @@ fn every_rpc_preserves_methods_and_required_fields_through_the_production_router
         assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED, "{name}");
         assert_eq!(
             serde_json::from_slice::<Value>(&bytes).unwrap(),
-            json!({"error":"ERR_RPC_INVALID_METHOD"})
+            json!({"error":"ERR_RPC_INVALID_METHOD","diagnostics":[]})
         );
         if let Some(required) = entry["required"].as_array().unwrap().first() {
             assert_eq!(
@@ -61,6 +73,15 @@ fn malformed_bodies_raw_operation_paths_and_missing_items_keep_json_error_classi
         ),
         ("read_item", r#"{"id":"\uD800"}"#, 400, "ERR_INVALID_JSON"),
         ("missing_operation", "{}", 404, "ERR_RPC_ENDPOINT_NOT_FOUND"),
+        ("analyze_query", "{}", 404, "ERR_RPC_ENDPOINT_NOT_FOUND"),
+        ("parse_query", "{}", 404, "ERR_RPC_ENDPOINT_NOT_FOUND"),
+        ("format_query", "{}", 404, "ERR_RPC_ENDPOINT_NOT_FOUND"),
+        (
+            "read_home_widget_types",
+            "{}",
+            404,
+            "ERR_RPC_ENDPOINT_NOT_FOUND",
+        ),
         ("read%5fitem", "{}", 404, "ERR_RPC_ENDPOINT_NOT_FOUND"),
         ("%ff", "{}", 404, "ERR_RPC_ENDPOINT_NOT_FOUND"),
         ("memory_usage", "{}", 404, "ERR_RPC_ENDPOINT_NOT_FOUND"),
@@ -77,7 +98,7 @@ fn malformed_bodies_raw_operation_paths_and_missing_items_keep_json_error_classi
         assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
         assert_eq!(
             serde_json::from_slice::<Value>(&bytes).unwrap(),
-            json!({"error":error})
+            json!({"error":error,"diagnostics":[]})
         );
     }
 }
@@ -95,7 +116,7 @@ fn document_writes_keep_larger_limits_and_unicode_public_projection() {
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(
             serde_json::from_slice::<Value>(&bytes).unwrap(),
-            json!({"error":"ERR_PAYLOAD_TOO_LARGE"})
+            json!({"error":"ERR_PAYLOAD_TOO_LARGE","diagnostics":[]})
         );
     }
     let payload = json!({"meta":{"type":"page","title":"Unicode 文学 🌍"},"content":{"type":"doc","content":[{"type":"paragraph"}]}});
@@ -146,7 +167,7 @@ fn empty_queries_calendar_metadata_and_cache_status_keep_their_http_shapes() {
         assert_eq!(fixture.call(name, body), expected);
     }
     for field in ["created", "modified", "completed"] {
-        assert_eq!(fixture.call("read_calendar_buckets", json!({"field":field,"startDate":"2026-10-01","endDate":"2026-10-31","granularity":"day"})), json!({"buckets":[]}));
+        assert_eq!(fixture.call("read_calendar_buckets", json!({"query":crate::query::document::QueryDocument::active_pages(),"field":field,"startDate":"2026-10-01","endDate":"2026-10-31","granularity":"day"})), json!({"buckets":[]}));
     }
     assert!(
         fixture
@@ -156,14 +177,27 @@ fn empty_queries_calendar_metadata_and_cache_status_keep_their_http_shapes() {
             .iter()
             .any(|field| field["key"] == "summary" && field["source"] == "builtin")
     );
-    assert_eq!(
-        fixture.call("analyze_query", json!({"query":"unregistered:value"}))["valid"],
-        false
+    assert!(
+        !fixture.call(
+            "validate_query",
+            json!({"document":crate::query::document::test_query("unregistered:value")})
+        )["valid"]
+            .as_bool()
+            .unwrap()
     );
     let status = fixture.call("cache_status", json!({}));
     assert_eq!(status["structuralState"], "ready");
-    assert_eq!(status["documents"], 0);
+    assert_eq!(
+        status["documents"],
+        crate::engine::project::item::list_project_item_ids(fixture.root.path())
+            .unwrap()
+            .len()
+    );
     assert_eq!(status["schemaVersion"], 1);
+    let config = crate::engine::project::config::read_project_config(fixture.root.path())
+        .unwrap()
+        .unwrap();
+    assert_eq!(status["projectId"], config["id"]);
     for (name, body) in [
         ("query_note_tasks", json!({"status":"open","limit":201})),
         ("query_note_tasks", json!({"status":"open","offset":-1})),

@@ -50,9 +50,42 @@ pub(super) fn summary(event: &DiagnosticEvent) -> String {
         .map(|duration| format!(" ({duration:.1} ms)"))
         .unwrap_or_default();
     text(&format!(
-        "{timestamp}  {:5}  {message}{suffix}{duration}",
-        event.level.to_uppercase()
+        "{timestamp}  {:5}  {message}{suffix}{duration}{}",
+        event.level.to_uppercase(),
+        request_timings(event)
     ))
+}
+
+fn request_timings(event: &DiagnosticEvent) -> String {
+    if event.target != "bluink.http"
+        || event.name.as_deref() != Some("request_complete")
+        || !matches!(event.level.as_str(), "warn" | "error")
+    {
+        return String::new();
+    }
+    let timings = [
+        ("body_read_ms", "body"),
+        ("decode_ms", "decode"),
+        ("worker_queue_ms", "queue"),
+        ("admission_ms", "admission"),
+        ("readiness_ms", "ready"),
+        ("execute_ms", "execute"),
+        // Lock acquisition and publication are included in execute, not added to it.
+        ("storage_lock_ms", "locks"),
+        ("publication_ms", "publish"),
+        ("encode_ms", "encode"),
+    ]
+    .into_iter()
+    .filter_map(|(field, label)| {
+        let duration = event.fields.get(field)?.as_f64()?;
+        (duration.is_finite() && duration >= 1.0).then(|| format!("{label} {duration:.1} ms"))
+    })
+    .collect::<Vec<_>>();
+    if timings.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", timings.join(", "))
+    }
 }
 
 pub(super) struct Entry {
@@ -97,6 +130,7 @@ pub(super) enum View {
     Status,
     Logs,
     Errors,
+    Warnings,
     Info,
     Help,
 }
@@ -116,7 +150,11 @@ impl Model {
         self.history
             .entries
             .iter()
-            .filter(|entry| self.view != View::Errors || entry.level == "error")
+            .filter(|entry| match self.view {
+                View::Errors => entry.level == "error",
+                View::Warnings => entry.level == "warn",
+                _ => true,
+            })
             .collect()
     }
 
@@ -294,6 +332,59 @@ mod tests {
         assert_eq!(model.selected, Some(4));
         model.open(View::Errors);
         assert_eq!(model.selected, Some(3));
+    }
+
+    #[test]
+    fn request_summary_displays_operation_and_elapsed_milliseconds() {
+        let mut request = event("warn", "slow HTTP request");
+        request
+            .fields
+            .insert("operation".to_owned(), "list_facets".into());
+        request.duration_ms = Some(1250.25);
+        assert!(summary(&request).ends_with("WARN   slow HTTP request · list_facets (1250.2 ms)"));
+    }
+
+    #[test]
+    fn slow_request_summary_explains_waits_without_dumping_request_data() {
+        let mut request = event("warn", "slow HTTP request");
+        request.target = "bluink.http".into();
+        request.name = Some("request_complete".into());
+        request.fields = serde_json::from_value(serde_json::json!({
+            "operation": "create_item", "worker_queue_ms": 200.0,
+            "execute_ms": 100.0, "storage_lock_ms": 12.0, "publication_ms": 70.0,
+            "encode_ms": 0.3, "body_read_ms": "private", "query": "private"
+        }))
+        .unwrap();
+        request.duration_ms = Some(300.5);
+        assert!(summary(&request).ends_with(
+            "(300.5 ms) [queue 200.0 ms, execute 100.0 ms, locks 12.0 ms, publish 70.0 ms]"
+        ));
+        assert!(!summary(&request).contains("private"));
+        request.level = "debug".into();
+        assert!(summary(&request).ends_with("(300.5 ms)"));
+        request.level = "error".into();
+        assert!(summary(&request).contains("queue 200.0 ms"));
+    }
+
+    #[test]
+    fn warnings_remain_browsable_after_other_events_and_view_changes() {
+        let mut model = Model::default();
+        model.push(&event("warn", "first warning"));
+        for _ in 0..30 {
+            model.push(&event("info", "normal activity"));
+        }
+        model.push(&event("warn", "second warning"));
+        model.open(View::Warnings);
+        assert_eq!(model.entries().len(), 2);
+        model.navigate(0, Some(false));
+        assert_eq!(model.selected, Some(1));
+        model.push(&event("warn", "third warning"));
+        assert_eq!(model.selected, Some(1));
+        model.open(View::Info);
+        model.open(View::Warnings);
+        assert_eq!(model.entries().len(), 3);
+        model.navigate(0, Some(false));
+        assert_eq!(model.selected, Some(1));
     }
 
     #[test]

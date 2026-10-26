@@ -13,10 +13,6 @@ resolver = "3"
 path = "runtime/src/lib.rs"
 crate-type = ["cdylib"]
 
-[[example]]
-name = "validate_items"
-path = "runtime/examples/validate_items.rs"
-
 [lints]
 workspace = true
 
@@ -43,17 +39,21 @@ iana-time-zone = "0.1.65"
 hostname = "0.4"
 tempfile = "3.27"
 percent-encoding = "2.3"
-zip = { version = "8.6", default-features = false }
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "multipart"] }
 http-body-util = "0.1"
-pest = "2.8"
-pest_derive = "2.8"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
+quick-xml = { version = "0.42", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+resvg = { version = "0.48", default-features = false, features = ["text", "raster-images"] }
 
 [dev-dependencies]
+# Shorthand used only to author existing structured-query test fixtures.
+pest = "2.8"
+pest_derive = "2.8"
 ts-rs = { version = "12.0.1", features = ["serde-json-impl", "no-serde-warnings"] }
 tower = { version = "0.5", features = ["util"] }
 # Rust tests resolve N-API symbols dynamically outside Node.
@@ -72,14 +72,36 @@ libc = "0.2"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "forbid"
+unused_must_use = "deny"
+unfulfilled_lint_expectations = "deny"
 # Documentation backlog is deferred at the user's request.
 missing_docs = "allow"
 unused_crate_dependencies = "warn"
 
 [workspace.lints.clippy]
-all = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+# Select safety restrictions individually: the full restriction group includes
+# mutually exclusive style rules and is not intended to be enabled wholesale.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+mem_forget = "deny"
+exit = "deny"
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+allow_attributes_without_reason = "deny"
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+await_holding_invalid_type = "deny"
+cast_ptr_alignment = "deny"
+ptr_as_ptr = "deny"
+as_underscore = "deny"
+lossy_float_literal = "deny"
 module_name_repetitions = "allow"
 wildcard_imports = "allow"
 missing_errors_doc = "allow"
@@ -89,9 +111,24 @@ missing_panics_doc = "allow"
 opt-level = 0
 debug = 2
 
+# Runnable local addon: keep dependencies fast while making our edits incremental.
+[profile.development]
+inherits = "dev"
+opt-level = 1
+debug = "line-tables-only"
+incremental = true
+codegen-units = 256
+lto = "off"
+panic = "abort"
+
+[profile.development.package."*"]
+opt-level = 2
+debug = false
+
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
 panic = "abort"
+overflow-checks = true
 strip = true

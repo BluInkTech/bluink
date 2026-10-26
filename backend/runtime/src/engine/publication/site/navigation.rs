@@ -3,12 +3,16 @@
 
 use super::*;
 
-pub(super) fn site_navigation(plan: &PublicationPlan, current_id: &str) -> Result<String, String> {
+pub(super) fn site_navigation(plan: &SitePlan<'_>, current_id: &str) -> Result<String, String> {
     site_navigation_at(plan, &page_file(plan, current_id), Some(current_id))
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "Formatting only strings and primitive values into String is infallible."
+)]
 pub(super) fn site_navigation_at(
-    plan: &PublicationPlan,
+    plan: &SitePlan<'_>,
     current_route: &str,
     current_id: Option<&str>,
 ) -> Result<String, String> {
@@ -33,162 +37,34 @@ pub(super) fn site_navigation_at(
     Ok(nav)
 }
 
-pub(super) fn search_script(
-    plan: &PublicationPlan,
-    page_items: &HashMap<&str, Value>,
-) -> Result<String, String> {
-    let mut entries = Vec::with_capacity(plan.pages.len());
-    for page in &plan.pages {
-        let item = page_items
-            .get(page.id.as_str())
-            .ok_or("Publication page was not captured for search.")?;
-        let exclusions: HashSet<String> = page.excluded_block_ids.iter().cloned().collect();
-        let fields = resolved_fields(item, document(item))?;
-        let mut text = String::new();
-        collect_search_text(document(item), &exclusions, &fields, &mut text)?;
-        let search = format!("{} {text}", page.title)
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_lowercase();
-        entries.push(serde_json::json!({
-            "title": page.title,
-            "path": page_file(plan, &page.id),
-            "search": search,
-        }));
-    }
-    let index = serde_json::to_string(&entries).map_err(|error| error.to_string())?;
+pub(super) fn search_entry(
+    plan: &SitePlan<'_>,
+    page: &super::super::plan::PlannedPage,
+    text: &str,
+) -> Value {
+    let search = format!("{} {text}", page.title)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    serde_json::json!({"title":page.title,"path":page_file(plan, &page.id),"search":search})
+}
+
+pub(super) fn search_script(entries: &[Value]) -> Result<String, String> {
+    let index = serde_json::to_string(entries).map_err(|error| error.to_string())?;
     Ok(SEARCH_SCRIPT.replace("__BLUINK_SEARCH_INDEX__", &index))
-}
-
-pub(super) fn collect_search_text(
-    node: &Value,
-    exclusions: &HashSet<String>,
-    fields: &HashMap<String, String>,
-    output: &mut String,
-) -> Result<(), String> {
-    if node["attrs"]["id"]
-        .as_str()
-        .is_some_and(|id| exclusions.contains(id))
-    {
-        return Ok(());
-    }
-    match node["type"].as_str() {
-        Some("text") => {
-            output.push(' ');
-            output.push_str(node["text"].as_str().unwrap_or(""));
-        }
-        Some("field") => {
-            let key = node["attrs"]["key"]
-                .as_str()
-                .ok_or("Search field has no key.")?;
-            output.push(' ');
-            output.push_str(
-                fields
-                    .get(key)
-                    .ok_or_else(|| format!("Search field {key} was not resolved."))?,
-            );
-        }
-        _ => {
-            for child in node["content"].as_array().into_iter().flatten() {
-                collect_search_text(child, exclusions, fields, output)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn page_contents(
-    document: &Value,
-    exclusions: &HashSet<String>,
-    fields: &HashMap<String, String>,
-    heading_offset: i16,
-) -> Result<String, String> {
-    let mut entries = Vec::new();
-    collect_page_headings(document, exclusions, fields, heading_offset, &mut entries)?;
-    if entries.is_empty() {
-        return Ok(String::new());
-    }
-    let mut html = String::from(
-        "<nav class=\"publication-page-contents\" aria-label=\"On this page\"><h2>On this page</h2><ol>",
-    );
-    for (id, title, level) in entries {
-        write!(html,
-            "<li class=\"publication-page-contents__level-{level}\"><a href=\"#block-{}\">{}</a></li>",
-            escape_html(&id),
-            escape_html(&title)
-        ).expect("writing to a String cannot fail");
-    }
-    html.push_str("</ol></nav>\n");
-    Ok(html)
-}
-
-pub(super) fn collect_page_headings(
-    node: &Value,
-    exclusions: &HashSet<String>,
-    fields: &HashMap<String, String>,
-    heading_offset: i16,
-    headings: &mut Vec<(String, String, i16)>,
-) -> Result<(), String> {
-    let attrs = &node["attrs"];
-    if attrs["id"]
-        .as_str()
-        .is_some_and(|id| exclusions.contains(id))
-    {
-        return Ok(());
-    }
-    if node["type"] == "heading"
-        && let Some(id) = attrs["id"].as_str()
-    {
-        let mut title = String::new();
-        heading_text(node, fields, &mut title)?;
-        let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
-        if !title.is_empty() {
-            let level = i16::try_from(attrs["level"].as_u64().unwrap_or(1))
-                .map_err(|_| "Heading level is too large.".to_owned())?
-                + heading_offset;
-            headings.push((id.to_owned(), title, level.clamp(1, 6)));
-        }
-    }
-    for child in node["content"].as_array().into_iter().flatten() {
-        collect_page_headings(child, exclusions, fields, heading_offset, headings)?;
-    }
-    Ok(())
-}
-
-pub(super) fn heading_text(
-    node: &Value,
-    fields: &HashMap<String, String>,
-    output: &mut String,
-) -> Result<(), String> {
-    match node["type"].as_str() {
-        Some("text") => output.push_str(node["text"].as_str().unwrap_or("")),
-        Some("hard_break") => output.push(' '),
-        Some("field") => {
-            let key = node["attrs"]["key"]
-                .as_str()
-                .ok_or("Heading field has no key.")?;
-            output.push_str(
-                fields
-                    .get(key)
-                    .ok_or_else(|| format!("Heading field {key} was not resolved."))?,
-            );
-        }
-        _ => {
-            for child in node["content"].as_array().into_iter().flatten() {
-                heading_text(child, fields, output)?;
-            }
-        }
-    }
-    Ok(())
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "Keep the complete format or operation dispatch together for contract review."
 )]
+#[expect(
+    clippy::expect_used,
+    reason = "Formatting only strings and primitive values into String is infallible."
+)]
 pub(super) fn write_navigation_children(
-    plan: &PublicationPlan,
+    plan: &SitePlan<'_>,
     current_route: &str,
     current_id: Option<&str>,
     children: &[PlannedStructureNode],
@@ -210,9 +86,7 @@ pub(super) fn write_navigation_children(
                     continue;
                 }
                 let page = plan
-                    .pages
-                    .iter()
-                    .find(|page| &page.id == page_id)
+                    .page(page_id)
                     .ok_or("Navigation page was not planned.")?;
                 write!(
                     nav,
@@ -285,11 +159,7 @@ pub(super) fn write_navigation_children(
                 if *show_pages_in_navigation {
                     nav.push_str("<ol>");
                     for id in page_ids {
-                        let page = plan
-                            .pages
-                            .iter()
-                            .find(|page| &page.id == id)
-                            .ok_or("Collection page was not planned.")?;
+                        let page = plan.page(id).ok_or("Collection page was not planned.")?;
                         write!(
                             nav,
                             "<li><a href=\"{}\"{}>{}</a></li>",

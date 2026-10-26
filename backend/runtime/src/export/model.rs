@@ -4,8 +4,7 @@
 use std::sync::Arc;
 
 use crate::engine::publication::{
-    article::ArticlePlan,
-    note_pdf::NotePdfPlan,
+    page::PagePlan,
     plan::{PublicationFormat, PublicationPlan},
     theme::ThemeSnapshot,
 };
@@ -15,30 +14,21 @@ use serde::{Deserialize, Serialize};
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub(crate) enum Plan {
-    Article(Box<ArticlePlan>),
-    NotePdf(Box<NotePdfPlan>),
+    Page(Box<PagePlan>),
     Publication(Box<PublicationPlan>),
 }
 
 impl Plan {
     pub(crate) fn theme(&self) -> &ThemeSnapshot {
         match self {
-            Self::Article(plan) => &plan.theme,
-            Self::NotePdf(plan) => &plan.theme,
+            Self::Page(plan) => &plan.theme,
             Self::Publication(plan) => &plan.theme,
         }
     }
 
     pub(crate) fn summary(&self) -> Summary {
         match self {
-            Self::Article(plan) => Summary {
-                title: plan.title.clone(),
-                pages: 1,
-                collections: 0,
-                assets: plan.assets.len(),
-                links: plan.links.len(),
-            },
-            Self::NotePdf(plan) => Summary {
+            Self::Page(plan) => Summary {
                 title: plan.title.clone(),
                 pages: 1,
                 collections: 0,
@@ -89,6 +79,15 @@ pub(crate) struct ThemeTrust {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub(crate) struct ThemePreviewSummary {
+    pub(crate) theme_id: String,
+    pub(crate) revision: String,
+    pub(crate) draft_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Status {
@@ -104,6 +103,9 @@ pub(crate) struct Status {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
     pub(crate) theme_trust: Option<ThemeTrust>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub(crate) theme_preview: Option<ThemePreviewSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
     pub(crate) artifact_url: Option<String>,

@@ -8,13 +8,14 @@ fn paragraph(text: &str) -> Value {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep the snippet lifecycle and its initialization transition in one end-to-end scenario."
+)]
 fn snippet_operations_preserve_identity_revisions_and_usage_guards_with_or_without_index() {
     for indexed in [false, true] {
-        let app = application(if indexed {
-            "snippets-indexed"
-        } else {
-            "snippets-direct"
-        });
+        let project = TestProject::new("snippets");
+        let app = project.application();
         app.initialize_sync(indexed).unwrap();
         assert_eq!(
             execute(&app, "read_snippet", json!({"id":"missing"})).unwrap(),
@@ -35,6 +36,13 @@ fn snippet_operations_preserve_identity_revisions_and_usage_guards_with_or_witho
         let updated = execute(&app, "update_snippet", json!({"id":"source","revision":created["revision"],"paragraph":paragraph("文学 [literal]")})).unwrap();
         assert_eq!(created["createdAt"], updated["createdAt"]);
         assert_ne!(created["revision"], updated["revision"]);
+        if !indexed {
+            assert!(matches!(
+                execute(&app, "query_snippets", json!({})),
+                Err(ApplicationError::NotInitialized(_))
+            ));
+            app.initialize_sync(true).unwrap();
+        }
         for query in ["文学", "[literal]", "SOURCE"] {
             assert_eq!(
                 execute(&app, "query_snippets", json!({"query":query})).unwrap(),
@@ -104,16 +112,17 @@ fn snippet_operations_preserve_identity_revisions_and_usage_guards_with_or_witho
             execute(&app, "query_snippets", json!({})).unwrap()["count"],
             0
         );
-        assert_eq!(app.state().unwrap().index.is_some(), indexed);
+        assert!(app.state().unwrap().index.is_some());
         app.stop_sync().unwrap();
         assert!(execute(&app, "query_snippets", json!({})).is_err());
-        std::fs::remove_dir_all(&app.root).unwrap();
+        project.close().unwrap();
     }
 }
 
 #[test]
 fn snippet_storage_damage_is_internal_and_failed_writes_leave_canonical_records_intact() {
-    let app = application("snippet-storage-errors");
+    let project = TestProject::new("snippet-storage-errors");
+    let app = project.application();
     app.initialize_sync(false).unwrap();
     let created = execute(
         &app,
@@ -121,7 +130,7 @@ fn snippet_storage_damage_is_internal_and_failed_writes_leave_canonical_records_
         json!({"id":"source","paragraph":paragraph("Original")}),
     )
     .unwrap();
-    let file = app.root.join("snippets/snippet_source.json");
+    let file = crate::engine::project::snippets::path(&app.root, "source").unwrap();
     let bytes = std::fs::read(&file).unwrap();
     std::fs::write(&file, b"{").unwrap();
     for (operation, body) in [
@@ -134,7 +143,6 @@ fn snippet_storage_damage_is_internal_and_failed_writes_leave_canonical_records_
             "archive_snippet",
             json!({"id":"source","revision":created["revision"]}),
         ),
-        ("query_snippets", json!({})),
     ] {
         assert!(
             matches!(
@@ -161,5 +169,5 @@ fn snippet_storage_damage_is_internal_and_failed_writes_leave_canonical_records_
         Err(ApplicationError::Internal(_))
     ));
     app.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }

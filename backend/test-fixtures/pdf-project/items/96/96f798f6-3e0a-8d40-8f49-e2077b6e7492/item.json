@@ -1,0 +1,35 @@
+{
+  "format": "bluink.item",
+  "formatVersion": 17,
+  "id": "96f798f6-3e0a-8d40-8f49-e2077b6e7492",
+  "revision": "96f798f6-3e0a-8d40-8f49-e2077b6e7492",
+  "createdAt": "1970-01-01T00:00:00.000Z",
+  "modifiedAt": "1970-01-01T00:00:00.000Z",
+  "meta": {
+    "type": "property",
+    "state": "active",
+    "title": "kind"
+  },
+  "content": {
+    "key": "kind",
+    "valueType": "select",
+    "options": [
+      "article",
+      "brief",
+      "culture",
+      "history",
+      "person",
+      "place",
+      "science",
+      "technology"
+    ]
+  },
+  "analytics": {
+    "analyzerVersion": 1,
+    "timezone": "UTC",
+    "current": {
+      "contentHash": "e3b0c44298fc1c14",
+      "wordCount": 0
+    }
+  }
+}

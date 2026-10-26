@@ -33,10 +33,7 @@ pub(crate) fn bounded_preview(body: &str) -> String {
 
 #[must_use]
 pub(crate) fn project_document(value: &JsonValue) -> DocumentProjection {
-    let root = value
-        .get("content")
-        .filter(|item| item.get("type").and_then(JsonValue::as_str) == Some("doc"))
-        .unwrap_or(value);
+    let root = super::document_root(value);
     let mut text = Vec::new();
     let mut labels = HashSet::new();
     let mut preview_image = None;

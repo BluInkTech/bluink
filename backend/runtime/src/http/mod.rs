@@ -5,6 +5,7 @@
 mod artifacts;
 pub(crate) mod files;
 mod headers;
+pub(crate) mod sized_images;
 #[cfg(test)]
 mod tests;
 mod trace;
@@ -233,11 +234,11 @@ async fn worker<T: Send + 'static>(
     let permit = Arc::clone(&state.work)
         .acquire_owned()
         .await
-        .map_err(|_| invalid_request("The application is shutting down."))?;
+        .map_err(|_| ApplicationError::ShuttingDown)?;
     let application = state
         .application
         .upgrade()
-        .ok_or_else(|| invalid_request("The application is shutting down."))?;
+        .ok_or(ApplicationError::ShuttingDown)?;
     let span = tracing::Span::current();
     tokio::task::spawn_blocking(move || {
         // Keep admission occupied even if a client drops its request future.
@@ -268,17 +269,33 @@ async fn blocking<T: Send + 'static>(
 
 fn error_response(record: &trace::Record, error: ApplicationError) -> Response {
     match error {
+        ApplicationError::ShuttingDown => rpc_failure(
+            record,
+            StatusCode::SERVICE_UNAVAILABLE,
+            &ApplicationError::ShuttingDown.to_string(),
+        ),
+        ApplicationError::NotInitialized(message) => {
+            rpc_failure(record, StatusCode::BAD_REQUEST, message)
+        }
         ApplicationError::InvalidRequest(message) => {
-            let status = if message == "The application is shutting down." {
-                StatusCode::SERVICE_UNAVAILABLE
-            } else {
-                StatusCode::BAD_REQUEST
-            };
-            rpc_failure(record, status, &message)
+            rpc_failure(record, StatusCode::BAD_REQUEST, &message)
         }
-        ApplicationError::Internal(message) => {
-            rpc_failure(record, StatusCode::INTERNAL_SERVER_ERROR, &message)
+        ApplicationError::InvalidQuery(diagnostics) => {
+            let started = Instant::now();
+            let error = diagnostics
+                .first()
+                .map_or("Invalid search conditions.", |entry| entry.message.as_str())
+                .to_owned();
+            let response =
+                failure_response(StatusCode::BAD_REQUEST, &RpcFailure { error, diagnostics });
+            record.encode(started.elapsed());
+            response
         }
+        ApplicationError::Internal(message) => rpc_failure(
+            record,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &message.to_string(),
+        ),
     }
 }
 
@@ -290,10 +307,27 @@ fn rpc_failure(record: &trace::Record, status: StatusCode, message: &str) -> Res
 }
 
 fn failure(status: StatusCode, message: &str) -> Response {
+    failure_response(
+        status,
+        &RpcFailure {
+            error: message.to_owned(),
+            diagnostics: Vec::new(),
+        },
+    )
+}
+
+fn failure_response(status: StatusCode, failure: &RpcFailure) -> Response {
     (
         status,
         [(header::CONTENT_TYPE, "application/json")],
-        serde_json::json!({"error": message}).to_string(),
+        serde_json::json!(failure).to_string(),
     )
         .into_response()
+}
+
+#[derive(serde::Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub(crate) struct RpcFailure {
+    error: String,
+    diagnostics: Vec<crate::query::document::ConditionDiagnostic>,
 }

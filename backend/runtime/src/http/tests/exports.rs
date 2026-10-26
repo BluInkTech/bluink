@@ -16,6 +16,11 @@ pub(super) fn fixture() -> Fixture {
             Some(root.join("fonts/assets/web").to_string_lossy().into_owned());
         options.pdf_font_folder =
             Some(root.join("fonts/assets/pdf").to_string_lossy().into_owned());
+        options.docx_font_folder = Some(
+            root.join("fonts/assets/docx")
+                .to_string_lossy()
+                .into_owned(),
+        );
         let binary = if cfg!(target_os = "windows") {
             "windows-x64/typst.exe"
         } else if cfg!(target_os = "macos") {
@@ -61,6 +66,182 @@ fn pages(f: &Fixture) -> (Value, Value) {
 }
 
 #[test]
+fn epub_sources_download_books_with_fonts_and_cross_chapter_links() {
+    let f = fixture();
+    let (home, chapter) = pages(&f);
+    let publication = f.call("create_item", json!({"meta":{"type":"publication","title":"EPUB book"},"content":{
+        "kind":"publication","preset":"book","selectedOutput":"epub","rootPageId":home["id"],
+        "outline":[{"kind":"page","pageId":chapter["id"],"children":[]}],"selectionRules":[],"themeId":"classic",
+        "targets":{"pdf":{"profile":"default","outsideLinks":"error"},"docx":{"outsideLinks":"error"},"epub":{"outsideLinks":"error"},"html":{"outsideLinks":"error"},"site":{"layout":"documentation","outsideLinks":"error"}}
+    }}));
+    for (kind, id, count) in [
+        ("note", &home["id"], 1),
+        ("linked-pages", &home["id"], 2),
+        ("publication", &publication["id"], 2),
+    ] {
+        let job = f.call("create_export", json!({"source":{"kind":kind,"id":id},"format":"epub","start":true,"themeId":"classic","profile":"default","outsideLinks":"text-only"}));
+        let ready = settled(&f, &job);
+        assert_eq!(ready["state"], "ready", "{ready}");
+        assert_eq!(ready["summary"]["pages"], count);
+        let path = ready["artifactUrl"].as_str().unwrap();
+        let (status, headers, bytes) = f.request("GET", path, "");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers["content-type"], "application/epub+zip");
+        assert_eq!(
+            headers["content-disposition"],
+            "attachment; filename=\"document.epub\""
+        );
+        let files = crate::engine::publication::docx::tests::parts(&bytes);
+        let content = String::from_utf8(
+            files[&format!("EPUB/chapters/{}.xhtml", home["id"].as_str().unwrap())].clone(),
+        )
+        .unwrap();
+        assert!(content.contains("Welcome home."));
+        assert_eq!(
+            content.contains(&format!(
+                "href=\"{}.xhtml\"",
+                chapter["id"].as_str().unwrap()
+            )),
+            count == 2
+        );
+        assert!(files.keys().any(|path| {
+            Path::new(path)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("woff2"))
+        }));
+        assert_eq!(f.request("GET", &format!("{path}?download=1"), "").2, bytes);
+        f.call("cancel_export", json!({"jobId":job["jobId"]}));
+        assert_eq!(f.request("GET", path, "").0, StatusCode::OK);
+    }
+}
+
+#[test]
+fn word_sources_generate_native_downloads_and_retain_stale_and_cancellation_guards() {
+    let f = fixture();
+    let (home, chapter) = pages(&f);
+    f.call(
+        "update_item_meta",
+        json!({"id":chapter["id"],"version":chapter["version"],"meta":{"lang":"fr-CA"}}),
+    );
+    let publication = f.call("create_item", json!({"meta":{"type":"publication","title":"Editable book"}, "content":{
+        "kind":"publication","preset":"book","selectedOutput":"docx","rootPageId":home["id"],
+        "outline":[{"kind":"page","pageId":chapter["id"],"children":[]}],"selectionRules":[],"themeId":"classic",
+        "targets":{"pdf":{"profile":"default","outsideLinks":"error"},"docx":{"outsideLinks":"error"},"epub":{"outsideLinks":"error"},"html":{"outsideLinks":"error"},"site":{"layout":"documentation","outsideLinks":"error"}}
+    }}));
+    for (kind, id, count) in [
+        ("note", &home["id"], 1),
+        ("linked-pages", &home["id"], 2),
+        ("publication", &publication["id"], 2),
+    ] {
+        let job = f.call("create_export", json!({"source":{"kind":kind,"id":id},"format":"docx","start":false,"themeId":"classic","profile":"default","outsideLinks":"text-only"}));
+        let prepared = settled(&f, &job);
+        assert_eq!(prepared["state"], "prepared", "{prepared}");
+        assert_eq!(prepared["summary"]["pages"], count);
+        assert_eq!(prepared["plan"]["value"]["theme"]["format"], "docx");
+        assert_eq!(prepared["plan"]["value"]["theme"]["requiresTrust"], false);
+        f.call("start_export", job.clone());
+        let ready = settled(&f, &job);
+        assert_eq!(ready["state"], "ready", "{ready}");
+        let path = ready["artifactUrl"].as_str().unwrap();
+        let (status, headers, bytes) = f.request("GET", path, "");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            headers["content-type"],
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+        assert_eq!(
+            headers["content-disposition"],
+            "attachment; filename=\"document.docx\""
+        );
+        let parts = crate::engine::publication::docx::tests::parts(&bytes);
+        let content = String::from_utf8(parts["word/document.xml"].clone()).unwrap();
+        assert!(content.contains("Welcome home."));
+        assert_eq!(content.contains("Chapter body."), count == 2);
+        assert_eq!(content.contains("w:val=\"fr-CA\""), count == 2);
+        assert!(parts.contains_key("word/fontTable.xml"));
+        assert!(parts.keys().any(|name| {
+            Path::new(name)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("odttf"))
+        }));
+        let (status, _, downloaded) = f.request("GET", &format!("{path}?download=1"), "");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(bytes, downloaded);
+        assert_eq!(
+            f.request("GET", &format!("{path}/document.docx"), "").0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    let cancelled = f.call(
+        "create_export",
+        page_request(&home["id"], "docx", "classic"),
+    );
+    assert_eq!(settled(&f, &cancelled)["state"], "prepared");
+    assert_eq!(
+        f.call("cancel_export", cancelled.clone())["cancelled"],
+        true
+    );
+    assert_eq!(settled(&f, &cancelled)["state"], "cancelled");
+    let stale = f.call(
+        "create_export",
+        page_request(&home["id"], "docx", "classic"),
+    );
+    assert_eq!(settled(&f, &stale)["state"], "prepared");
+    f.call(
+        "update_item_meta",
+        json!({"id":home["id"],"version":home["version"],"meta":{"title":"Changed after capture"}}),
+    );
+    f.call("start_export", stale.clone());
+    let failed = settled(&f, &stale);
+    assert_eq!(failed["state"], "failed");
+    assert!(
+        failed["error"]
+            .as_str()
+            .unwrap()
+            .contains("changed after planning")
+    );
+    assert!(failed.get("artifactUrl").is_none());
+}
+
+#[test]
+fn word_project_themes_need_no_web_approval_and_stale_packages_cannot_render() {
+    let f = fixture();
+    let (_, chapter) = pages(&f);
+    let theme = f.root.path().join("themes/field-notes");
+    copy_directory(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../examples/themes/field-notes"),
+        &theme,
+    );
+    let word = f.call(
+        "create_export",
+        page_request(&chapter["id"], "docx", "field-notes"),
+    );
+    let prepared = settled(&f, &word);
+    assert_eq!(prepared["state"], "prepared", "{prepared}");
+    assert!(prepared.get("themeTrust").is_none());
+    let html = f.call(
+        "create_export",
+        page_request(&chapter["id"], "html", "field-notes"),
+    );
+    assert_eq!(settled(&f, &html)["state"], "awaiting_theme_approval");
+    let shell = theme.join("html/article.html");
+    let mut bytes = std::fs::read(&shell).unwrap();
+    bytes.extend_from_slice(b"\n ");
+    std::fs::write(shell, bytes).unwrap();
+    f.call("start_export", word.clone());
+    let failed = settled(&f, &word);
+    assert_eq!(failed["state"], "failed");
+    assert!(
+        failed["error"]
+            .as_str()
+            .unwrap()
+            .contains("changed after planning")
+    );
+    let current = f.call("create_export", json!({"source":{"kind":"note","id":chapter["id"]},"format":"docx","themeId":"field-notes","outsideLinks":"text-only","profile":"default","start":true}));
+    assert_eq!(settled(&f, &current)["state"], "ready");
+}
+
+#[test]
 fn figure_titles_persist_and_generate_escaped_html_and_real_pdf_through_axum() {
     let f = fixture();
     let page = f.call(
@@ -68,6 +249,7 @@ fn figure_titles_persist_and_generate_escaped_html_and_real_pdf_through_axum() {
         json!({"meta":{"type":"page","title":"Titled figures","lang":"en"},"content":document("")}),
     );
     let assets = f.item_path(&page["id"]).parent().unwrap().join("assets");
+    std::fs::create_dir_all(&assets).unwrap();
     std::fs::write(assets.join("diagram.svg"),r#"<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><circle cx="64" cy="64" r="48" fill="blue"/></svg>"#).unwrap();
     let figure = |title: &str, body: Value| json!({"type":"figure","content":[{"type":"blockTitle","content":[{"type":"text","text":title}]},body]});
     let content = json!({"type":"doc","content":[
@@ -87,7 +269,7 @@ fn figure_titles_persist_and_generate_escaped_html_and_real_pdf_through_axum() {
         f.call("read_item", json!({"id":page["id"]}))["version"],
         saved["version"]
     );
-    for format in ["html", "pdf"] {
+    for format in ["html", "pdf", "docx"] {
         let job = f.call(
             "create_export",
             page_request(&page["id"], format, "classic"),
@@ -98,7 +280,19 @@ fn figure_titles_persist_and_generate_escaped_html_and_real_pdf_through_axum() {
         assert_eq!(ready["state"], "ready", "{ready}");
         let (status, _, bytes) = f.request("GET", ready["artifactUrl"].as_str().unwrap(), "");
         assert_eq!(status, StatusCode::OK);
-        if format == "pdf" {
+        if format == "docx" {
+            let entries = crate::engine::publication::docx::tests::parts(&bytes);
+            let content = String::from_utf8(entries["word/document.xml"].clone()).unwrap();
+            for expected in [
+                "Code &lt;script&gt; &amp; title",
+                "Table &amp; title",
+                "Image &lt;title&gt;",
+                "verbatim",
+            ] {
+                assert!(content.contains(expected), "Missing {expected}");
+            }
+            assert!(entries.contains_key("word/fontTable.xml"));
+        } else if format == "pdf" {
             assert!(bytes.starts_with(b"%PDF-"));
         } else {
             let html = std::str::from_utf8(&bytes).unwrap();
@@ -214,7 +408,7 @@ fn preview_request(url: &str, path: &str, method: &str) -> Vec<u8> {
 fn publications_and_linked_sites_share_jobs_zip_bundles_and_confined_preview_servers() {
     let f = fixture();
     let (home, chapter) = pages(&f);
-    let publication=f.call("create_item",json!({"meta":{"type":"publication","title":"Fiction book"},"content":{"kind":"publication","preset":"book","selectedOutput":"html","rootPageId":home["id"],"outline":[{"kind":"collection","id":"00000000-0000-7000-8000-000000000603","title":"Fiction","query":"#fiction"}],"selectionRules":[],"themeId":"classic","targets":{"pdf":{"profile":"default","outsideLinks":"error"},"html":{"outsideLinks":"error"},"site":{"layout":"documentation","outsideLinks":"error"}}}}));
+    let publication=f.call("create_item",json!({"meta":{"type":"publication","title":"Fiction book"},"content":{"kind":"publication","preset":"book","selectedOutput":"html","rootPageId":home["id"],"outline":[{"kind":"collection","id":"00000000-0000-7000-8000-000000000603","title":"Fiction","query":crate::query::document::test_query("#fiction")}],"selectionRules":[],"themeId":"classic","targets":{"pdf":{"profile":"default","outsideLinks":"error"},"html":{"outsideLinks":"error"},"docx":{"outsideLinks":"error"},"epub":{"outsideLinks":"error"},"site":{"layout":"documentation","outsideLinks":"error"}}}}));
     f.initialize_index();
     let html=f.call("create_export",json!({"source":{"kind":"publication","id":publication["id"]},"format":"html","start":true}));
     let generated = settled(&f, &html);
@@ -299,7 +493,9 @@ fn publications_and_linked_sites_share_jobs_zip_bundles_and_confined_preview_ser
                 .contains("sandbox allow-scripts")
         );
         assert_eq!(headers["cross-origin-resource-policy"], "cross-origin");
+        assert!(!headers.contains_key("access-control-allow-origin"));
         assert!(String::from_utf8_lossy(&body).contains("Welcome home."));
+        assert_sandbox_font_response(&f, &site);
         assert_eq!(ready["plan"]["kind"], "publication");
         assert!(
             ready["plan"]["value"]["pages"]
@@ -309,6 +505,21 @@ fn publications_and_linked_sites_share_jobs_zip_bundles_and_confined_preview_ser
                 .any(|p| p["id"] == chapter["id"])
         );
     }
+}
+
+fn assert_sandbox_font_response(f: &Fixture, site: &Value) {
+    let (status, headers, font) = f.request(
+        "GET",
+        &format!(
+            "/api/export_artifact/{}/fonts/ibm-plex-mono/ibm-plex-mono-400-normal.woff2",
+            site["jobId"].as_str().unwrap()
+        ),
+        "",
+    );
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "font/woff2");
+    assert_eq!(headers["access-control-allow-origin"], "*");
+    assert!(font.len() > 100);
 }
 
 fn copy_directory(source: &Path, target: &Path) {
@@ -358,9 +569,9 @@ fn theme_approval_and_cancellation_are_session_scoped_and_hash_exact() {
         json!({"cancelled":true})
     );
     assert_eq!(f.call("cancel_export", reused), json!({"cancelled":false}));
-    let macros = theme.join("html/macros.html");
-    let text = std::fs::read_to_string(&macros).unwrap();
-    std::fs::write(macros, format!("{text}\n")).unwrap();
+    let shell = theme.join("html/article.html");
+    let text = std::fs::read_to_string(&shell).unwrap();
+    std::fs::write(shell, format!("{text}\n")).unwrap();
     let changed = f.call("create_export", input);
     let changed = settled(&f, &changed);
     assert_eq!(changed["state"], "awaiting_theme_approval");

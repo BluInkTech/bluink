@@ -12,7 +12,7 @@
   <header class="publication-masthead"><span>Edition</span><strong>{{ title }}</strong></header>
   <div class="publication-columns">
     {% if theme_options.sidebar %}<nav aria-label="Site navigation">{{ navigation }}</nav>{% endif %}
-    <main id="main-content">{{ contents }}{{ body }}</main>
+    <main id="main-content" class="publication-content">{{ contents }}{{ body }}</main>
   </div>
 </body>
 </html>

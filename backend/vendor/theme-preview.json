@@ -1,0 +1,1204 @@
+{
+  "overview": {
+    "type": "doc",
+    "content": [
+      {
+        "type": "heading",
+        "attrs": {
+          "id": "00000000-0000-7000-8000-000000001000",
+          "level": 1
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Write once, publish anywhere"
+          }
+        ]
+      },
+      {
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "This sample uses your unsaved theme with the same Rust generators as a published document. It includes typography, tables, images, boxes and references."
+          }
+        ],
+        "attrs": {
+          "id": "00000000-0000-7000-8000-000000001001"
+        }
+      },
+      {
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Explore "
+          },
+          {
+            "type": "text",
+            "text": "typography and structure",
+            "marks": [
+              {
+                "type": "link",
+                "attrs": {
+                  "href": "/?note=00000000-0000-7000-8000-000000000903"
+                }
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": " and "
+          },
+          {
+            "type": "text",
+            "text": "boxes and references",
+            "marks": [
+              {
+                "type": "link",
+                "attrs": {
+                  "href": "/?note=00000000-0000-7000-8000-000000000904"
+                }
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": ". The same content appears in every format."
+          }
+        ],
+        "attrs": {
+          "id": "00000000-0000-7000-8000-000000001002"
+        }
+      },
+      {
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "A shared source can be cited more than once "
+          },
+          {
+            "type": "citation",
+            "attrs": {
+              "source": "snippet",
+              "snippetId": "theme_reference"
+            }
+          },
+          {
+            "type": "text",
+            "text": " without duplicating its definition."
+          }
+        ],
+        "attrs": {
+          "id": "00000000-0000-7000-8000-000000001003"
+        }
+      },
+      {
+        "type": "box",
+        "attrs": {
+          "kind": "abstract",
+          "id": "00000000-0000-7000-8000-000000001004"
+        },
+        "content": [
+          {
+            "type": "boxHeading",
+            "content": [
+              {
+                "type": "text",
+                "text": "A portable visual language"
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001005"
+            }
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Relative sizes follow the root font size. Physical paper and margins remain consistent across print formats."
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001006"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "styles": {
+    "type": "doc",
+    "content": [
+      {
+        "type": "heading",
+        "attrs": {
+          "id": "00000000-0000-7000-8000-000000001007",
+          "level": 1
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "A clear type scale"
+          }
+        ]
+      },
+      {
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "The quick brown fox jumps over the lazy dog. À bientôt, café, naïve — punctuation and accents should retain their character."
+          }
+        ],
+        "attrs": {
+          "id": "00000000-0000-7000-8000-000000001008"
+        }
+      },
+      {
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Strong",
+            "marks": [
+              {
+                "type": "strong"
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": ", "
+          },
+          {
+            "type": "text",
+            "text": "emphasized",
+            "marks": [
+              {
+                "type": "emphasis"
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": ", "
+          },
+          {
+            "type": "text",
+            "text": "underlined",
+            "marks": [
+              {
+                "type": "underline"
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": ", "
+          },
+          {
+            "type": "text",
+            "text": "struck through",
+            "marks": [
+              {
+                "type": "strike"
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": ", "
+          },
+          {
+            "type": "text",
+            "text": "inline code",
+            "marks": [
+              {
+                "type": "code"
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": ", H"
+          },
+          {
+            "type": "text",
+            "text": "2",
+            "marks": [
+              {
+                "type": "subscript"
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": "O and x"
+          },
+          {
+            "type": "text",
+            "text": "2",
+            "marks": [
+              {
+                "type": "superscript"
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": " can share one paragraph."
+          }
+        ],
+        "attrs": {
+          "id": "00000000-0000-7000-8000-000000001009"
+        }
+      },
+      {
+        "type": "heading",
+        "attrs": {
+          "id": "00000000-0000-7000-8000-00000000100a",
+          "level": 2
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Heading two"
+          }
+        ]
+      },
+      {
+        "type": "heading",
+        "attrs": {
+          "id": "00000000-0000-7000-8000-00000000100b",
+          "level": 3
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Heading three"
+          }
+        ]
+      },
+      {
+        "type": "heading",
+        "attrs": {
+          "id": "00000000-0000-7000-8000-00000000100c",
+          "level": 4
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Heading four"
+          }
+        ]
+      },
+      {
+        "type": "heading",
+        "attrs": {
+          "id": "00000000-0000-7000-8000-00000000100d",
+          "level": 5
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Heading five"
+          }
+        ]
+      },
+      {
+        "type": "heading",
+        "attrs": {
+          "id": "00000000-0000-7000-8000-00000000100e",
+          "level": 6
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Heading six"
+          }
+        ]
+      },
+      {
+        "type": "blockquote",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Good typography gives ideas room to breathe. A quotation can have its own rhythm without losing the document's voice."
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001010"
+            }
+          }
+        ],
+        "attrs": {
+          "id": "00000000-0000-7000-8000-00000000100f"
+        }
+      },
+      {
+        "type": "list",
+        "attrs": {
+          "kind": "bullet",
+          "id": "00000000-0000-7000-8000-000000001011"
+        },
+        "content": [
+          {
+            "type": "listItem",
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "A first point, set in the shared body style."
+                  }
+                ],
+                "attrs": {
+                  "id": "00000000-0000-7000-8000-000000001013"
+                }
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001012"
+            }
+          },
+          {
+            "type": "listItem",
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "A second point keeps the same spacing."
+                  }
+                ],
+                "attrs": {
+                  "id": "00000000-0000-7000-8000-000000001015"
+                }
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001014"
+            }
+          }
+        ]
+      },
+      {
+        "type": "list",
+        "attrs": {
+          "kind": "ordered",
+          "order": 3,
+          "id": "00000000-0000-7000-8000-000000001016"
+        },
+        "content": [
+          {
+            "type": "listItem",
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Continue an ordered sequence."
+                  }
+                ],
+                "attrs": {
+                  "id": "00000000-0000-7000-8000-000000001018"
+                }
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001017"
+            }
+          },
+          {
+            "type": "listItem",
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Keep numbers and text aligned."
+                  }
+                ],
+                "attrs": {
+                  "id": "00000000-0000-7000-8000-00000000101a"
+                }
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001019"
+            }
+          }
+        ]
+      },
+      {
+        "type": "figure",
+        "content": [
+          {
+            "type": "blockTitle",
+            "content": [
+              {
+                "type": "text",
+                "text": "A table with merged cells"
+              }
+            ]
+          },
+          {
+            "type": "table",
+            "attrs": {
+              "columnWidthsPercent": [
+                30,
+                35,
+                35
+              ],
+              "id": "00000000-0000-7000-8000-00000000101c"
+            },
+            "content": [
+              {
+                "type": "table_row",
+                "content": [
+                  {
+                    "type": "table_header",
+                    "attrs": {
+                      "rowspan": 2,
+                      "id": "00000000-0000-7000-8000-00000000101e"
+                    },
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "content": [
+                          {
+                            "type": "text",
+                            "text": "Shared theme"
+                          }
+                        ],
+                        "attrs": {
+                          "id": "00000000-0000-7000-8000-00000000101f"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "table_header",
+                    "attrs": {
+                      "colspan": 2,
+                      "id": "00000000-0000-7000-8000-000000001020"
+                    },
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "content": [
+                          {
+                            "type": "text",
+                            "text": "Publishing targets"
+                          }
+                        ],
+                        "attrs": {
+                          "id": "00000000-0000-7000-8000-000000001021"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "attrs": {
+                  "id": "00000000-0000-7000-8000-00000000101d"
+                }
+              },
+              {
+                "type": "table_row",
+                "content": [
+                  {
+                    "type": "table_cell",
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "content": [
+                          {
+                            "type": "text",
+                            "text": "HTML and site"
+                          }
+                        ],
+                        "attrs": {
+                          "id": "00000000-0000-7000-8000-000000001024"
+                        }
+                      }
+                    ],
+                    "attrs": {
+                      "id": "00000000-0000-7000-8000-000000001023"
+                    }
+                  },
+                  {
+                    "type": "table_cell",
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "content": [
+                          {
+                            "type": "text",
+                            "text": "PDF and Word"
+                          }
+                        ],
+                        "attrs": {
+                          "id": "00000000-0000-7000-8000-000000001026"
+                        }
+                      }
+                    ],
+                    "attrs": {
+                      "id": "00000000-0000-7000-8000-000000001025"
+                    }
+                  }
+                ],
+                "attrs": {
+                  "id": "00000000-0000-7000-8000-000000001022"
+                }
+              },
+              {
+                "type": "table_row",
+                "content": [
+                  {
+                    "type": "table_cell",
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "content": [
+                          {
+                            "type": "text",
+                            "text": "Relative size"
+                          }
+                        ],
+                        "attrs": {
+                          "id": "00000000-0000-7000-8000-000000001029"
+                        }
+                      }
+                    ],
+                    "attrs": {
+                      "id": "00000000-0000-7000-8000-000000001028"
+                    }
+                  },
+                  {
+                    "type": "table_cell",
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "content": [
+                          {
+                            "type": "text",
+                            "text": "Root based"
+                          }
+                        ],
+                        "attrs": {
+                          "id": "00000000-0000-7000-8000-00000000102b"
+                        }
+                      }
+                    ],
+                    "attrs": {
+                      "id": "00000000-0000-7000-8000-00000000102a"
+                    }
+                  },
+                  {
+                    "type": "table_cell",
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "content": [
+                          {
+                            "type": "text",
+                            "text": "Root based"
+                          }
+                        ],
+                        "attrs": {
+                          "id": "00000000-0000-7000-8000-00000000102d"
+                        }
+                      }
+                    ],
+                    "attrs": {
+                      "id": "00000000-0000-7000-8000-00000000102c"
+                    }
+                  }
+                ],
+                "attrs": {
+                  "id": "00000000-0000-7000-8000-000000001027"
+                }
+              }
+            ]
+          }
+        ],
+        "attrs": {
+          "id": "00000000-0000-7000-8000-00000000101b"
+        }
+      },
+      {
+        "type": "figure",
+        "content": [
+          {
+            "type": "blockTitle",
+            "content": [
+              {
+                "type": "text",
+                "text": "An offline vector illustration"
+              }
+            ]
+          },
+          {
+            "type": "image",
+            "attrs": {
+              "src": "/assets/00000000-0000-7000-8000-000000000903/diagram.svg",
+              "alt": "Three blue circles linked on a pale blue rectangle",
+              "width": 240,
+              "height": 80,
+              "id": "00000000-0000-7000-8000-00000000102f"
+            }
+          }
+        ],
+        "attrs": {
+          "id": "00000000-0000-7000-8000-00000000102e"
+        }
+      },
+      {
+        "type": "figure",
+        "content": [
+          {
+            "type": "blockTitle",
+            "content": [
+              {
+                "type": "text",
+                "text": "A short code example"
+              }
+            ]
+          },
+          {
+            "type": "code_block",
+            "attrs": {
+              "language": "rust",
+              "id": "00000000-0000-7000-8000-000000001031"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "fn publish(title: &str) {\n    println!(\"{title}\");\n}"
+              }
+            ]
+          }
+        ],
+        "attrs": {
+          "id": "00000000-0000-7000-8000-000000001030"
+        }
+      },
+      {
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "This paragraph has a local note "
+          },
+          {
+            "type": "footnote",
+            "attrs": {
+              "paragraph": {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "A local note follows the document's reference typography."
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "type": "text",
+            "text": " and a named source "
+          },
+          {
+            "type": "citation",
+            "attrs": {
+              "source": "snippet",
+              "snippetId": "theme_reference"
+            }
+          },
+          {
+            "type": "text",
+            "text": ". "
+          },
+          {
+            "type": "text",
+            "text": "Return to the type scale",
+            "marks": [
+              {
+                "type": "link",
+                "attrs": {
+                "href": "#block-00000000-0000-7000-8000-000000001007"
+                }
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": "."
+          }
+        ],
+        "attrs": {
+          "id": "00000000-0000-7000-8000-000000001032"
+        }
+      },
+      {
+        "type": "horizontal_rule",
+        "attrs": {
+          "id": "00000000-0000-7000-8000-000000001033"
+        }
+      }
+    ]
+  },
+  "details": {
+    "type": "doc",
+    "content": [
+      {
+        "type": "heading",
+        "attrs": {
+          "id": "00000000-0000-7000-8000-000000001034",
+          "level": 1
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Distinct information, one theme"
+          }
+        ]
+      },
+      {
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Each box has a semantic role. Shared typography and spacing keep the set coherent."
+          }
+        ],
+        "attrs": {
+          "id": "00000000-0000-7000-8000-000000001035"
+        }
+      },
+      {
+        "type": "box",
+        "attrs": {
+          "kind": "info",
+          "id": "00000000-0000-7000-8000-000000001036"
+        },
+        "content": [
+          {
+            "type": "boxHeading",
+            "content": [
+              {
+                "type": "text",
+                "text": "Information"
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001037"
+            }
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Background information supports the main text."
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001038"
+            }
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "attrs": {
+          "kind": "note",
+          "id": "00000000-0000-7000-8000-000000001039"
+        },
+        "content": [
+          {
+            "type": "boxHeading",
+            "content": [
+              {
+                "type": "text",
+                "text": "Note"
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-00000000103a"
+            }
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "A useful detail deserves a quiet pause."
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-00000000103b"
+            }
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "attrs": {
+          "kind": "tip",
+          "id": "00000000-0000-7000-8000-00000000103c"
+        },
+        "content": [
+          {
+            "type": "boxHeading",
+            "content": [
+              {
+                "type": "text",
+                "text": "Tip"
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-00000000103d"
+            }
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Keep visual choices reusable across publications."
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-00000000103e"
+            }
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "attrs": {
+          "kind": "success",
+          "id": "00000000-0000-7000-8000-00000000103f"
+        },
+        "content": [
+          {
+            "type": "boxHeading",
+            "content": [
+              {
+                "type": "text",
+                "text": "Success"
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001040"
+            }
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "A completed step can be acknowledged clearly."
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001041"
+            }
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "attrs": {
+          "kind": "important",
+          "id": "00000000-0000-7000-8000-000000001042"
+        },
+        "content": [
+          {
+            "type": "boxHeading",
+            "content": [
+              {
+                "type": "text",
+                "text": "Important"
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001043"
+            }
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Give an essential point the emphasis it needs."
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001044"
+            }
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "attrs": {
+          "kind": "warning",
+          "id": "00000000-0000-7000-8000-000000001045"
+        },
+        "content": [
+          {
+            "type": "boxHeading",
+            "content": [
+              {
+                "type": "text",
+                "text": "Warning"
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001046"
+            }
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "A caution should be easy to recognize."
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001047"
+            }
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "attrs": {
+          "kind": "error",
+          "id": "00000000-0000-7000-8000-000000001048"
+        },
+        "content": [
+          {
+            "type": "boxHeading",
+            "content": [
+              {
+                "type": "text",
+                "text": "Error"
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001049"
+            }
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Explain a problem in a legible, consistent style."
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-00000000104a"
+            }
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "attrs": {
+          "kind": "question",
+          "id": "00000000-0000-7000-8000-00000000104b"
+        },
+        "content": [
+          {
+            "type": "boxHeading",
+            "content": [
+              {
+                "type": "text",
+                "text": "Question"
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-00000000104c"
+            }
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Does the theme still feel clear at every size?"
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-00000000104d"
+            }
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "attrs": {
+          "kind": "example",
+          "id": "00000000-0000-7000-8000-00000000104e"
+        },
+        "content": [
+          {
+            "type": "boxHeading",
+            "content": [
+              {
+                "type": "text",
+                "text": "Example"
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-00000000104f"
+            }
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Concrete examples make an abstract idea easier to use."
+              }
+            ],
+            "attrs": {
+              "id": "00000000-0000-7000-8000-000000001050"
+            }
+          }
+        ]
+      },
+      {
+        "type": "heading",
+        "attrs": {
+          "id": "00000000-0000-7000-8000-000000001051",
+          "level": 2
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Reused content and references"
+          }
+        ]
+      },
+      {
+        "type": "embed",
+        "attrs": {
+          "snippetId": "theme_reference",
+          "id": "00000000-0000-7000-8000-000000001052"
+        }
+      },
+      {
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "The named source is reused across chapters "
+          },
+          {
+            "type": "citation",
+            "attrs": {
+              "source": "snippet",
+              "snippetId": "theme_reference"
+            }
+          },
+          {
+            "type": "text",
+            "text": ". Current page: "
+          },
+          {
+            "type": "field",
+            "attrs": {
+              "key": "title"
+            }
+          },
+          {
+            "type": "text",
+            "text": "."
+          }
+        ],
+        "attrs": {
+          "id": "00000000-0000-7000-8000-000000001053"
+        }
+      },
+      {
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Visit an "
+          },
+          {
+            "type": "text",
+            "text": "external reference",
+            "marks": [
+              {
+                "type": "link",
+                "attrs": {
+                  "href": "https://example.com/"
+                }
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": " or return to the "
+          },
+          {
+            "type": "text",
+            "text": "preview overview",
+            "marks": [
+              {
+                "type": "link",
+                "attrs": {
+                  "href": "/?note=00000000-0000-7000-8000-000000000902"
+                }
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": "."
+          }
+        ],
+        "attrs": {
+          "id": "00000000-0000-7000-8000-000000001054"
+        }
+      }
+    ]
+  },
+  "reference": {
+    "type": "paragraph",
+    "content": [
+      {
+        "type": "text",
+        "text": "A shared reference.",
+        "marks": [
+          {
+            "type": "strong"
+          }
+        ]
+      },
+      {
+        "type": "text",
+        "text": " One authored source, reused wherever it is needed."
+      }
+    ]
+  },
+  "diagram": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"240\" height=\"80\" viewBox=\"0 0 240 80\"><rect width=\"240\" height=\"80\" fill=\"#dbeafe\"/><path d=\"M48 40H192\" stroke=\"#2563eb\" stroke-width=\"4\"/><g fill=\"#2563eb\"><circle cx=\"48\" cy=\"40\" r=\"18\"/><circle cx=\"120\" cy=\"40\" r=\"18\"/><circle cx=\"192\" cy=\"40\" r=\"18\"/></g></svg>"
+}

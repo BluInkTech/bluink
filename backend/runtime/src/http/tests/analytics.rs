@@ -49,21 +49,21 @@ fn analytics_keep_date_defaults_query_scopes_and_storage_failure_classification(
     }
     let scoped = f.call(
         "read_dashboard_analytics",
-        json!({"startDate":today,"endDate":today,"query":"#research"}),
+        json!({"startDate":today,"endDate":today,"query":crate::query::document::test_query("#research")}),
     );
     assert_eq!(scoped["summary"]["wordsAdded"], 3);
     assert_eq!(scoped["days"][0]["notesTouched"], 1);
     assert_eq!(
         f.call(
             "read_dashboard_day_details",
-            json!({"date":today,"query":"#research"})
+            json!({"date":today,"query":crate::query::document::test_query("#research")})
         )["items"],
         json!([{"id":first["id"],"title":"First","wordsAdded":3,"wordsDeleted":0,"netWordChange":3,"editingEvents":1,"tasksCompleted":0}])
     );
     assert_eq!(
         f.call(
             "read_dashboard_day_details",
-            json!({"date":today,"query":"#missing"})
+            json!({"date":today,"query":crate::query::document::test_query("#missing")})
         ),
         json!({"date":today,"items":[]})
     );

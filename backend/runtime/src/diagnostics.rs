@@ -94,7 +94,12 @@ fn is_private_field(name: &str) -> bool {
         "tag",
     ]
     .iter()
-    .any(|part| lower == *part || lower.ends_with(&format!("_{part}")))
+    .any(|part| {
+        lower == *part
+            || lower
+                .strip_suffix(part)
+                .is_some_and(|prefix| prefix.ends_with('_'))
+    })
 }
 
 impl Visit for SafeFields {
@@ -203,6 +208,10 @@ where
             .get("event")
             .and_then(Value::as_str)
             .map_or_else(|| event.metadata().name().to_owned(), safe_identifier);
+        // Completion events carry their measured duration as a tracing field.
+        // Promote it to the same envelope field used by span-close events so
+        // both the interactive console and plain logs display elapsed time.
+        let duration_ms = fields.get("duration_ms").and_then(Value::as_f64);
         self.emit(DiagnosticEvent {
             timestamp_ms: now_ms(),
             level: event.metadata().level().to_string().to_ascii_lowercase(),
@@ -211,11 +220,14 @@ where
             message,
             fields,
             spans,
-            duration_ms: None,
+            duration_ms,
         });
     }
 
     fn on_close(&self, id: Id, context: Context<'_, S>) {
+        if !self.sink.enabled("debug") {
+            return;
+        }
         if let Some(span) = context.span(&id) {
             // Request completion is emitted explicitly at response handoff.
             // Async jobs may retain its context long after the response.

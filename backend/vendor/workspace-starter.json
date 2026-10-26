@@ -1,0 +1,160 @@
+{
+  "query": {
+    "version": 1,
+    "clauses": [
+      {
+        "polarity": "required",
+        "predicate": {
+          "kind": "field",
+          "field": "type",
+          "operator": "match",
+          "value": "page"
+        }
+      },
+      {
+        "polarity": "required",
+        "predicate": {
+          "kind": "field",
+          "field": "state",
+          "operator": "match",
+          "value": "active"
+        }
+      }
+    ],
+    "sort": []
+  },
+  "widgets": [
+    {
+      "id": "00000000-0000-7000-8000-000000000601",
+      "home": {
+        "span": 8
+      },
+      "config": {
+        "kind": "continue_writing",
+        "noteId": null
+      }
+    },
+    {
+      "id": "00000000-0000-7000-8000-000000000602",
+      "home": {
+        "span": 4
+      },
+      "config": {
+        "kind": "writing_goal"
+      }
+    },
+    {
+      "id": "00000000-0000-7000-8000-000000000603",
+      "home": {
+        "span": 8
+      },
+      "config": {
+        "kind": "recent_notes",
+        "count": 5,
+        "presentation": "list"
+      }
+    },
+    {
+      "id": "00000000-0000-7000-8000-000000000607",
+      "home": {
+        "span": 4
+      },
+      "config": {
+        "kind": "writing_activity",
+        "days": 30
+      }
+    },
+    {
+      "id": "00000000-0000-7000-8000-000000000604",
+      "home": {
+        "span": 8
+      },
+      "config": {
+        "kind": "pinned_notes",
+        "count": 5,
+        "presentation": "list"
+      }
+    },
+    {
+      "id": "00000000-0000-7000-8000-000000000605",
+      "home": {
+        "span": 4
+      },
+      "config": {
+        "kind": "tasks",
+        "status": "open",
+        "count": 5
+      }
+    },
+    {
+      "id": "00000000-0000-7000-8000-000000000606",
+      "home": {
+        "span": 12
+      },
+      "config": {
+        "kind": "writing_rhythm",
+        "days": 30
+      }
+    },
+    {
+      "id": "00000000-0000-7000-8000-000000000501",
+      "title": "Cards",
+      "topBar": true,
+      "home": {
+        "span": 12,
+        "height": "tall",
+        "hidden": true
+      },
+      "config": {
+        "kind": "layout",
+        "query": {
+          "version": 1,
+          "clauses": [],
+          "sort": []
+        },
+        "mode": "cards"
+      }
+    },
+    {
+      "id": "00000000-0000-7000-8000-000000000502",
+      "title": "Table",
+      "topBar": true,
+      "home": {
+        "span": 12,
+        "height": "tall",
+        "hidden": true
+      },
+      "config": {
+        "kind": "layout",
+        "query": {
+          "version": 1,
+          "clauses": [],
+          "sort": []
+        },
+        "mode": "table"
+      }
+    },
+    {
+      "id": "00000000-0000-7000-8000-000000000503",
+      "title": "Board",
+      "topBar": true,
+      "home": {
+        "span": 12,
+        "height": "tall",
+        "hidden": true
+      },
+      "config": {
+        "kind": "layout",
+        "query": {
+          "version": 1,
+          "clauses": [],
+          "sort": []
+        },
+        "mode": "kanban",
+        "kanban": {
+          "groupBy": "meta.status"
+        }
+      }
+    }
+  ]
+}

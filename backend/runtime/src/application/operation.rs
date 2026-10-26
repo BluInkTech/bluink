@@ -5,7 +5,8 @@
 use super::error::{Result, invalid_request};
 use super::request::decode;
 use super::{
-    Application, analytics, catalogue_writes, items, mutations, queries, settings, snippets,
+    Application, analytics, catalogue_writes, items, mutations, queries, query_documents, settings,
+    snippets, themes,
 };
 use serde::Serialize;
 
@@ -59,28 +60,40 @@ operations! {
     "read_item", "POST", ReadItem(items::ReadItemRequest) -> items::PublicItem => Application::read_item;
     "read_items", "POST", ReadItems(items::ReadItemsRequest) -> Vec<items::PublicItem> => Application::read_items;
     "query_items", "POST", QueryItems(items::QueryItemsRequest) -> items::QueryItemsResult => Application::query_items;
+    "resolve_workspace_notes", "POST", ResolveWorkspaceNotes(items::ResolveWorkspaceNotesRequest) -> Vec<items::PublicItem> => Application::resolve_workspace_notes;
     "create_item", "POST", CreateItem(mutations::CreateItemRequest) -> items::PublicItem => Application::create_item;
     "update_item", "POST", UpdateItem(mutations::UpdateItemRequest) -> items::PublicItem => Application::update_item;
     "update_item_meta", "POST", UpdateItemMeta(mutations::UpdateItemMetaRequest) -> items::PublicItem => Application::update_item_meta;
     "set_item_tags", "POST", SetItemTags(mutations::SetItemTagsRequest) -> items::PublicItem => Application::set_item_tags;
     "mutate_note_task", "POST", MutateNoteTask(mutations::MutateNoteTaskRequest) -> items::PublicItem => Application::mutate_note_task;
     "create_writing_goal", "POST", CreateWritingGoal(mutations::CreateWritingGoalRequest) -> items::PublicItem => Application::create_writing_goal;
+    "create_workspace_from_setup", "POST", CreateWorkspaceFromSetup(mutations::CreateWorkspaceFromSetupRequest) -> items::PublicItem => Application::create_workspace_from_setup;
     "set_note_pin", "POST", SetNotePin(mutations::SetNotePinRequest) -> mutations::PinResult => Application::set_note_pin;
     "delete_item", "POST", DeleteItem(mutations::DeleteItemRequest) -> mutations::DeleteResult => Application::delete_item;
     "query_note_tasks", "POST", QueryTasks(queries::QueryTasksRequest) -> crate::model::ResultPage<crate::model::TaskRecord> => Application::query_tasks;
     "query_label_passages", "POST", QueryPassages(queries::QueryPassagesRequest) -> crate::model::ResultPage<crate::model::PassageRecord> => Application::query_passages;
-    "analyze_query", "POST", AnalyzeQuery(queries::AnalyzeQueryRequest) -> crate::query::QueryAnalysis => Application::analyze_query;
+    "validate_query", "POST", ValidateQuery(query_documents::DocumentQueryRequest) -> query_documents::QueryValidation => Application::validate_query;
+    "read_query_capabilities", "POST", QueryCapabilities(queries::EmptyRequest) -> query_documents::QueryCapabilities => |app: &Application, _: queries::EmptyRequest| app.query_capabilities();
     "read_calendar_buckets", "POST", Calendar(queries::CalendarRequest) -> crate::model::CalendarResults => Application::calendar_buckets;
     "read_metadata_fields", "POST", MetadataFields(queries::EmptyRequest) -> Vec<crate::catalogue::MetadataField> => |app: &Application, _: queries::EmptyRequest| app.metadata_fields();
     "list_facets", "POST", ListFacets(queries::ListFacetsRequest) -> Vec<crate::catalogue::FacetEntry> => Application::list_facets;
     "read_facet_counts", "POST", FacetCounts(queries::FacetCountsRequest) -> Vec<queries::FacetCount> => Application::facet_counts;
     "cache_status", "GET", CacheStatus(queries::EmptyRequest) -> queries::CacheStatus => |app: &Application, _: queries::EmptyRequest| app.cache_status();
     "create_property", "POST", CreateProperty(catalogue_writes::CreatePropertyRequest) -> crate::catalogue::MetadataField => Application::create_property;
-    "add_property_options", "POST", AddPropertyOptions(catalogue_writes::AddPropertyOptionsRequest) -> crate::catalogue::MetadataField => Application::add_property_options;
+    "update_property_options", "POST", UpdatePropertyOptions(catalogue_writes::UpdatePropertyOptionsRequest) -> crate::catalogue::MetadataField => Application::update_property_options;
     "remove_property", "POST", RemoveProperty(catalogue_writes::RemovePropertyRequest) -> catalogue_writes::Removed => Application::remove_property;
     "create_facet", "POST", CreateFacet(catalogue_writes::FacetRequest) -> crate::catalogue::FacetEntry => Application::create_facet;
     "remove_facet", "POST", RemoveFacet(catalogue_writes::FacetRequest) -> catalogue_writes::Removed => Application::remove_facet;
-    "read_default_view", "POST", DefaultView(queries::EmptyRequest) -> crate::engine::project::types::ViewContent => |app: &Application, _: queries::EmptyRequest| app.read_default_view();
-    "update_default_view", "POST", UpdateDefaultView(settings::UpdateDefaultViewRequest) -> crate::engine::project::types::ViewContent => Application::update_default_view;
+    "read_workspace_context", "POST", WorkspaceContext(queries::EmptyRequest) -> settings::WorkspaceContext => |app: &Application, _: queries::EmptyRequest| app.workspace_context();
+    "set_default_workspace", "POST", SetDefaultWorkspace(settings::SetDefaultWorkspaceRequest) -> items::PublicItem => Application::set_default_workspace;
+    "remove_workspace", "POST", RemoveWorkspace(settings::RemoveWorkspaceRequest) -> settings::WorkspaceContext => Application::remove_workspace;
     "read_publication_theme", "POST", Theme(settings::ReadThemeRequest) -> crate::engine::publication::theme::ThemeSnapshot => Application::read_theme;
+    "list_publication_themes", "POST", ListThemes(queries::EmptyRequest) -> Vec<crate::engine::publication::theme_store::Summary> => Application::list_themes;
+    "read_publication_theme_package", "POST", ReadThemePackage(themes::ReadRequest) -> crate::engine::publication::theme_store::Record => Application::read_theme_package;
+    "create_publication_theme", "POST", CreateTheme(themes::CreateRequest) -> crate::engine::publication::theme_store::Record => Application::create_theme;
+    "duplicate_publication_theme", "POST", DuplicateTheme(themes::DuplicateRequest) -> crate::engine::publication::theme_store::Record => Application::duplicate_theme;
+    "update_publication_theme", "POST", UpdateTheme(themes::UpdateRequest) -> crate::engine::publication::theme_store::Record => Application::update_theme;
+    "validate_publication_theme", "POST", ValidateTheme(themes::UpdateRequest) -> crate::engine::publication::theme_store::Validation => Application::validate_theme;
+    "delete_publication_theme", "POST", DeleteTheme(themes::DeleteRequest) -> themes::Deleted => Application::delete_theme;
+    "preview_publication_theme", "POST", PreviewTheme(themes::PreviewRequest) -> crate::export::model::JobId => Application::preview_theme;
 }

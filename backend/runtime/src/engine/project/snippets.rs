@@ -2,21 +2,21 @@
 // Copyright (c) 2023–2026 BluInk
 
 //! Canonical named snippets. Files own identity and revisions; indexes are disposable.
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
-use chrono::{SecondsFormat, Utc};
+use chrono::Utc;
 use serde_json::{Value, json};
 
 use crate::engine::document::links::valid_external_url;
 use crate::engine::document::validation::validate_document;
-use crate::engine::project::config::read_project_config;
-use crate::engine::project::io::{create_json_atomic, write_json_atomic};
-use crate::engine::project::item::{
-    is_canonical_instant, is_item_id, list_project_item_ids, read_project_item,
-};
+#[cfg(test)]
+use crate::engine::project::identity::ItemId;
+use crate::engine::project::identity::is_item_id;
+use crate::engine::project::item::{list_project_item_ids, read_project_item};
 use crate::engine::project::properties::is_snake_case;
-use crate::engine::project::write::{MutationError, lock_relationships};
+use crate::engine::project::write::{MutationError, mutate_existing_item, write_item_input_typed};
 
 pub(crate) fn validate_snippet_id(id: &str) -> Result<(), String> {
     if id.len() > 128 || !is_snake_case(id) {
@@ -117,157 +117,105 @@ pub(crate) fn validate_reference_paragraph(
         .map_err(|error| error.to_string())
 }
 
-fn path(root: &Path, id: &str) -> Result<PathBuf, String> {
-    validate_snippet_id(id)?;
-    let directory = root.join("snippets");
-    if fs::symlink_metadata(&directory).is_ok_and(|meta| meta.file_type().is_symlink()) {
-        return Err("The snippet directory cannot be a symbolic link.".to_owned());
-    }
-    let path = directory.join(format!("snippet_{id}.json"));
-    if fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
-        return Err("A snippet file cannot be a symbolic link.".to_owned());
-    }
-    Ok(path)
+/// Resolve the same deterministic item identity used by declarations and startup.
+pub(crate) fn item_id(key: &str) -> Result<String, String> {
+    validate_snippet_id(key)?;
+    Ok(super::named_items::id("snippet", key))
 }
 
-pub(crate) fn read_snippet(root: &Path, id: &str) -> Result<Option<Value>, String> {
-    let path = path(root, id)?;
-    let bytes = match fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("{}: {error}", path.display())),
-    };
-    let record: Value =
-        serde_json::from_slice(&bytes).map_err(|error| format!("Snippet {id}: {error}"))?;
-    let object = record
-        .as_object()
-        .ok_or("Snippet record must be an object.")?;
-    if record["format"] != "bluink.snippet"
-        || record["formatVersion"] != 1
-        || record["id"] != id
-        || object.keys().any(|key| {
-            !matches!(
-                key.as_str(),
-                "format"
-                    | "formatVersion"
-                    | "id"
-                    | "state"
-                    | "revision"
-                    | "createdAt"
-                    | "modifiedAt"
-                    | "paragraph"
-            )
-        })
-    {
-        return Err(format!(
-            "Snippet {id} has an unsupported or mismatched record."
-        ));
-    }
-    if !matches!(record["state"].as_str(), Some("active" | "archived")) {
-        return Err(format!("Snippet {id} has an invalid state."));
-    }
-    if record["revision"].as_str().is_none_or(str::is_empty)
-        || !["createdAt", "modifiedAt"]
-            .iter()
-            .all(|key| record[key].as_str().is_some_and(is_canonical_instant))
-    {
-        return Err(format!(
-            "Snippet {id} has an invalid revision or timestamp."
-        ));
-    }
-    validate_reference_paragraph(&record["paragraph"], true)
-        .map_err(|error| format!("Snippet {id}: {error}"))?;
-    Ok(Some(record))
+#[cfg(test)]
+pub(crate) fn path(root: &Path, key: &str) -> Result<PathBuf, String> {
+    Ok(ItemId::try_from(item_id(key)?.as_str())?.path(root))
 }
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "The operation consumes its input snapshot rather than exposing a borrowed transaction API."
-)]
+
+/// Snippet-specific shape validation is also used by ordinary item writes.
+pub(crate) fn validate_content(item: &Value) -> Result<(), String> {
+    if item["meta"]["type"] != "snippet" {
+        return Err("Expected a snippet item.".into());
+    }
+    let key = item["content"]["key"]
+        .as_str()
+        .ok_or("Snippet has no key.")?;
+    if item["id"] != item_id(key)? {
+        return Err("Snippet has a mismatched named identity.".into());
+    }
+    validate_reference_paragraph(&item["content"]["paragraph"], true)
+}
+
+/// The browser/export DTO uses the author's key; persistence uses the item UUID.
+pub(crate) fn record(item: &Value) -> Result<Value, String> {
+    validate_content(item)?;
+    Ok(json!({"format":"bluink.snippet", "formatVersion":1,
+        "id":item["content"]["key"], "state":item["meta"]["state"],
+        "revision":item["revision"], "createdAt":item["createdAt"],
+        "modifiedAt":item["modifiedAt"], "paragraph":item["content"]["paragraph"]}))
+}
+
+pub(crate) fn read_snippet(root: &Path, key: &str) -> Result<Option<Value>, String> {
+    read_project_item(root, &item_id(key)?)
+        .map_err(|error| error.to_string())?
+        .map(|item| record(&item))
+        .transpose()
+}
+
 pub(crate) fn write_snippet(
     root: &Path,
-    id: &str,
+    key: &str,
     paragraph: Value,
     expected_revision: Option<&str>,
 ) -> Result<Value, MutationError> {
-    validate_snippet_id(id).map_err(MutationError::Expected)?;
-    validate_reference_paragraph(&paragraph, true).map_err(MutationError::Expected)?;
-    read_project_config(root)
-        .map_err(MutationError::Unexpected)?
-        .ok_or_else(|| MutationError::Unexpected("Project configuration is missing.".to_owned()))?;
-    let _relationships = lock_relationships(root).map_err(MutationError::Unexpected)?;
-    let existing = read_snippet(root, id).map_err(MutationError::Unexpected)?;
-    match (existing.as_ref(), expected_revision) {
-        (Some(_), None) => {
-            return Err(MutationError::Expected(format!(
-                "Snippet {id} already exists."
-            )));
-        }
-        (None, Some(_)) => {
-            return Err(MutationError::Expected(format!(
-                "Snippet {id} no longer exists."
-            )));
-        }
-        (Some(record), Some(revision)) if record["revision"] != revision => {
-            return Err(MutationError::Expected(format!(
-                "Snippet {id} changed since it was read."
-            )));
-        }
-        _ => {}
-    }
-    if existing
-        .as_ref()
-        .is_some_and(|record| record["state"] == "archived")
+    let id = item_id(key).map_err(MutationError::Validation)?;
+    validate_reference_paragraph(&paragraph, true).map_err(MutationError::Validation)?;
+    if expected_revision.is_none()
+        && read_project_item(root, &id)
+            .map_err(MutationError::Read)?
+            .is_some()
     {
-        return Err(MutationError::Expected(format!(
-            "Snippet {id} is archived."
+        return Err(MutationError::Validation(format!(
+            "Snippet {key} already exists."
         )));
     }
-    let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-    let next = json!({
-        "format":"bluink.snippet", "formatVersion":1, "id":id, "state":"active",
-        "revision":uuid::Uuid::now_v7().to_string(),
-        "createdAt":existing.as_ref().map_or_else(|| json!(timestamp), |record| record["createdAt"].clone()),
-        "modifiedAt":timestamp, "paragraph":paragraph
-    });
-    let path = path(root, id).map_err(MutationError::Unexpected)?;
-    if existing.is_some() {
-        write_json_atomic(&path, &next).map_err(MutationError::Unexpected)?;
-    } else {
-        create_json_atomic(&path, &next).map_err(MutationError::Unexpected)?;
-    }
-    Ok(next)
+    let mut input = json!({"id":id,"meta":{"type":"snippet","title":key},"content":{"key":key}});
+    input["content"]["paragraph"] = paragraph;
+    let result = write_item_input_typed(
+        root,
+        input,
+        expected_revision,
+        &Utc::now().date_naive().to_string(),
+    )?;
+    record(&result["item"]).map_err(MutationError::Internal)
 }
 
-pub(crate) fn list_snippets(root: &Path) -> Result<Vec<Value>, String> {
-    let directory = root.join("snippets");
-    if fs::symlink_metadata(&directory).is_ok_and(|meta| meta.file_type().is_symlink()) {
-        return Err("The snippet directory cannot be a symbolic link.".to_owned());
+/// Called by the common item writer while it owns the relationship lock.
+pub(crate) fn validate_transition(
+    root: &Path,
+    existing: Option<&Value>,
+    next: &Value,
+) -> Result<(), MutationError> {
+    if next["meta"]["type"] != "snippet" {
+        return Ok(());
     }
-    let entries = match fs::read_dir(&directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error.to_string()),
-    };
-    let mut ids = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let filename = entry.file_name();
-        let Some(id) = filename
-            .to_str()
-            .and_then(|name| name.strip_prefix("snippet_"))
-            .and_then(|name| name.strip_suffix(".json"))
-        else {
-            continue;
-        };
-        ids.push(id.to_owned());
+    validate_content(next).map_err(MutationError::Validation)?;
+    let key = next["content"]["key"]
+        .as_str()
+        .ok_or_else(|| MutationError::Validation("Snippet has no key.".into()))?;
+    if existing.is_some_and(|item| item["meta"]["state"] == "archived") {
+        return Err(MutationError::Validation(format!(
+            "Snippet {key} is archived."
+        )));
     }
-    ids.sort_unstable();
-    ids.into_iter()
-        .map(|id| {
-            read_snippet(root, &id)?
-                .ok_or_else(|| format!("Snippet {id} disappeared while reading."))
-        })
-        .collect()
+    if next["meta"]["state"] == "archived" {
+        let count =
+            crate::catalogue_usage::UsageCheck::new(root, super::usage::Usage::Snippet(key))
+                .count()
+                .map_err(|error| MutationError::Internal(error.to_string()))?;
+        if count != 0 {
+            return Err(MutationError::Validation(format!(
+                "Snippet {key} is used by {count} page(s); remove its references before archiving it."
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn occurrences(node: &Value, id: &str, block_id: Option<&str>, output: &mut Vec<Value>) {
@@ -304,7 +252,8 @@ pub(crate) fn snippet_usages_in_pages(
     validate_snippet_id(id)?;
     let mut usages = Vec::new();
     for page_id in pages {
-        let item = read_project_item(root, page_id)?
+        let item = read_project_item(root, page_id)
+            .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("Item {page_id} disappeared while checking usages."))?;
         if item["meta"]["type"] != "page" {
             continue;
@@ -323,59 +272,36 @@ pub(crate) fn snippet_usages_in_pages(
     Ok(usages)
 }
 
-#[cfg(test)]
 pub(crate) fn archive_snippet(
     root: &Path,
-    id: &str,
+    key: &str,
     expected_revision: &str,
 ) -> Result<Value, MutationError> {
-    archive_snippet_with_usage_check(root, id, expected_revision, || snippet_usages(root, id))
-}
-
-/// The native bridge can reconcile indexed stamps under the same relationship
-/// lock instead of reparsing every unchanged page. The checker must inspect
-/// canonical changes, including files not yet reported by the watcher.
-pub(crate) fn archive_snippet_with_usage_check(
-    root: &Path,
-    id: &str,
-    expected_revision: &str,
-    check_usages: impl FnOnce() -> Result<Vec<Value>, String>,
-) -> Result<Value, MutationError> {
-    validate_snippet_id(id).map_err(MutationError::Expected)?;
-    let path = path(root, id).map_err(MutationError::Unexpected)?;
-    let _relationships = lock_relationships(root).map_err(MutationError::Unexpected)?;
-    let mut existing = read_snippet(root, id)
-        .map_err(MutationError::Unexpected)?
-        .ok_or_else(|| MutationError::Expected(format!("Snippet {id} does not exist.")))?;
-    if existing["revision"] != expected_revision {
-        return Err(MutationError::Expected(format!(
-            "Snippet {id} changed since it was read."
-        )));
-    }
-    if existing["state"] == "archived" {
-        return Err(MutationError::Expected(format!(
-            "Snippet {id} is archived."
-        )));
-    }
-    let usages = check_usages().map_err(MutationError::Unexpected)?;
-    if !usages.is_empty() {
-        return Err(MutationError::Expected(format!(
-            "Snippet {id} is used by {} page(s); remove its references before archiving it.",
-            usages.len()
-        )));
-    }
-    existing["state"] = json!("archived");
-    existing["revision"] = json!(uuid::Uuid::now_v7().to_string());
-    existing["modifiedAt"] = json!(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true));
-    write_json_atomic(&path, &existing).map_err(MutationError::Unexpected)?;
-    Ok(existing)
+    let id = item_id(key).map_err(MutationError::Validation)?;
+    let result = mutate_existing_item(
+        root,
+        &id,
+        Some(expected_revision),
+        &Utc::now().date_naive().to_string(),
+        |_| Ok(json!({"id":id,"meta":{"state":"archived"}})),
+    )?;
+    record(&result["item"]).map_err(MutationError::Internal)
 }
 
 /// Called under the relationship lock, making page saves race-safe with archiving.
 pub(crate) fn validate_page_snippet_references(root: &Path, node: &Value) -> Result<(), String> {
+    validate_distinct_snippet_references(root, node, &mut std::collections::HashSet::new())
+}
+
+fn validate_distinct_snippet_references<'a>(
+    root: &Path,
+    node: &'a Value,
+    checked: &mut std::collections::HashSet<&'a str>,
+) -> Result<(), String> {
     let kind = node["type"].as_str().unwrap_or("");
     if (kind == "embed" || (kind == "citation" && node["attrs"]["source"] == "snippet"))
         && let Some(id) = node["attrs"]["snippetId"].as_str()
+        && checked.insert(id)
     {
         let record =
             read_snippet(root, id)?.ok_or_else(|| format!("Snippet {id} does not exist."))?;
@@ -385,11 +311,11 @@ pub(crate) fn validate_page_snippet_references(root: &Path, node: &Value) -> Res
     }
     if let Some(children) = node["content"].as_array() {
         for child in children {
-            validate_page_snippet_references(root, child)?;
+            validate_distinct_snippet_references(root, child, checked)?;
         }
     }
     if let Some(paragraph) = node["attrs"].get("paragraph") {
-        validate_page_snippet_references(root, paragraph)?;
+        validate_distinct_snippet_references(root, paragraph, checked)?;
     }
     Ok(())
 }
@@ -397,6 +323,7 @@ pub(crate) fn validate_page_snippet_references(root: &Path, node: &Value) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::project::io::write_json_atomic;
 
     #[test]
     fn matches_shared_reference_paragraph_contract() {
@@ -418,10 +345,14 @@ mod tests {
         }
     }
 
-    fn project() -> PathBuf {
-        let root = std::env::temp_dir().join(format!("bluink-snippets-{}", uuid::Uuid::now_v7()));
-        crate::engine::project::config::open_or_create_project(&root, "UTC").unwrap();
-        root
+    fn project() -> tempfile::TempDir {
+        let temporary = tempfile::tempdir().unwrap();
+        crate::engine::project::config::open_or_create_project(
+            &temporary.path().join("project"),
+            "UTC",
+        )
+        .unwrap();
+        temporary
     }
     fn paragraph(text: &str) -> Value {
         json!({"type":"paragraph", "content":[{"type":"text", "text":text}]})
@@ -429,9 +360,18 @@ mod tests {
 
     #[test]
     fn named_identity_round_trips_and_revisions_guard_writes() {
-        let root = project();
+        let temporary = project();
+        let root = temporary.path().join("project");
         let created = write_snippet(&root, "con", paragraph("First"), None).unwrap();
-        assert!(root.join("snippets/snippet_con.json").is_file());
+        assert!(path(&root, "con").unwrap().is_file());
+        let canonical = read_project_item(&root, &item_id("con").unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(canonical["format"], "bluink.item");
+        assert_eq!(canonical["meta"]["type"], "snippet");
+        assert_eq!(canonical["content"]["key"], "con");
+        assert_eq!(canonical["content"]["paragraph"], paragraph("First"));
+        assert!(!root.join("snippets").exists());
         assert_eq!(read_snippet(&root, "con").unwrap(), Some(created.clone()));
         assert!(
             write_snippet(&root, "con", paragraph("Duplicate"), None)
@@ -448,23 +388,19 @@ mod tests {
         .unwrap();
         assert_eq!(updated["createdAt"], created["createdAt"]);
         assert_ne!(updated["revision"], created["revision"]);
-        assert!(
+        assert!(matches!(
             write_snippet(
                 &root,
                 "con",
                 paragraph("Stale"),
                 created["revision"].as_str()
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("changed since")
-        );
-        assert!(
-            archive_snippet(&root, "con", created["revision"].as_str().unwrap())
-                .unwrap_err()
-                .to_string()
-                .contains("changed since")
-        );
+            ),
+            Err(MutationError::RevisionConflict(_))
+        ));
+        assert!(matches!(
+            archive_snippet(&root, "con", created["revision"].as_str().unwrap()),
+            Err(MutationError::RevisionConflict(_))
+        ));
         archive_snippet(&root, "con", updated["revision"].as_str().unwrap()).unwrap();
         let archived = read_snippet(&root, "con").unwrap().unwrap();
         assert_eq!(archived["state"], "archived");
@@ -495,12 +431,13 @@ mod tests {
             .unwrap_err()
             .contains("archived")
         );
-        fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 
     #[test]
     fn rejects_identity_content_and_format_errors() {
-        let root = project();
+        let temporary = project();
+        let root = temporary.path().join("project");
         for id in ["../escape", "Smith2024", "", "one/two"] {
             assert!(write_snippet(&root, id, paragraph("Text"), None).is_err());
         }
@@ -515,13 +452,13 @@ mod tests {
         }
         let mut created = write_snippet(&root, "source", paragraph("Text"), None).unwrap();
         created["id"] = json!("wrong");
-        write_json_atomic(&root.join("snippets/snippet_source.json"), &created).unwrap();
+        write_json_atomic(&path(&root, "source").unwrap(), &created).unwrap();
         assert!(
             read_snippet(&root, "source")
                 .unwrap_err()
                 .contains("mismatched")
         );
-        fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 
     #[test]
@@ -530,7 +467,8 @@ mod tests {
         reason = "Collect all worker handles before joining so work remains concurrent."
     )]
     fn concurrent_creation_has_one_winner() {
-        let root = project();
+        let temporary = project();
+        let root = temporary.path().join("project");
         let outcomes = std::thread::scope(|scope| {
             let tasks: Vec<_> = (0..4)
                 .map(|_| scope.spawn(|| write_snippet(&root, "shared", paragraph("One"), None)))
@@ -541,8 +479,8 @@ mod tests {
                 .collect::<Vec<_>>()
         });
         assert_eq!(outcomes.iter().filter(|success| **success).count(), 1);
-        assert_eq!(list_snippets(&root).unwrap().len(), 1);
-        fs::remove_dir_all(root).unwrap();
+        assert!(read_snippet(&root, "shared").unwrap().is_some());
+        temporary.close().unwrap();
     }
 
     #[test]
@@ -562,7 +500,8 @@ mod tests {
 
     #[test]
     fn canonical_pages_guard_snippet_integrity_including_archived_usages() {
-        let root = project();
+        let temporary = project();
+        let root = temporary.path().join("project");
         let snippet = write_snippet(&root, "shared", paragraph("Reusable"), None).unwrap();
         let id = uuid::Uuid::now_v7().to_string();
         let page = crate::engine::project::write::write_item_input(
@@ -599,6 +538,6 @@ mod tests {
             read_project_item(&root, &id).unwrap().unwrap()["revision"].as_str(),
             "2026-10-01",
         ).unwrap_err().contains("does not exist"));
-        fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 }

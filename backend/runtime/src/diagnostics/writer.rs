@@ -163,7 +163,10 @@ impl Sink {
                     }
                     None
                 },
-                |file| Some(Box::new(file) as Box<dyn Write + Send>),
+                |file| {
+                    Some(Box::new(std::io::BufWriter::with_capacity(64 * 1024, file))
+                        as Box<dyn Write + Send>)
+                },
             )
         });
         Self::start(
@@ -267,10 +270,10 @@ impl Sink {
     }
 
     pub(super) fn shutdown(&self) -> Result<Statistics, String> {
-        let mut worker = self
-            .worker
-            .lock()
-            .map_err(|_| "Diagnostics worker lock was poisoned".to_owned())?;
+        let (mut worker, cleanup) = crate::application::error::recover_for_cleanup(
+            self.worker.lock(),
+            "Diagnostics worker",
+        );
         if worker.is_some() {
             let (sender, receiver) = bounded(1);
             self.sender
@@ -285,6 +288,8 @@ impl Sink {
                     .map_err(|_| "Diagnostics writer panicked".to_owned())?;
             }
         }
+        drop(worker);
+        cleanup.map_err(|error| error.to_string())?;
         Ok(self.statistics())
     }
 }
@@ -417,6 +422,36 @@ mod tests {
             spans: Vec::new(),
             duration_ms: None,
         }
+    }
+
+    #[test]
+    fn poisoned_shutdown_still_drains_and_joins_the_writer() {
+        let output = Memory::default();
+        let sink =
+            Sink::start(Box::new(output.clone()), None, 2, 5, false, Arc::default()).unwrap();
+        std::thread::scope(|scope| {
+            let sink = &sink;
+            assert!(
+                scope
+                    .spawn(move || {
+                        let _guard = sink.worker.lock().unwrap();
+                        panic!("Injected writer ownership failure");
+                    })
+                    .join()
+                    .is_err()
+            );
+        });
+        sink.emit(event("warn"));
+        assert!(sink.flush().is_err());
+        assert!(sink.shutdown().err().unwrap().contains("poisoned"));
+        assert!(output.text().contains("sample"));
+        let worker = sink
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(worker.is_none());
+        drop(worker);
+        assert!(sink.shutdown().is_err());
     }
 
     #[test]

@@ -10,7 +10,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::Deserialize;
 
-use crate::engine::publication::theme::ThemeSettings;
+use crate::engine::publication::theme_format::ResolvedTheme;
 
 #[derive(Deserialize)]
 struct Font {
@@ -19,12 +19,14 @@ struct Font {
 }
 
 pub(crate) fn family(id: &str) -> Result<&'static str, String> {
-    static FONTS: OnceLock<Vec<Font>> = OnceLock::new();
+    static FONTS: OnceLock<Result<Vec<Font>, String>> = OnceLock::new();
     FONTS
         .get_or_init(|| {
             serde_json::from_str(include_str!("../../../../../fonts/catalogue.json"))
-                .expect("valid bundled catalogue")
+                .map_err(|error| format!("Invalid bundled font catalogue: {error}"))
         })
+        .as_ref()
+        .map_err(Clone::clone)?
         .iter()
         .find(|font| font.id == id)
         .map(|font| font.family.as_str())
@@ -34,20 +36,22 @@ pub(crate) fn family(id: &str) -> Result<&'static str, String> {
     clippy::case_sensitive_file_extension_comparisons,
     reason = "Canonical resource filenames and generated routes are deliberately case sensitive."
 )]
-fn resources(
-    settings: &ThemeSettings,
+pub(crate) fn resources<'a>(
+    font_ids: impl IntoIterator<Item = &'a str>,
     web: &Path,
 ) -> Result<(String, BTreeMap<String, Vec<u8>>), String> {
+    static URLS: OnceLock<Result<regex::Regex, String>> = OnceLock::new();
     let mut css = String::new();
     let mut assets = BTreeMap::new();
-    let mut ids = vec![
-        settings.typography.body_family.as_str(),
-        settings.typography.heading_family.as_str(),
-        "ibm-plex-mono",
-    ];
+    let mut ids = font_ids.into_iter().collect::<Vec<_>>();
     ids.sort_unstable();
     ids.dedup();
-    let urls = regex::Regex::new(r"url\('\./([^']+)'\)").expect("valid font URL expression");
+    let urls = URLS
+        .get_or_init(|| {
+            regex::Regex::new(r"url\('\./([^']+)'\)").map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)?;
     for id in ids {
         family(id)?;
         let stylesheet = std::fs::read_to_string(web.join(format!("{id}.css")))
@@ -76,8 +80,9 @@ fn resources(
 
 fn add_style(html: &str, css: &str) -> Result<String, String> {
     let offset = html
-        .to_ascii_lowercase()
-        .find("</head>")
+        .as_bytes()
+        .windows(7)
+        .position(|window| window.eq_ignore_ascii_case(b"</head>"))
         .ok_or("HTML theme must provide a head element for offline fonts.")?;
     let mut output = String::with_capacity(html.len() + css.len() + 16);
     output.push_str(&html[..offset]);
@@ -89,12 +94,17 @@ fn add_style(html: &str, css: &str) -> Result<String, String> {
 }
 
 /// A downloaded HTML document carries its selected fonts without network access.
-pub(crate) fn embed_html(
+pub(crate) fn embed_html(html: &str, theme: &ResolvedTheme, web: &Path) -> Result<String, String> {
+    embed_html_fonts(html, theme.fonts.iter().map(String::as_str), web)
+}
+
+/// Embed every font selected by resolved semantic roles, including custom role fonts.
+pub(crate) fn embed_html_fonts<'a>(
     html: &str,
-    settings: &ThemeSettings,
+    font_ids: impl IntoIterator<Item = &'a str>,
     web: &Path,
 ) -> Result<String, String> {
-    let (mut css, assets) = resources(settings, web)?;
+    let (mut css, assets) = resources(font_ids, web)?;
     for (relative, bytes) in assets {
         css = css.replace(
             &format!("./{relative}"),
@@ -111,10 +121,10 @@ pub(crate) fn embed_html(
 )]
 pub(crate) fn add_site(
     files: &mut BTreeMap<String, Vec<u8>>,
-    settings: &ThemeSettings,
+    theme: &ResolvedTheme,
     web: &Path,
 ) -> Result<(), String> {
-    let (css, assets) = resources(settings, web)?;
+    let (css, assets) = resources(theme.fonts.iter().map(String::as_str), web)?;
     for (filename, bytes) in files.iter_mut().filter(|(name, _)| name.ends_with(".html")) {
         let depth = Path::new(filename)
             .parent()
@@ -128,11 +138,7 @@ pub(crate) fn add_site(
         files.insert(format!("fonts/{relative}"), bytes);
     }
     // Font licence notices travel with generated websites too.
-    for id in [
-        &settings.typography.body_family,
-        &settings.typography.heading_family,
-        &"ibm-plex-mono".to_owned(),
-    ] {
+    for id in &theme.fonts {
         let license = std::fs::read(web.join("licenses").join(format!("{id}.txt")))
             .map_err(|error| format!("Cannot read font licence {id}: {error}"))?;
         files.insert(format!("fonts/licenses/{id}.txt"), license);
@@ -144,8 +150,8 @@ pub(crate) fn add_site(
 mod tests {
     use super::*;
     use crate::engine::publication::plan::PublicationFormat;
-    use crate::engine::publication::style::{css_variables, typst_values};
     use crate::engine::publication::theme::capture_theme;
+    use crate::engine::publication::theme_format::{Role, css, typst};
 
     #[test]
     fn shared_catalogue_drives_both_formats_and_rejects_unknown_ids() {
@@ -154,22 +160,37 @@ mod tests {
         let fonts: Vec<Font> =
             serde_json::from_str(include_str!("../../../../../fonts/catalogue.json")).unwrap();
         for font in fonts {
-            theme.settings.typography.body_family = font.id.clone();
-            theme.settings.typography.heading_family = font.id;
+            theme
+                .resolved
+                .styles
+                .get_mut(&Role::Body)
+                .unwrap()
+                .font_family = font.id.clone();
+            theme
+                .resolved
+                .styles
+                .get_mut(&Role::Heading1)
+                .unwrap()
+                .font_family = font.id;
             assert!(
-                css_variables(&theme.settings)
+                css::stylesheet(&theme.resolved, "Test")
                     .unwrap()
                     .contains(&font.family)
             );
             assert!(
-                typst_values(&theme.settings)
+                typst::values(&theme.resolved)
                     .unwrap()
                     .contains(&font.family)
             );
         }
-        theme.settings.typography.body_family = "../unknown".to_owned();
-        assert!(css_variables(&theme.settings).is_err());
-        assert!(typst_values(&theme.settings).is_err());
+        theme
+            .resolved
+            .styles
+            .get_mut(&Role::Body)
+            .unwrap()
+            .font_family = "../unknown".to_owned();
+        assert!(css::stylesheet(&theme.resolved, "Test").is_err());
+        assert!(typst::values(&theme.resolved).is_err());
     }
 
     #[test]
@@ -178,16 +199,16 @@ mod tests {
             capture_theme(Path::new("/unused"), "editorial", PublicationFormat::Html).unwrap();
         let web = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fonts/assets/web");
         let html = "<!doctype html><html><head></head><body>Text</body></html>";
-        let document = embed_html(html, &theme.settings, &web).unwrap();
+        let document = embed_html(html, &theme.resolved, &web).unwrap();
         assert!(document.contains("data:font/woff2;base64,d09GMg"));
         assert!(document.contains("SIL OPEN FONT LICENSE"));
         assert!(!document.contains("url('./"));
-        assert!(embed_html(html, &theme.settings, Path::new("/missing-font-package")).is_err());
+        assert!(embed_html(html, &theme.resolved, Path::new("/missing-font-package")).is_err());
         let mut site = BTreeMap::from([
             ("index.html".to_owned(), html.as_bytes().to_vec()),
             ("chapters/page.html".to_owned(), html.as_bytes().to_vec()),
         ]);
-        add_site(&mut site, &theme.settings, &web).unwrap();
+        add_site(&mut site, &theme.resolved, &web).unwrap();
         assert!(String::from_utf8_lossy(&site["index.html"]).contains("url('fonts/"));
         assert!(String::from_utf8_lossy(&site["chapters/page.html"]).contains("url('../fonts/"));
         assert!(site.contains_key("fonts/licenses/inter.txt"));

@@ -9,7 +9,8 @@ fn document(text: &str) -> Value {
 
 #[test]
 fn analytics_reports_have_typed_shapes_and_project_local_defaults_without_an_index() {
-    let app = application("analytics-defaults");
+    let project = TestProject::new("analytics-defaults");
+    let app = project.application();
     app.initialize_sync(false).unwrap();
     let report = execute(&app, "read_dashboard_analytics", json!({})).unwrap();
     assert_eq!(report["days"].as_array().unwrap().len(), 365);
@@ -43,7 +44,6 @@ fn analytics_reports_have_typed_shapes_and_project_local_defaults_without_an_ind
         ),
         ("read_dashboard_day_details", json!({"date":"2026-02-30"})),
         ("read_dashboard_day_details", json!({})),
-        ("read_dashboard_analytics", json!({"query":"+type:page"})),
     ] {
         assert!(
             matches!(
@@ -53,13 +53,24 @@ fn analytics_reports_have_typed_shapes_and_project_local_defaults_without_an_ind
             "{operation}"
         );
     }
+    assert!(matches!(
+        execute(
+            &app,
+            "read_dashboard_analytics",
+            json!({"query":crate::query::document::test_query("+type:page")}),
+        ),
+        Err(ApplicationError::NotInitialized(
+            "Initialize the search index before querying items."
+        ))
+    ));
     app.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn analytics_scopes_preserve_dense_calendar_days_and_fail_on_corrupt_activity() {
-    let app = application("analytics-scopes");
+    let project = TestProject::new("analytics-scopes");
+    let app = project.application();
     app.initialize_sync(false).unwrap();
     let first = crate::engine::project::write::write_item_input(&app.root,
         json!({"meta":{"type":"page","title":"First"},"tags":["research"],"content":document("one two")}),
@@ -82,7 +93,7 @@ fn analytics_scopes_preserve_dense_calendar_days_and_fail_on_corrupt_activity() 
     assert_eq!(all["summary"]["currentStreak"], 2);
     assert_eq!(all["summary"]["bestStreak"], 2);
     let mut scope = request.clone();
-    scope["query"] = json!("#research");
+    scope["query"] = json!(crate::query::document::test_query("#research"));
     assert_eq!(
         execute(&app, "read_dashboard_analytics", scope).unwrap()["summary"]["wordsAdded"],
         4
@@ -90,7 +101,7 @@ fn analytics_scopes_preserve_dense_calendar_days_and_fail_on_corrupt_activity() 
     let details = execute(
         &app,
         "read_dashboard_day_details",
-        json!({"date":"2026-10-25","query":"#research"}),
+        json!({"date":"2026-10-25","query":crate::query::document::test_query("#research")}),
     )
     .unwrap();
     assert_eq!(details["items"].as_array().unwrap().len(), 1);
@@ -101,7 +112,7 @@ fn analytics_scopes_preserve_dense_calendar_days_and_fail_on_corrupt_activity() 
         execute(
             &app,
             "read_dashboard_day_details",
-            json!({"date":"2026-10-25","query":"#other"})
+            json!({"date":"2026-10-25","query":crate::query::document::test_query("#other")})
         )
         .unwrap()["items"][0]["id"],
         second["id"]
@@ -127,5 +138,5 @@ fn analytics_scopes_preserve_dense_calendar_days_and_fail_on_corrupt_activity() 
         all
     );
     app.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }

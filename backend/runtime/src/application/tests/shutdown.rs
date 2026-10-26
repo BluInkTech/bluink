@@ -2,14 +2,99 @@
 // Copyright (c) 2023–2026 BluInk
 
 use super::*;
+use crate::indexing::coordinator::MainSnapshot;
 use fs4::fs_std::FileExt;
 use std::io::Write;
 use std::net::{Shutdown, TcpStream};
 
 #[test]
+fn poisoned_shutdown_gates_still_release_workers_and_projections() {
+    for poisoned in ["lifecycle", "operations", "state"] {
+        let project = TestProject::new("poisoned-shutdown-gate");
+        let app = project.application();
+        app.initialize_sync(true).unwrap();
+        execute(&app, "query_snippets", json!({})).unwrap();
+        std::thread::scope(|scope| {
+            let app = &app;
+            assert!(
+                scope
+                    .spawn(move || {
+                        if poisoned == "lifecycle" {
+                            let _guard = app.lifecycle.lock().unwrap();
+                            panic!("Injected lifecycle panic");
+                        }
+                        if poisoned == "state" {
+                            let _guard = app.state.lock().unwrap();
+                            panic!("Injected state panic");
+                        }
+                        let _guard = app.operations.write().unwrap();
+                        panic!("Injected admission panic");
+                    })
+                    .join()
+                    .is_err()
+            );
+        });
+        let error = app.stop_sync().unwrap_err().to_string();
+        assert!(error.contains(poisoned));
+        if poisoned == "state" {
+            assert!(app.status().is_err());
+            let state = app
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(state.phase, "Stopped");
+            assert!(state.index.is_none());
+            assert!(!state.ready);
+            drop(state);
+        } else {
+            assert_eq!(app.status().unwrap()["phase"], "Stopped");
+        }
+        assert!(app.begin_operation().is_err());
+        let next = project.application();
+        next.initialize_sync(true).unwrap();
+        next.stop_sync().unwrap();
+        // Recovery permits cleanup only; it must not clear the poison.
+        assert!(app.stop_sync().is_err());
+        drop(app);
+        project.close().unwrap();
+    }
+}
+
+#[test]
+fn failed_event_worker_does_not_skip_other_shutdown_cleanup() {
+    let project = TestProject::new("failed-worker-cleanup");
+    let app = project.application();
+    app.initialize_sync(true).unwrap();
+    execute(&app, "query_snippets", json!({})).unwrap();
+    app.state()
+        .unwrap()
+        .index
+        .as_mut()
+        .unwrap()
+        .events
+        .replace_with_failed_worker_for_test();
+
+    let error = app.stop_sync().unwrap_err();
+    assert!(error.to_string().contains("Project event worker panicked"));
+    assert!(app.state().unwrap().index.is_none());
+    assert_eq!(app.status().unwrap()["phase"], "Stopped");
+    assert_eq!(app.status().unwrap()["ready"], false);
+    assert!(app.begin_operation().is_err());
+
+    // Reopening proves the index worker and its cache lease were released even
+    // though the watcher join reported a failure.
+    let next = project.application();
+    next.initialize_sync(true).unwrap();
+    next.stop_sync().unwrap();
+    app.stop_sync().unwrap();
+    project.close().unwrap();
+}
+
+#[test]
 fn stop_drains_accepted_external_changes_before_joining_the_index_worker() {
     use tantivy::schema::Value as _;
-    let app = application("watch-drain");
+    let project = TestProject::new("watch-drain");
+    let app = project.application();
     app.initialize_sync(true).unwrap();
     let original = execute(
         &app,
@@ -22,7 +107,8 @@ fn stop_drains_accepted_external_changes_before_joining_the_index_worker() {
     .unwrap();
     let id = original["id"].as_str().unwrap();
     let path = app.index_path().unwrap();
-    let (index, reader, _) = crate::service::service_index(&path).unwrap();
+    let MainSnapshot { index, reader, .. } =
+        crate::indexing::service::service_index(&path).unwrap();
     crate::engine::project::write::write_item_input(
         &app.root,
         json!({
@@ -48,7 +134,10 @@ fn stop_drains_accepted_external_changes_before_joining_the_index_worker() {
     let title = index.schema().get_field("title").unwrap();
     let hits = searcher
         .search(
-            &tantivy::query::AllQuery,
+            &tantivy::query::TermQuery::new(
+                tantivy::Term::from_field_text(index.schema().get_field("id").unwrap(), id),
+                tantivy::schema::IndexRecordOption::Basic,
+            ),
             &tantivy::collector::TopDocs::with_limit(10).order_by_score(),
         )
         .unwrap();
@@ -72,16 +161,17 @@ fn stop_drains_accepted_external_changes_before_joining_the_index_worker() {
     drop(searcher);
     drop(reader);
     drop(index);
-    let next = application("watch-drain");
+    let next = project.application();
     next.initialize_sync(true).unwrap();
     next.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn disconnected_http_write_finishes_before_stop_releases_index_ownership() {
+    let project = TestProject::new("disconnected-write");
     let app = Arc::new(BluinkApplication {
-        inner: Arc::new(application("disconnected-write")),
+        inner: Arc::new(project.application()),
     });
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -130,7 +220,7 @@ fn disconnected_http_write_finishes_before_stop_releases_index_ownership() {
         }
         assert!(!stop.is_finished(), "Stop abandoned the canonical write");
         assert!(app.inner.begin_operation().is_err());
-        let contender = application("disconnected-write");
+        let contender = project.application();
         assert!(contender.initialize_sync(true).is_err(), "Cache ownership escaped during the write");
         drop(item_lock);
         tokio::time::timeout(Duration::from_secs(10), stop).await.unwrap().unwrap().unwrap();
@@ -141,11 +231,11 @@ fn disconnected_http_write_finishes_before_stop_releases_index_ownership() {
         // Reopening proves both the OS lease and writer thread were released,
         // and the accepted mutation is represented by the rebuilt projection.
         contender.initialize_sync(true).unwrap();
-        let found = execute(&contender, "query_items", json!({"query": "sentinel"})).unwrap();
+        let found = execute(&contender, "query_items", json!({"query": crate::query::document::test_query("sentinel")})).unwrap();
         assert_eq!(found["count"], 1);
         assert_eq!(found["items"][0]["id"], id);
         contender.stop_sync().unwrap();
         assert_eq!(app.inner.status().unwrap()["phase"], "Stopped");
-        std::fs::remove_dir_all(&app.inner.root).unwrap();
     });
+    project.close().unwrap();
 }

@@ -1,0 +1,826 @@
+{
+	"format": "bluink.workspace-setup",
+	"version": 1,
+	"name": "PARA",
+	"summary": "Projects, Areas, Resources and an Archive, for a second brain.",
+	"description": "Tiago Forte’s method: organise by actionability, not by topic. Projects have an outcome and a date, areas are standards you keep, resources are things you may want later, and the archive holds what is finished.",
+	"properties": [
+		{
+			"key": "para",
+			"valueType": "select",
+			"options": [
+				"archive",
+				"area",
+				"project",
+				"resource"
+			],
+			"optionAppearance": {
+				"project": {
+					"color": "blue"
+				},
+				"area": {
+					"color": "green"
+				},
+				"resource": {
+					"color": "amber"
+				},
+				"archive": {
+					"color": "neutral"
+				}
+			}
+		},
+		{
+			"key": "area",
+			"valueType": "select",
+			"options": [
+				"finances",
+				"health",
+				"home",
+				"learning",
+				"writing"
+			]
+		},
+		{
+			"key": "stage",
+			"valueType": "select",
+			"options": [
+				"done",
+				"inbox",
+				"next",
+				"reference",
+				"scheduled",
+				"someday",
+				"waiting"
+			],
+			"optionAppearance": {
+				"inbox": {
+					"color": "neutral"
+				},
+				"next": {
+					"color": "blue"
+				},
+				"waiting": {
+					"color": "amber"
+				},
+				"scheduled": {
+					"color": "purple"
+				},
+				"someday": {
+					"color": "cyan"
+				},
+				"reference": {
+					"color": "neutral"
+				},
+				"done": {
+					"color": "green"
+				}
+			}
+		},
+		{
+			"key": "context",
+			"valueType": "select",
+			"options": [
+				"anywhere",
+				"calls",
+				"computer",
+				"errands",
+				"home"
+			]
+		}
+	],
+	"templates": [
+		{
+			"key": "project",
+			"title": "Project",
+			"values": {
+				"para": "project",
+				"stage": "next",
+				"progress": 0
+			},
+			"propertyKeys": [
+				"area",
+				"due_date",
+				"context"
+			],
+			"document": {
+				"type": "doc",
+				"content": [
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Outcome"
+							}
+						]
+					},
+					{
+						"type": "paragraph",
+						"content": [
+							{
+								"type": "text",
+								"text": "What will be true when this is finished?"
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Done when"
+							}
+						]
+					},
+					{
+						"type": "list",
+						"attrs": {
+							"kind": "bullet"
+						},
+						"content": [
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "A result someone could check"
+											}
+										]
+									}
+								]
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Next steps"
+							}
+						]
+					},
+					{
+						"type": "list",
+						"attrs": {
+							"kind": "bullet"
+						},
+						"content": [
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "The very next physical action"
+											}
+										]
+									}
+								]
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Notes"
+							}
+						]
+					},
+					{
+						"type": "paragraph",
+						"content": [
+							{
+								"type": "text",
+								"text": "Links to the area and resources it draws on."
+							}
+						]
+					}
+				]
+			}
+		},
+		{
+			"key": "area",
+			"title": "Area",
+			"values": {
+				"para": "area"
+			},
+			"propertyKeys": [
+				"area"
+			],
+			"document": {
+				"type": "doc",
+				"content": [
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Standard to keep"
+							}
+						]
+					},
+					{
+						"type": "paragraph",
+						"content": [
+							{
+								"type": "text",
+								"text": "What does “good enough” look like here?"
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Recurring checks"
+							}
+						]
+					},
+					{
+						"type": "list",
+						"attrs": {
+							"kind": "bullet"
+						},
+						"content": [
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "Monthly: …"
+											}
+										]
+									}
+								]
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Projects in this area"
+							}
+						]
+					},
+					{
+						"type": "paragraph",
+						"content": [
+							{
+								"type": "text",
+								"text": "Link the projects that serve this area."
+							}
+						]
+					}
+				]
+			}
+		},
+		{
+			"key": "resource",
+			"title": "Resource",
+			"values": {
+				"para": "resource",
+				"stage": "reference"
+			},
+			"propertyKeys": [
+				"area"
+			],
+			"document": {
+				"type": "doc",
+				"content": [
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Source"
+							}
+						]
+					},
+					{
+						"type": "paragraph",
+						"content": [
+							{
+								"type": "text",
+								"text": "Where this came from."
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Key ideas"
+							}
+						]
+					},
+					{
+						"type": "list",
+						"attrs": {
+							"kind": "bullet"
+						},
+						"content": [
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "An idea in your own words"
+											}
+										]
+									}
+								]
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Quotes"
+							}
+						]
+					},
+					{
+						"type": "blockquote",
+						"content": [
+							{
+								"type": "paragraph",
+								"content": [
+									{
+										"type": "text",
+										"text": "A passage worth keeping."
+									}
+								]
+							}
+						]
+					}
+				]
+			}
+		}
+	],
+	"workspace": {
+		"title": "Second brain",
+		"summary": "Projects, areas, resources and an archive.",
+		"icon": {
+			"kind": "symbol",
+			"name": "folder-simple"
+		},
+		"color": "purple",
+		"cover": {
+			"kind": "gradient",
+			"name": "dusk"
+		},
+		"query": {
+			"version": 1,
+			"clauses": [
+				{
+					"polarity": "required",
+					"predicate": {
+						"kind": "field",
+						"field": "type",
+						"operator": "match",
+						"value": "page"
+					}
+				},
+				{
+					"polarity": "required",
+					"predicate": {
+						"kind": "field",
+						"field": "state",
+						"operator": "match",
+						"value": "active"
+					}
+				},
+				{
+					"polarity": "required",
+					"predicate": {
+						"kind": "has",
+						"field": "para"
+					}
+				}
+			],
+			"sort": [
+				{
+					"field": "title",
+					"direction": "asc"
+				}
+			]
+		},
+		"widgets": [
+			{
+				"title": "How it works",
+				"home": {
+					"span": 12,
+					"height": "compact"
+				},
+				"config": {
+					"kind": "introduction",
+					"title": "",
+					"description": "Sort notes by how soon you will act on them. Projects have an outcome and a date; areas are standards you keep; resources are things you may want later; the archive holds what is finished."
+				}
+			},
+			{
+				"title": "Start",
+				"home": {
+					"span": 8,
+					"height": "compact"
+				},
+				"config": {
+					"kind": "create_buttons",
+					"templateIds": [
+						"project",
+						"area",
+						"resource"
+					]
+				}
+			},
+			{
+				"title": "In the archive",
+				"home": {
+					"span": 4,
+					"height": "compact"
+				},
+				"config": {
+					"kind": "count",
+					"query": {
+						"version": 1,
+						"clauses": [
+							{
+								"polarity": "required",
+								"predicate": {
+									"kind": "field",
+									"field": "para",
+									"operator": "match",
+									"value": "archive"
+								}
+							}
+						],
+						"sort": []
+					}
+				}
+			},
+			{
+				"title": "Projects",
+				"home": {
+					"span": 12,
+					"height": "regular"
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [
+							{
+								"polarity": "required",
+								"predicate": {
+									"kind": "field",
+									"field": "para",
+									"operator": "match",
+									"value": "project"
+								}
+							}
+						],
+						"sort": []
+					},
+					"mode": "kanban",
+					"kanban": {
+						"groupBy": "meta.stage",
+						"columns": [
+							{
+								"id": "next"
+							},
+							{
+								"id": "waiting"
+							},
+							{
+								"id": "scheduled"
+							},
+							{
+								"id": "someday"
+							},
+							{
+								"id": "inbox",
+								"hidden": true
+							},
+							{
+								"id": "reference",
+								"hidden": true
+							},
+							{
+								"id": "done",
+								"hidden": true
+							}
+						]
+					},
+					"cards": {
+						"version": 1,
+						"media": {
+							"position": "none",
+							"height": 176,
+							"fit": "cover"
+						},
+						"titleLines": 2,
+						"header": {
+							"start": {
+								"field": "meta.due_date",
+								"show": "text"
+							}
+						},
+						"body": [
+							{
+								"start": {
+									"field": "summary",
+									"show": "text",
+									"lines": 2
+								}
+							}
+						],
+						"footer": {
+							"start": {
+								"field": "meta.area",
+								"show": "chips",
+								"maxItems": 1
+							}
+						}
+					}
+				}
+			},
+			{
+				"title": "Areas",
+				"home": {
+					"span": 8,
+					"height": "regular"
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [
+							{
+								"polarity": "required",
+								"predicate": {
+									"kind": "field",
+									"field": "para",
+									"operator": "match",
+									"value": "area"
+								}
+							}
+						],
+						"sort": []
+					},
+					"mode": "list"
+				}
+			},
+			{
+				"home": {
+					"span": 4,
+					"height": "regular"
+				},
+				"config": {
+					"kind": "tasks",
+					"status": "open",
+					"count": 5
+				}
+			},
+			{
+				"title": "Resources",
+				"home": {
+					"span": 8,
+					"height": "regular"
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [
+							{
+								"polarity": "required",
+								"predicate": {
+									"kind": "field",
+									"field": "para",
+									"operator": "match",
+									"value": "resource"
+								}
+							}
+						],
+						"sort": []
+					},
+					"mode": "table",
+					"table": {
+						"columns": [
+							{
+								"field": "title"
+							},
+							{
+								"field": "area"
+							},
+							{
+								"field": "modified"
+							}
+						]
+					}
+				}
+			},
+			{
+				"home": {
+					"span": 4,
+					"height": "regular"
+				},
+				"config": {
+					"kind": "recent_notes",
+					"count": 5,
+					"presentation": "list"
+				}
+			},
+			{
+				"title": "Projects",
+				"topBar": true,
+				"home": {
+					"span": 12,
+					"height": "tall",
+					"hidden": true
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [
+							{
+								"polarity": "required",
+								"predicate": {
+									"kind": "field",
+									"field": "para",
+									"operator": "match",
+									"value": "project"
+								}
+							}
+						],
+						"sort": []
+					},
+					"mode": "kanban",
+					"kanban": {
+						"groupBy": "meta.stage",
+						"columns": [
+							{
+								"id": "next"
+							},
+							{
+								"id": "waiting"
+							},
+							{
+								"id": "scheduled"
+							},
+							{
+								"id": "someday"
+							},
+							{
+								"id": "inbox",
+								"hidden": true
+							},
+							{
+								"id": "reference",
+								"hidden": true
+							},
+							{
+								"id": "done",
+								"hidden": true
+							}
+						]
+					},
+					"cards": {
+						"version": 1,
+						"media": {
+							"position": "none",
+							"height": 176,
+							"fit": "cover"
+						},
+						"titleLines": 2,
+						"header": {
+							"start": {
+								"field": "meta.due_date",
+								"show": "text"
+							}
+						},
+						"body": [
+							{
+								"start": {
+									"field": "summary",
+									"show": "text",
+									"lines": 2
+								}
+							}
+						],
+						"footer": {
+							"start": {
+								"field": "meta.area",
+								"show": "chips",
+								"maxItems": 1
+							}
+						}
+					}
+				}
+			},
+			{
+				"title": "Resources",
+				"topBar": true,
+				"home": {
+					"span": 12,
+					"height": "tall",
+					"hidden": true
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [
+							{
+								"polarity": "required",
+								"predicate": {
+									"kind": "field",
+									"field": "para",
+									"operator": "match",
+									"value": "resource"
+								}
+							}
+						],
+						"sort": []
+					},
+					"mode": "table",
+					"table": {
+						"columns": [
+							{
+								"field": "title"
+							},
+							{
+								"field": "area"
+							},
+							{
+								"field": "modified"
+							}
+						]
+					}
+				}
+			}
+		],
+		"templates": {
+			"offered": [
+				"project",
+				"area",
+				"resource"
+			],
+			"default": "project"
+		},
+		"calendar": {
+			"dateField": "meta.due_date"
+		}
+	}
+}

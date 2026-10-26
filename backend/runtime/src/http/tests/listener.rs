@@ -10,6 +10,11 @@ fn listener_admission_bind_failures_idempotent_stop_and_restart_are_owned_by_rus
     let f = Fixture::new(false);
     let root = tempfile::tempdir().unwrap();
     let uninitialized = BluinkApplication::new(ApplicationOptions {
+        workspace_template_path: concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/vendor/workspace-starter.json"
+        )
+        .into(),
         project_root: root.path().to_string_lossy().into_owned(),
         timezone: Some("UTC".into()),
         cache_location: None,
@@ -17,6 +22,7 @@ fn listener_admission_bind_failures_idempotent_stop_and_restart_are_owned_by_rus
         data_dir: None,
         web_font_folder: None,
         pdf_font_folder: None,
+        docx_font_folder: None,
         typst_binary: None,
     })
     .unwrap();
@@ -93,7 +99,7 @@ fn offline_font_stylesheets_are_served_from_the_configured_resource_folder() {
     });
     let (status, headers, bytes) = f.request("GET", "/fonts/inter.css", "");
     assert_eq!(status, axum::http::StatusCode::OK);
-    assert_eq!(headers["content-type"], "text/css");
+    assert_eq!(headers["content-type"], "text/css; charset=utf-8");
     assert_eq!(
         bytes.as_ref(),
         std::fs::read(fonts.join("inter.css")).unwrap()

@@ -6,6 +6,7 @@ import type { ParseArgsOptionDescriptor } from 'node:util'
 import { parseArgs } from 'node:util'
 import pkg from '../package.json' with { type: 'json' }
 import logger, { isServerConsoleActive } from './logger.js'
+import { explainPortInUse } from './port-in-use.js'
 import { hostLifecycle } from './native/lifecycle.js'
 import { createAppState } from './state.js'
 
@@ -181,12 +182,16 @@ commands.set('server', {
 		}
 		const state = await createAppState(values['no-tui'] ? 'plain' : 'auto')
 		hostLifecycle.checkRunning()
-		await state.application.startHttp(port)
+		try {
+			await state.application.startHttp(port)
+		} catch (error) {
+			throw explainPortInUse(error, port)
+		}
 	},
 })
 
 commands.set('export', {
-	description: 'Export one note as a PDF or HTML file',
+	description: 'Export one note as a PDF, Word, EPUB or HTML file',
 	positionals: true,
 	options: {
 		project: {
@@ -195,6 +200,10 @@ commands.set('export', {
 			help: 'Existing Bluink project folder',
 		},
 		note: { type: 'string', help: 'Page ID to export as an article' },
+		'include-linked': {
+			type: 'boolean',
+			help: 'Follow internal page links; HTML produces a website',
+		},
 		'outside-links': {
 			type: 'string',
 			help: 'Links outside the export: error or text-only',
@@ -237,9 +246,9 @@ commands.set('publication', {
 		input: { type: 'string', help: 'JSON file for create' },
 		format: {
 			type: 'string',
-			help: 'pdf, html, or site, required for plan or generate',
+			help: 'pdf, docx, epub, html, or site, required for plan or generate',
 		},
-		output: { type: 'string', help: 'New PDF/HTML file or site folder' },
+		output: { type: 'string', help: 'New PDF/Word/HTML file or site folder' },
 		'trust-theme-sha256': {
 			type: 'string',
 			help: 'Exact reviewed project-theme package hash',

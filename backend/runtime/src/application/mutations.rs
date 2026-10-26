@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2023–2026 BluInk
 
+use crate::indexing::coordinator::MainSnapshot;
 use std::path::Path;
+use std::time::Instant;
 
 use crate::engine::project::write::MutationError;
 use serde::{Deserialize, Serialize};
@@ -10,7 +12,8 @@ use serde_json::{Map, Value, json};
 use super::Application;
 use super::error::{Result, internal_error, invalid_request};
 use super::items::{PublicItem, ReadOptions, canonical_item};
-use crate::{query, service};
+use crate::indexing::service;
+use crate::query;
 
 #[derive(Deserialize, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
@@ -40,9 +43,17 @@ pub(crate) struct CreateItemRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
     pins: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(optional))]
-    tasks: Option<Vec<crate::engine::project::types::NoteTask>>,
+}
+
+impl CreateItemRequest {
+    pub(super) const fn new(meta: Map<String, Value>, content: Value) -> Self {
+        Self {
+            meta,
+            content,
+            tags: None,
+            pins: None,
+        }
+    }
 }
 
 fn empty_content() -> Value {
@@ -72,9 +83,6 @@ pub(crate) struct UpdateItemRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
     pins: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(optional))]
-    tasks: Option<Vec<crate::engine::project::types::NoteTask>>,
 }
 
 #[derive(Deserialize)]
@@ -108,7 +116,6 @@ pub(crate) struct SetItemTagsRequest {
 #[cfg_attr(test, ts(optional_fields = nullable))]
 pub(crate) struct MutateNoteTaskRequest {
     note_id: String,
-    version: String,
     change: crate::engine::project::types::TaskChange,
 }
 
@@ -120,7 +127,7 @@ pub(crate) struct SetNotePinRequest {
     note_id: String,
     version: String,
     pinned: bool,
-    scope_id: Option<String>,
+    scope_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -163,28 +170,56 @@ pub(crate) struct CreateWritingGoalRequest {
     title: Option<String>,
 }
 
-/// Canonical persistence and projection invalidation are one operation. The
-/// old CLI bridge shares this helper until its callers migrate to Application.
+/// A workspace setup file and the name the person chose for its workspace.
+/// The setup's shape belongs to the browser's gallery; Rust checks it when
+/// it creates the workspace.
+#[derive(Deserialize, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CreateWorkspaceFromSetupRequest {
+    setup: crate::engine::project::types::OpaqueJson,
+    title: String,
+}
+
+/// Finish a canonical write only after attached indexes publish its revision.
+/// Storage and relationship locks must be released before entering this helper.
 pub(crate) fn committed(
     root: &Path,
     result: std::result::Result<Value, MutationError>,
 ) -> Result<Value> {
     let result = result?;
-    let item = &result["item"];
-    service::mark_project_write(
-        root,
-        item["id"]
-            .as_str()
-            .ok_or_else(|| internal_error("Written item has no ID."))?,
-        item["revision"]
-            .as_str()
-            .ok_or_else(|| internal_error("Written item has no revision."))?,
-    )?;
+    let changes = std::iter::once(&result["item"])
+        .chain(result["relatedItems"].as_array().into_iter().flatten())
+        .map(|item| {
+            Ok((
+                item["id"]
+                    .as_str()
+                    .ok_or_else(|| internal_error("Written item has no ID."))?
+                    .to_owned(),
+                item["revision"]
+                    .as_str()
+                    .ok_or_else(|| internal_error("Written item has no revision."))?
+                    .to_owned(),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let started = Instant::now();
+    service::publish_project_changes(root, &changes)?;
+    tracing::debug!(
+        operation = "publish_item_changes",
+        changed_items = changes.len(),
+        elapsed_ms = started.elapsed().as_secs_f64() * 1000.0
+    );
+    match result["item"]["meta"]["type"].as_str() {
+        Some("property") => service::refresh_project_query_fields(root)?,
+        Some("tag" | "label") => crate::catalogue::invalidate_facets(&root.to_string_lossy())?,
+        _ => {}
+    }
     Ok(result)
 }
 
 impl Application {
-    fn finish_mutation(
+    pub(super) fn finish_mutation(
         &self,
         result: std::result::Result<Value, MutationError>,
         with_content: bool,
@@ -199,12 +234,26 @@ impl Application {
         canonical_item(result["item"].take(), with_content)
     }
 
-    pub(crate) fn create_item(&self, request: CreateItemRequest) -> Result<PublicItem> {
+    pub(crate) fn create_item(&self, mut request: CreateItemRequest) -> Result<PublicItem> {
         let _operation = self.begin_operation()?;
         if request.meta.get("type").and_then(Value::as_str) == Some("goal") {
             return Err(invalid_request(
                 "Create writing goals with create_writing_goal.",
             ));
+        }
+        if request.meta.get("type").and_then(Value::as_str) == Some("workspace") {
+            let provided = request
+                .content
+                .as_object()
+                .ok_or_else(|| invalid_request("Workspace content must be an object."))?;
+            let mut content =
+                crate::engine::project::workspace::instantiate(&self.workspace_template)
+                    .map_err(internal_error)?;
+            content
+                .as_object_mut()
+                .ok_or_else(|| internal_error("Invalid workspace template."))?
+                .extend(provided.clone());
+            request.content = content;
         }
         self.finish_mutation(
             crate::engine::project::write::write_item_input_typed(
@@ -215,6 +264,30 @@ impl Application {
             ),
             true,
         )
+    }
+
+    /// Creates a workspace with a setup's properties, tags and templates in
+    /// one write, then refreshes the fields and tags queries offer.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "RPC dispatch owns its decoded request."
+    )]
+    pub(crate) fn create_workspace_from_setup(
+        &self,
+        request: CreateWorkspaceFromSetupRequest,
+    ) -> Result<PublicItem> {
+        let _operation = self.begin_operation()?;
+        let mut result = committed(
+            &self.root,
+            crate::engine::project::setup::create_workspace_from_setup(
+                &self.root,
+                &request.setup.0,
+                &request.title,
+            ),
+        )?;
+        service::refresh_project_query_fields(&self.root)?;
+        crate::catalogue::invalidate_facets(&self.root.to_string_lossy())?;
+        canonical_item(result["item"].take(), true)
     }
 
     pub(crate) fn update_item(&self, request: UpdateItemRequest) -> Result<PublicItem> {
@@ -270,7 +343,6 @@ impl Application {
             crate::engine::project::task::mutate_note_task(
                 &self.root,
                 &request.note_id,
-                &request.version,
                 &serde_json::to_value(request.change).map_err(internal_error)?,
                 &self.activity_date()?,
             ),
@@ -289,7 +361,7 @@ impl Application {
                 &request.note_id,
                 &request.version,
                 request.pinned,
-                request.scope_id.as_deref(),
+                &request.scope_id,
                 &self.activity_date()?,
             ),
             false,
@@ -330,20 +402,16 @@ impl Application {
                 |source| {
                     let index = self
                         .index_path()
-                        .map_err(|error| MutationError::Expected(error.to_string()))?;
-                    let fields = service::query_fields(&index)
-                        .map_err(|error| MutationError::Unexpected(error.to_string()))?;
-                    let analysis = query::analyze_bluink_query_with_schema(source, &fields);
-                    if analysis.valid {
-                        Ok(())
-                    } else {
-                        Err(MutationError::Expected(
-                            analysis.diagnostics.first().map_or_else(
-                                || "The saved view has an invalid query.".to_owned(),
-                                |diagnostic| diagnostic.message.clone(),
-                            ),
-                        ))
-                    }
+                        .map_err(|error| MutationError::Validation(error.to_string()))?;
+                    let MainSnapshot {
+                        index: native,
+                        query_fields: fields,
+                        ..
+                    } = service::service_index(&index)
+                        .map_err(|error| MutationError::Internal(error.to_string()))?;
+                    query::compile_query_document(&native, source, &fields, None)
+                        .map(|_| ())
+                        .map_err(|error| MutationError::Validation(error.to_string()))
                 },
             ),
             true,

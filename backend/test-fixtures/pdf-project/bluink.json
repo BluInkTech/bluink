@@ -1,16 +1,1 @@
-{
-  "format": "bluink-project",
-  "formatVersion": 15,
-  "id": "01a0e2a7-d112-7829-b7d6-5f218a1341e0",
-  "history": {
-    "enabled": true,
-    "interval": "1h",
-    "retention": {
-      "hourlyDays": 7
-    }
-  },
-  "analytics": {
-    "timezone": "Europe/London",
-    "eventRetentionDays": 14
-  }
-}
+{"format":"bluink-project","formatVersion":17,"id":"01a0e2a7-d112-7829-b7d6-5f218a1341e0","history":{"enabled":true,"interval":"1h","retention":{"hourlyDays":7}},"analytics":{"timezone":"Europe/London","eventRetentionDays":14},"defaultWorkspaceId":"00000000-0000-7000-8000-000000000101"}

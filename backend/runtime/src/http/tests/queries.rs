@@ -22,25 +22,34 @@ fn projection_failure_larger_than_the_bounded_queue_joins_and_releases_ownership
             .contains("unsupported or mismatched item file")
     );
     f.runtime.block_on(f.app.stop()).unwrap();
+    let main = crate::engine::project::config::read_default_workspace(f.root.path()).unwrap();
+    let main_path = f.item_path(&main["id"]);
     std::fs::remove_dir_all(f.root.path().join("items")).unwrap();
+    crate::engine::project::io::write_json_atomic(&main_path, &main).unwrap();
     f.reopen(true);
     let status: Value = serde_json::from_str(&f.app.status().unwrap()).unwrap();
-    assert_eq!(status["index"]["documents"], 0);
+    assert_eq!(status["index"]["documents"], 1);
 }
 
 #[test]
 fn query_projection_preserves_previews_progress_and_calendar_and_reconciles_warm_starts_and_deletions()
  {
     let mut f = Fixture::new(false);
+    let baseline = crate::engine::project::item::list_project_item_ids(f.root.path())
+        .unwrap()
+        .len();
     let item=f.call("create_item",json!({"meta":{"type":"page","title":"Native search"},"content":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"A searchable portable document"}]},{"type":"image","attrs":{"src":"/assets/cover.jpg"}}]}}));
     f.initialize_index();
     let status: Value = serde_json::from_str(&f.app.status().unwrap()).unwrap();
     let status = &status["index"];
     assert_eq!(status["state"], "ready");
     assert_eq!(status["phase"], "Indexing complete");
-    assert_eq!(status["processed"], 1);
-    assert_eq!(status["total"], 1);
-    let initial = f.call("query_items", json!({"query":"searchable"}));
+    assert_eq!(status["processed"], baseline + 1);
+    assert_eq!(status["total"], baseline + 1);
+    let initial = f.call(
+        "query_items",
+        json!({"query":crate::query::document::test_query("searchable")}),
+    );
     assert_eq!(initial["count"], 1);
     assert_eq!(initial["items"][0]["id"], item["id"]);
     assert_eq!(
@@ -49,18 +58,21 @@ fn query_projection_preserves_previews_progress_and_calendar_and_reconciles_warm
     );
     assert_eq!(initial["items"][0]["previewImage"], "/assets/cover.jpg");
     let date = &item["createdAt"].as_str().unwrap()[..10];
-    assert_eq!(f.call("read_calendar_buckets",json!({"query":"","field":"created","startDate":date,"endDate":date,"granularity":"day"})),json!({"buckets":[{"date":date,"count":1}]}));
+    assert_eq!(f.call("read_calendar_buckets",json!({"query":crate::query::document::QueryDocument::active_pages(),"field":"created","startDate":date,"endDate":date,"granularity":"day"})),json!({"buckets":[{"date":date,"count":1}]}));
     f.call("update_item",json!({"id":item["id"],"version":item["version"],"meta":item["meta"],"content":document("Externally changed content")}));
     f.settled();
     assert_eq!(
-        f.call("query_items", json!({"query":"externally"}))["items"][0]["id"],
+        f.call(
+            "query_items",
+            json!({"query":crate::query::document::test_query("externally")})
+        )["items"][0]["id"],
         item["id"]
     );
     f.reopen(true);
     let status: Value = serde_json::from_str(&f.app.status().unwrap()).unwrap();
     let status = &status["index"];
     assert_eq!(status["state"], "ready");
-    assert_eq!(status["checked"], 1);
+    assert_eq!(status["checked"], baseline + 1);
     assert_eq!(status["changed"], 0);
     assert_eq!(status["phase"], "Project cache is current");
     assert_eq!(status["reconciliationTimings"]["pinScopeMs"], 0.0);
@@ -68,7 +80,10 @@ fn query_projection_preserves_previews_progress_and_calendar_and_reconciles_warm
         assert!(status["reconciliationTimings"][key].is_number());
     }
     assert_eq!(
-        f.call("query_items", json!({"query":"externally"}))["items"][0]["id"],
+        f.call(
+            "query_items",
+            json!({"query":crate::query::document::test_query("externally")})
+        )["items"][0]["id"],
         item["id"]
     );
     f.runtime.block_on(f.app.stop()).unwrap();
@@ -77,11 +92,14 @@ fn query_projection_preserves_previews_progress_and_calendar_and_reconciles_warm
     let status: Value = serde_json::from_str(&f.app.status().unwrap()).unwrap();
     let status = &status["index"];
     assert_eq!(status["state"], "ready");
-    assert_eq!(status["checked"], 0);
+    assert_eq!(status["checked"], baseline);
     assert_eq!(status["changed"], 1);
-    assert_eq!(status["documents"], 0);
+    assert_eq!(status["documents"], baseline);
     assert_eq!(
-        f.call("query_items", json!({"query":"+type:page"}))["count"],
+        f.call(
+            "query_items",
+            json!({"query":crate::query::document::test_query("+type:page")})
+        )["count"],
         0
     );
 }
@@ -89,17 +107,39 @@ fn query_projection_preserves_previews_progress_and_calendar_and_reconciles_warm
 #[test]
 fn task_index_keeps_page_owned_tasks_when_prose_is_replaced() {
     let f = Fixture::new(false);
-    let open = "55555555-5555-4555-8555-555555555555";
-    let orphan = "66666666-6666-4666-8666-666666666666";
-    let created = "2026-09-01T00:00:00.000Z";
-    let note=f.call("create_item",json!({"meta":{"type":"page","title":"Task host"},"content":{"type":"doc","content":[{"type":"paragraph","attrs":{"id":"44444444-4444-4444-8444-444444444444"},"content":[{"type":"text","text":"Draft"}]}]},"tasks":[{"id":open,"text":"Review","createdAt":created},{"id":orphan,"text":"Find source","createdAt":created}]}));
+    let note = f.page("Task host", "Draft");
+    let review = f.call(
+        "mutate_note_task",
+        json!({"noteId":note["id"],"change":{"kind":"create","text":"Review"}}),
+    );
+    let source = f.call(
+        "mutate_note_task",
+        json!({"noteId":note["id"],"change":{"kind":"create","text":"Find source"}}),
+    );
+    let open = review["id"].as_str().unwrap();
+    let orphan = source["id"].as_str().unwrap();
     f.initialize_index();
     let initial = f.call(
         "query_note_tasks",
-        json!({"query":"+type:page","status":"open","limit":1,"offset":0}),
+        json!({"query":crate::query::document::test_query("+type:page"),"status":"open","limit":1,"offset":0}),
     );
     assert_eq!(initial["count"], 2);
     assert_eq!(initial["items"].as_array().unwrap().len(), 1);
+    assert_eq!(initial["items"][0]["noteTitle"], "Task host");
+    f.page("Unrelated one", "No tasks");
+    f.page("Unrelated two", "No tasks");
+    let broad = f.call(
+        "query_note_tasks",
+        json!({"query":crate::query::document::test_query("+type:page"),"status":"open"}),
+    );
+    assert_eq!(broad["count"], 2);
+    assert!(
+        broad["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|task| task["noteTitle"] == "Task host")
+    );
     let all = f.call(
         "query_note_tasks",
         json!({"noteId":note["id"],"status":"open"}),
@@ -117,21 +157,22 @@ fn task_index_keeps_page_owned_tasks_when_prose_is_replaced() {
         })
         .collect::<Vec<_>>();
     tasks.sort_unstable();
-    assert_eq!(
-        tasks,
-        vec![
-            (open, note["id"].as_str().unwrap(), "Review"),
-            (orphan, note["id"].as_str().unwrap(), "Find source")
-        ]
-    );
+    let mut expected = vec![
+        (open, note["id"].as_str().unwrap(), "Review"),
+        (orphan, note["id"].as_str().unwrap(), "Find source"),
+    ];
+    expected.sort_unstable();
+    assert_eq!(tasks, expected);
     assert_eq!(
         f.call(
             "query_note_tasks",
-            json!({"query":"+tag:missing","status":"open"})
+            json!({"query":crate::query::document::test_query("+tag:missing"),"status":"open"})
         )["count"],
         0
     );
-    f.call("update_item",json!({"id":note["id"],"version":note["version"],"meta":note["meta"],"content":document("Replaced all prose"),"tasks":[{"id":open,"text":"Review","createdAt":created,"completedAt":Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)}]}));
+    f.call("update_item",json!({"id":note["id"],"version":note["version"],"meta":note["meta"],"content":document("Replaced all prose")}));
+    f.call("mutate_note_task",json!({"noteId":note["id"],"change":{"kind":"complete","taskId":open,"revision":review["version"]}}));
+    f.call("mutate_note_task",json!({"noteId":note["id"],"change":{"kind":"delete","taskId":orphan,"revision":source["version"]}}));
     f.settled();
     assert_eq!(
         f.call(
@@ -187,8 +228,8 @@ fn named_facets_and_custom_properties_preserve_inference_counts_and_query_analys
     assert_eq!(
         &fields.as_array().unwrap()[..2],
         &[
-            json!({"key":"summary","label":"Summary","valueType":"text","source":"builtin"}),
-            json!({"key":"author","label":"Author","valueType":"text","source":"registered"})
+            json!({"key":"summary","valueType":"text","source":"builtin"}),
+            json!({"key":"author","valueType":"text","source":"registered"})
         ]
     );
     assert!(
@@ -203,15 +244,24 @@ fn named_facets_and_custom_properties_preserve_inference_counts_and_query_analys
         "author:\"Roberto Bolaño\"",
         "+tag:research_methods sort:modified-desc",
     ] {
-        let result = f.call("query_items", json!({"query":query}));
+        let result = f.call(
+            "query_items",
+            json!({"query":crate::query::document::test_query(query)}),
+        );
         assert_eq!(result["items"].as_array().unwrap().len(), 1);
         assert_eq!(result["items"][0]["id"], source["id"]);
     }
     assert_eq!(
-        f.call("query_items", json!({"query":"+tag:missing"}))["items"],
+        f.call(
+            "query_items",
+            json!({"query":crate::query::document::test_query("+tag:missing")})
+        )["items"],
         json!([])
     );
-    let mut ids = f.call("query_items", json!({"query":"+type:page"}))["items"]
+    let mut ids = f.call(
+        "query_items",
+        json!({"query":crate::query::document::test_query("+type:page")}),
+    )["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -226,13 +276,16 @@ fn named_facets_and_custom_properties_preserve_inference_counts_and_query_analys
     assert_eq!(ids, expected);
     assert_eq!(
         f.call(
-            "analyze_query",
-            json!({"query":"author:\"Roberto Bolaño\""})
+            "validate_query",
+            json!({"document":crate::query::document::test_query("author:\"Roberto Bolaño\"")})
         )["valid"],
         true
     );
-    let invalid = f.call("analyze_query", json!({"query":"unknown_property:value"}));
-    assert_eq!(invalid["valid"], false);
+    let invalid = f.call(
+        "validate_query",
+        json!({"document":crate::query::document::test_query("unknown_property:value")}),
+    );
+    assert!(!invalid["valid"].as_bool().unwrap());
     assert!(
         invalid["diagnostics"][0]["message"]
             .as_str()
@@ -261,13 +314,16 @@ fn string_and_numeric_fast_fields_keep_sort_precedence_missing_values_and_paging
         "sort:rating-desc +type:page sort:title-asc",
     ] {
         assert_eq!(
-            ids(&f.call("query_items", json!({"query":query,"limit":3}))),
+            ids(&f.call(
+                "query_items",
+                json!({"query":crate::query::document::test_query(query),"limit":3})
+            )),
             json!([alpha["id"], beta["id"], missing["id"]])
         );
     }
     let page = f.call(
         "query_items",
-        json!({"query":"+type:page sort:rating-desc","limit":1,"offset":1}),
+        json!({"query":crate::query::document::test_query("+type:page sort:rating-desc"),"limit":1,"offset":1}),
     );
     assert_eq!(ids(&page), json!([missing["id"]]));
     assert_eq!(page["count"], 3);
@@ -285,11 +341,38 @@ fn ids(result: &Value) -> Value {
 }
 
 #[test]
+fn query_paging_is_bounded_and_calendar_rejects_impossible_dates() {
+    let f = Fixture::new(false);
+    f.call(
+        "create_item",
+        json!({"meta":{"type":"page","title":"Page"},"content":document("One")}),
+    );
+    f.initialize_index();
+    let query = crate::query::document::QueryDocument::active_pages();
+    for limit in [0, 10_001, u32::MAX] {
+        f.error(
+            "query_items",
+            json!({"query":query,"limit":limit}),
+            StatusCode::BAD_REQUEST,
+        );
+    }
+    let result = f.call(
+        "query_items",
+        json!({"query":query,"limit":10,"offset":u32::MAX}),
+    );
+    assert_eq!(result["count"], 1);
+    assert_eq!(result["items"], json!([]));
+    for date in ["2026-02-30", "2026-13-01", "2025-02-29"] {
+        f.error("read_calendar_buckets", json!({"query":query,"field":"created","startDate":date,"endDate":date,"granularity":"day"}), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[test]
 fn direct_pins_are_applied_before_sorted_paging() {
     let f = Fixture::new(false);
     let view = f.call(
         "create_item",
-        json!({"meta":{"type":"workspace","title":"Pinned view"},"content":{"mode":"dashboard"}}),
+        json!({"meta":{"type":"workspace","title":"Pinned view"},"content":{}}),
     );
     let alpha = f.page("Alpha", "Alpha");
     let pinned=f.call("create_item",json!({"meta":{"type":"page","title":"Zulu"},"content":document("Pinned Zulu"),"pins":[view["id"]]}));
@@ -297,15 +380,15 @@ fn direct_pins_are_applied_before_sorted_paging() {
     f.initialize_index();
     let first = f.call(
         "query_items",
-        json!({"query":"+type:page sort:title-asc","limit":2,"offset":0,"pinScopeId":view["id"]}),
+        json!({"query":crate::query::document::test_query("+type:page sort:title-asc"),"limit":2,"offset":0,"pinScopeId":view["id"]}),
     );
     assert_eq!(first["pinnedCount"], 1);
     assert_eq!(ids(&first), json!([pinned["id"], alpha["id"]]));
-    assert_eq!(ids(&f.call("query_items",json!({"query":"+type:page sort:title-asc","limit":2,"offset":2,"pinScopeId":view["id"]}))),json!([beta["id"]]));
+    assert_eq!(ids(&f.call("query_items",json!({"query":crate::query::document::test_query("+type:page sort:title-asc"),"limit":2,"offset":2,"pinScopeId":view["id"]}))),json!([beta["id"]]));
     assert_eq!(
         ids(&f.call(
             "query_items",
-            json!({"query":"+type:page +is:pinned","limit":10,"offset":0,"pinScopeId":view["id"]})
+            json!({"query":crate::query::document::test_query("+type:page +is:pinned"),"limit":10,"offset":0,"pinScopeId":view["id"]})
         )),
         json!([pinned["id"]])
     );
@@ -318,8 +401,16 @@ fn pending_activity_journals_recover_exactly_once_and_aggregate_task_completion(
     let edited=f.call("update_item",json!({"id":note["id"],"version":note["version"],"meta":note["meta"],"content":document("one two three four")}));
     let now = Utc::now();
     let day = now.format("%Y-%m-%d").to_string();
-    let completed=f.call("update_item",json!({"id":note["id"],"version":edited["version"],"meta":note["meta"],"content":document("one two three four"),"tasks":[{"id":"33333333-3333-4333-8333-333333333333","text":"A daily goal","createdAt":now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),"completedAt":now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)}]}));
-    let event = json!({"state":"pending","event":{"id":format!("{}:{}:recovered",completed["id"].as_str().unwrap(),completed["version"].as_str().unwrap()),"date":day,"occurredAt":now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),"itemId":completed["id"],"revision":completed["version"],"kind":"task_completed","wordsAdded":0,"wordsDeleted":0,"netWordChange":0}});
+    let task = f.call(
+        "mutate_note_task",
+        json!({"noteId":note["id"],"change":{"kind":"create","text":"A daily goal"}}),
+    );
+    let completed = f.call("mutate_note_task",json!({"noteId":note["id"],"change":{"kind":"complete","taskId":task["id"],"revision":task["version"]}}));
+    assert_eq!(
+        f.call("read_item", json!({"id":note["id"]}))["version"],
+        edited["version"]
+    );
+    let event = json!({"state":"pending","event":{"id":format!("{}:{}:recovered",completed["id"].as_str().unwrap(),completed["version"].as_str().unwrap()),"date":day,"occurredAt":now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),"itemId":note["id"],"sourceItemId":completed["id"],"revision":completed["version"],"kind":"task_completed","wordsAdded":0,"wordsDeleted":0,"netWordChange":0}});
     let mut file = std::fs::OpenOptions::new()
         .append(true)
         .open(f.root.path().join(format!("analytics/events/{day}.jsonl")))

@@ -9,8 +9,9 @@ pub(super) async fn security(request: Request, next: Next) -> Response {
     for (name, value) in [
         (
             "content-security-policy",
-            // Harper uses packaged WebAssembly. This does not authorize JS eval.
-            "default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self' 'wasm-unsafe-eval';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests",
+            // Harper starts its packaged WebAssembly in a local blob worker.
+            // Worker permission stays separate from the document's JS policy.
+            "default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self' 'wasm-unsafe-eval';script-src-attr 'none';worker-src 'self' blob:;style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests",
         ),
         ("cross-origin-opener-policy", "same-origin"),
         ("cross-origin-resource-policy", "same-origin"),

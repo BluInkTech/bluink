@@ -252,6 +252,7 @@ fn capture(threshold: &str) {
     expected.sort();
     assert_eq!(actual, expected);
     for event in &completed {
+        assert_eq!(event["durationMs"], event["fields"]["duration_ms"]);
         for field in [
             "duration_ms",
             "body_read_ms",

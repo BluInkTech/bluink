@@ -20,6 +20,9 @@ use crate::application::{Application, BluinkApplication};
 use crate::diagnostics::DiagnosticEvent;
 
 static SESSION: Mutex<Option<Weak<Core>>> = Mutex::new(None);
+// Serialize constructors without blocking diagnostics on the session registry.
+// Workers and stop never acquire this gate.
+static START: Mutex<()> = Mutex::new(());
 
 #[napi(object)]
 pub struct ConsoleOptions {
@@ -215,8 +218,13 @@ impl BluinkConsole {
             worker: Mutex::new(None),
             failure: Mutex::new(None),
         });
-        let mut current = SESSION.lock().map_err(crate::error::native_error)?;
-        if current.as_ref().and_then(Weak::upgrade).is_some() {
+        let startup = START.lock().map_err(crate::error::native_error)?;
+        let current = SESSION
+            .lock()
+            .map_err(crate::error::native_error)?
+            .as_ref()
+            .and_then(Weak::upgrade);
+        if current.is_some() {
             return Err(crate::error::native_error(
                 "A console session is already active.",
             ));
@@ -234,8 +242,8 @@ impl BluinkConsole {
             })
             .map_err(crate::error::native_error)?;
         *core.worker.lock().map_err(crate::error::native_error)? = Some(worker);
-        *current = Some(Arc::downgrade(&core));
-        drop(current);
+        *SESSION.lock().map_err(crate::error::native_error)? = Some(Arc::downgrade(&core));
+        drop(startup);
         Ok(Self {
             core,
             actions: tokio::sync::Mutex::new(outgoing),
@@ -290,14 +298,15 @@ impl BluinkConsole {
     pub async fn stop(&self) -> napi::Result<()> {
         let _stop = self.stop.lock().await;
         self.core.stop_requested.store(true, Ordering::Release);
-        let worker = self
-            .core
-            .worker
-            .lock()
-            .map_err(crate::error::native_error)?
-            .take();
-        if let Some(worker) = worker {
-            let result = tokio::task::spawn_blocking(move || {
+        let (worker, ownership_result) = {
+            let (mut owned, result) = crate::application::error::recover_for_cleanup(
+                self.core.worker.lock(),
+                "Console worker",
+            );
+            (owned.take(), result)
+        };
+        let joined = if let Some(worker) = worker {
+            tokio::task::spawn_blocking(move || {
                 worker
                     .join()
                     .map_err(|_| "Console worker panicked".to_owned())
@@ -305,16 +314,21 @@ impl BluinkConsole {
             })
             .await
             .map_err(|error| error.to_string())
-            .and_then(std::convert::identity);
-            if let Err(error) = result {
-                *self
-                    .core
-                    .failure
-                    .lock()
-                    .map_err(crate::error::native_error)? = Some(error);
-            }
+            .and_then(std::convert::identity)
+        } else {
+            Ok(())
+        };
+        let (mut failure, failure_result) = crate::application::error::recover_for_cleanup(
+            self.core.failure.lock(),
+            "Console failure",
+        );
+        if let Err(error) = joined {
+            *failure = Some(error);
         }
-        let mut current = SESSION.lock().map_err(crate::error::native_error)?;
+        let recorded = failure.clone().map_or(Ok(()), Err);
+        drop(failure);
+        let (mut current, registry_result) =
+            crate::application::error::recover_for_cleanup(SESSION.lock(), "Console session");
         if current
             .as_ref()
             .and_then(Weak::upgrade)
@@ -323,12 +337,11 @@ impl BluinkConsole {
             current.take();
         }
         drop(current);
-        self.core
-            .failure
-            .lock()
-            .map_err(crate::error::native_error)?
-            .clone()
-            .map_or(Ok(()), |error| Err(crate::error::native_error(error)))
+        ownership_result
+            .and(failure_result)
+            .and(registry_result)
+            .map_err(crate::error::native_error)?;
+        recorded.map_err(crate::error::native_error)
     }
 }
 
@@ -442,5 +455,48 @@ mod tests {
         assert_eq!(console.core.rss.load(Ordering::Relaxed), 1_048_576);
         console.update_rss(None).unwrap();
         assert_eq!(console.core.rss.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn poisoned_worker_ownership_still_joins_console_worker() {
+        let (core, actions) = fixture();
+        let (finished, completion) = crossbeam_channel::bounded(1);
+        let worker_core = Arc::clone(&core);
+        *core.worker.lock().unwrap() = Some(std::thread::spawn(move || {
+            while !worker_core.stop_requested.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            finished.send(()).unwrap();
+            Ok(())
+        }));
+        std::thread::scope(|scope| {
+            let core = &core;
+            assert!(
+                scope
+                    .spawn(move || {
+                        let _guard = core.worker.lock().unwrap();
+                        panic!("Injected console ownership failure");
+                    })
+                    .join()
+                    .is_err()
+            );
+        });
+        let console = BluinkConsole {
+            core,
+            actions: tokio::sync::Mutex::new(actions),
+            stop: tokio::sync::Mutex::new(()),
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        assert!(
+            runtime
+                .block_on(console.stop())
+                .unwrap_err()
+                .to_string()
+                .contains("poisoned")
+        );
+        completion.try_recv().unwrap();
+        assert!(runtime.block_on(console.stop()).is_err());
     }
 }

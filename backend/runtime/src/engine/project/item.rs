@@ -2,14 +2,53 @@
 // Copyright (c) 2023–2026 BluInk
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use super::identity::{ItemId, is_item_id};
 use chrono::{DateTime, NaiveDate};
 use serde_json::Value;
 
 use crate::engine::document::validation::validate_document;
 
-pub(crate) const ITEM_FORMAT_VERSION: u64 = 15;
+pub(crate) const ITEM_FORMAT_VERSION: u64 = 17;
+
+#[derive(Debug)]
+pub(crate) enum ItemReadError {
+    InvalidIdentity(String),
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    Json {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    InvalidData {
+        path: PathBuf,
+        message: String,
+    },
+}
+
+impl std::fmt::Display for ItemReadError {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidIdentity(message) => output.write_str(message),
+            Self::Io { path, source } => write!(output, "{}: {source}", path.display()),
+            Self::Json { path, source } => write!(output, "{}: {source}", path.display()),
+            Self::InvalidData { path, message } => write!(output, "{}: {message}", path.display()),
+        }
+    }
+}
+
+impl std::error::Error for ItemReadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            Self::Json { source, .. } => Some(source),
+            Self::InvalidIdentity(_) | Self::InvalidData { .. } => None,
+        }
+    }
+}
 
 /// Enumerate canonical item directories. An item with a malformed file is
 /// returned here and rejected when its reader is called.
@@ -64,107 +103,80 @@ pub(crate) fn visit_project_item_ids(
 
 /// Read one canonical project item. The caller supplies the expected identity
 /// from the path or request so a copied or misplaced file cannot be indexed.
-pub(crate) fn read_item(path: &Path, expected_id: &str) -> Result<Value, String> {
-    let source = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    parse_item(&source, expected_id).map_err(|error| format!("{}: {error}", path.display()))
+pub(crate) fn read_item(path: &Path, expected_id: &str) -> Result<Value, ItemReadError> {
+    let source = fs::read(path).map_err(|source| ItemReadError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    let item = serde_json::from_slice(&source).map_err(|source| ItemReadError::Json {
+        path: path.to_owned(),
+        source,
+    })?;
+    validate_item(&item, expected_id).map_err(|message| ItemReadError::InvalidData {
+        path: path.to_owned(),
+        message,
+    })?;
+    Ok(item)
 }
 
 /// Resolve an item by its canonical UUID path. A missing file is distinct from
 /// a malformed file so callers can implement ordinary not-found behavior.
-pub(crate) fn read_project_item(root: &Path, id: &str) -> Result<Option<Value>, String> {
-    if !is_item_id(id) {
-        return Err(format!("Invalid Bluink item id: {id}"));
-    }
-    let path = root
-        .join("items")
-        .join(id[..2].to_ascii_lowercase())
-        .join(id)
-        .join("item.json");
-    match fs::read(&path) {
-        Ok(source) => parse_item(&source, id)
-            .map(Some)
-            .map_err(|error| format!("{}: {error}", path.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("{}: {error}", path.display())),
+pub(crate) fn read_project_item(root: &Path, id: &str) -> Result<Option<Value>, ItemReadError> {
+    let identity = ItemId::try_from(id).map_err(ItemReadError::InvalidIdentity)?;
+    let path = identity.path(root);
+    match read_item(&path, id) {
+        Ok(item) => Ok(Some(item)),
+        Err(ItemReadError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+            Ok(None)
+        }
+        Err(error) => Err(error),
     }
 }
 
-pub(crate) fn parse_item(source: &[u8], expected_id: &str) -> Result<Value, String> {
-    if !is_item_id(expected_id) {
-        return Err(format!("Invalid Bluink item id: {expected_id}"));
-    }
-    let item: Value = serde_json::from_slice(source).map_err(|error| error.to_string())?;
-    if item.get("format").and_then(Value::as_str) != Some("bluink.item")
-        || item.get("formatVersion").and_then(Value::as_u64) != Some(ITEM_FORMAT_VERSION)
-        || item.get("id").and_then(Value::as_str) != Some(expected_id)
-    {
-        return Err(format!(
-            "Item {expected_id} has an unsupported or mismatched item file."
-        ));
-    }
-    for field in ["revision", "createdAt", "modifiedAt"] {
-        if item
-            .get(field)
-            .and_then(Value::as_str)
-            .is_none_or(str::is_empty)
-        {
-            return Err(format!("Item {expected_id} is missing {field}."));
-        }
-    }
-    if !is_canonical_instant(item["createdAt"].as_str().unwrap_or(""))
-        || !is_canonical_instant(item["modifiedAt"].as_str().unwrap_or(""))
-    {
-        return Err(format!(
-            "Item {expected_id} has an invalid canonical timestamp."
-        ));
-    }
-    let meta = item
-        .get("meta")
-        .and_then(Value::as_object)
-        .ok_or_else(|| format!("Item {expected_id} has invalid metadata."))?;
-    let kind = meta
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("Item {expected_id} has no type."))?;
-    if !matches!(
-        kind,
-        "page" | "workspace" | "goal" | "widget" | "query" | "setting" | "publication"
-    ) {
-        return Err(format!(
-            "Item {expected_id} has an unsupported type: {kind}."
-        ));
-    }
-    if !matches!(
-        meta.get("state").and_then(Value::as_str),
-        Some("active" | "archived")
-    ) {
-        return Err(format!("Item {expected_id} has an invalid state."));
-    }
-    let content = item
-        .get("content")
-        .and_then(Value::as_object)
-        .ok_or_else(|| format!("Item {expected_id} has invalid content."))?;
-    if !item.get("analytics").is_some_and(Value::is_object) {
-        return Err(format!("Item {expected_id} has invalid analytics."));
-    }
+#[cfg(test)]
+fn parse_item(source: &[u8], expected_id: &str) -> Result<Value, String> {
+    let item = serde_json::from_slice(source).map_err(|error| error.to_string())?;
+    validate_item(&item, expected_id)?;
+    Ok(item)
+}
+
+pub(crate) fn validate_item(item: &Value, expected_id: &str) -> Result<(), String> {
+    let envelope = super::envelope::ItemEnvelope::read(item, expected_id)?;
+    let meta = envelope.metadata;
+    let kind = envelope.kind.as_str();
+    let content = envelope.content;
     validate_meta(meta, expected_id)?;
     if item.get("references").is_some() {
         return Err("Page relationships must be authored in the document.".to_owned());
     }
     validate_ids(item.get("pins"), "pins")?;
     validate_tags(item.get("tags"))?;
-    validate_tasks(item.get("tasks"), kind, expected_id)?;
-    if kind == "page" {
-        let document = content
-            .get("content")
-            .filter(|value| value.is_object())
-            .unwrap_or_else(|| &item["content"]);
+    if item.get("tasks").is_some() {
+        return Err("Tasks must be independent item records.".to_owned());
+    }
+    if kind == "task" {
+        super::task::validate_content(content)?;
+    }
+    // A template is validated as the page it starts.
+    if matches!(kind, "page" | "template") {
+        let document = crate::engine::document::document_root(content);
         validate_document(document)
             .map_err(|error| format!("Item {expected_id} has invalid document: {error}"))?;
         validate_block_ids(&item["content"], expected_id)?;
     }
+    if kind == "template" {
+        super::template::validate(item, expected_id)?;
+    }
     if kind == "goal" {
         validate_goal(&item["content"], expected_id)?;
+    }
+    if kind == "workspace" {
+        crate::engine::project::workspace::validate_content(&item["content"])?;
+    }
+    if matches!(kind, "query" | "widget" | "goal")
+        && let Some(value) = content.get("query")
+    {
+        validate_query_value(value, expected_id)?;
     }
     if kind == "publication" {
         if meta
@@ -176,7 +188,26 @@ pub(crate) fn parse_item(source: &[u8], expected_id: &str) -> Result<Value, Stri
         }
         crate::engine::publication::validate_publication(&item["content"])?;
     }
-    Ok(item)
+    super::named_items::validate_identity(item, expected_id)?;
+    if matches!(kind, "tag" | "label") {
+        super::facets::validate_content(kind, content)?;
+    }
+    if kind == "property" {
+        super::properties::validate_content(content)?;
+    }
+    if kind == "snippet" {
+        super::snippets::validate_content(item)?;
+    }
+    Ok(())
+}
+
+fn validate_query_value(value: &Value, id: &str) -> Result<(), String> {
+    let query: super::query::QueryDocument = serde::Deserialize::deserialize(value)
+        .map_err(|error| format!("Item {id} has an invalid structured query: {error}"))?;
+    if query.version != 1 {
+        return Err(format!("Item {id} needs query document version 1."));
+    }
+    Ok(())
 }
 
 fn validate_meta(meta: &serde_json::Map<String, Value>, id: &str) -> Result<(), String> {
@@ -188,6 +219,7 @@ fn validate_meta(meta: &serde_json::Map<String, Value>, id: &str) -> Result<(), 
     {
         return Err(format!("Item {id} must use a supported string colour."));
     }
+    validate_appearance(meta, id)?;
     for field in ["start_date", "due_date", "published_on"] {
         if let Some(value) = meta.get(field)
             && !value.as_str().is_some_and(is_canonical_date)
@@ -213,6 +245,55 @@ fn validate_meta(meta: &serde_json::Map<String, Value>, id: &str) -> Result<(), 
         && !value.as_str().is_some_and(is_canonical_instant)
     {
         return Err(format!("Item {id} has an invalid completion timestamp."));
+    }
+    Ok(())
+}
+
+/// An icon or cover image must be one of the item's own uploads, so it moves,
+/// exports and is removed with the item.
+fn own_asset(url: &str, id: &str) -> bool {
+    url.strip_prefix("/assets/")
+        .and_then(|rest| rest.strip_prefix(id))
+        .and_then(|rest| rest.strip_prefix('/'))
+        .is_some_and(super::asset::valid_filename)
+}
+
+fn validate_appearance(meta: &serde_json::Map<String, Value>, id: &str) -> Result<(), String> {
+    use super::types::{ItemCover, ItemIcon};
+    // A null value unsets the field, as merged metadata writes cannot delete keys.
+    if let Some(value) = meta.get("icon").filter(|value| !value.is_null()) {
+        let icon: ItemIcon = serde::Deserialize::deserialize(value)
+            .map_err(|error| format!("Item {id} has an invalid icon: {error}"))?;
+        let valid = match &icon {
+            ItemIcon::Symbol { name } => {
+                !name.is_empty()
+                    && name.len() <= 40
+                    && name.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+                    })
+            }
+            ItemIcon::Emoji { value } => {
+                !value.is_empty()
+                    && value.len() <= 32
+                    && !value
+                        .chars()
+                        .any(|character| character.is_whitespace() || character.is_control())
+            }
+            ItemIcon::Image { url } => own_asset(url, id),
+        };
+        if !valid {
+            return Err(format!("Item {id} has an invalid icon."));
+        }
+    }
+    // A null value unsets the field, as merged metadata writes cannot delete keys.
+    if let Some(value) = meta.get("cover").filter(|value| !value.is_null()) {
+        let cover: ItemCover = serde::Deserialize::deserialize(value)
+            .map_err(|error| format!("Item {id} has an invalid cover: {error}"))?;
+        if let ItemCover::Image { url, position } = &cover
+            && (!own_asset(url, id) || *position > 100)
+        {
+            return Err(format!("Item {id} has an invalid cover image."));
+        }
     }
     Ok(())
 }
@@ -247,49 +328,8 @@ fn validate_tags(value: Option<&Value>) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_tasks(value: Option<&Value>, kind: &str, id: &str) -> Result<(), String> {
-    let Some(value) = value else { return Ok(()) };
-    let tasks = value.as_array().ok_or("Item tasks must be an array.")?;
-    if !tasks.is_empty() && kind != "page" {
-        return Err(format!("Only a page can own tasks: {id}"));
-    }
-    let mut seen = std::collections::HashSet::new();
-    for task in tasks {
-        let task_id = task.get("id").and_then(Value::as_str).unwrap_or("");
-        if !is_item_id(task_id) || !seen.insert(task_id) {
-            return Err("Note tasks need unique UUIDs.".to_owned());
-        }
-        let text = task
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim();
-        if text.is_empty() || text.encode_utf16().count() > 240 {
-            return Err("Enter task text of at most 240 characters.".to_owned());
-        }
-        if !task
-            .get("createdAt")
-            .and_then(Value::as_str)
-            .is_some_and(is_canonical_instant)
-            || task
-                .get("completedAt")
-                .is_some_and(|value| !value.as_str().is_some_and(is_canonical_instant))
-        {
-            return Err("Note task timestamps must be canonical UTC instants.".to_owned());
-        }
-        if !task.as_object().is_some_and(|object| {
-            object
-                .keys()
-                .all(|key| matches!(key.as_str(), "id" | "text" | "createdAt" | "completedAt"))
-        }) {
-            return Err("Note tasks contain only identity, text and timestamps.".to_owned());
-        }
-    }
-    Ok(())
-}
-
 fn validate_goal(content: &Value, id: &str) -> Result<(), String> {
-    let _: super::types::WritingGoalContent = serde_json::from_value(content.clone())
+    let _: super::types::WritingGoalContent = serde::Deserialize::deserialize(content)
         .map_err(|error| format!("Writing goal {id} has invalid configuration: {error}"))?;
     let start = content
         .get("startDate")
@@ -319,7 +359,12 @@ fn validate_goal(content: &Value, id: &str) -> Result<(), String> {
                     .get("viewId")
                     .and_then(Value::as_str)
                     .is_some_and(is_item_id)
-                    && content.get("query").is_some_and(Value::is_string)
+                    && content.get("query").is_some_and(|query| {
+                        serde_json::from_value::<crate::engine::project::query::QueryDocument>(
+                            query.clone(),
+                        )
+                        .is_ok()
+                    })
             }
             "all_notes" => content.get("viewId").is_none() && content.get("query").is_none(),
             _ => false,
@@ -422,39 +467,11 @@ pub(crate) fn is_canonical_instant(value: &str) -> bool {
 
 pub(crate) fn is_tag_key(value: &str) -> bool {
     value.split('/').enumerate().all(|(index, segment)| {
-        is_snake_token(segment)
+        super::properties::is_snake_case(segment)
             || (index > 0
                 && (1..=4).contains(&segment.len())
                 && segment.bytes().all(|b| b.is_ascii_digit()))
     })
-}
-
-fn is_snake_token(value: &str) -> bool {
-    let mut segments = value.split('_');
-    segments.next().is_some_and(|first| {
-        first.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
-            && first
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-    }) && segments.all(|segment| {
-        !segment.is_empty()
-            && segment
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-    })
-}
-
-#[must_use]
-pub(crate) fn is_item_id(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    bytes.len() == 36
-        && [8, 13, 18, 23].iter().all(|index| bytes[*index] == b'-')
-        && bytes
-            .iter()
-            .enumerate()
-            .all(|(index, byte)| [8, 13, 18, 23].contains(&index) || byte.is_ascii_hexdigit())
-        && (b'1'..=b'8').contains(&bytes[14])
-        && matches!(bytes[19].to_ascii_lowercase(), b'8' | b'9' | b'a' | b'b')
 }
 
 #[cfg(test)]
@@ -468,12 +485,133 @@ mod tests {
     const ID: &str = "01a0e2a0-0000-7000-8000-000000000001";
 
     #[test]
+    fn read_errors_preserve_path_and_distinguish_io_json_and_invalid_data() {
+        use std::error::Error;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("item.json");
+        let missing = read_item(&path, ID).unwrap_err();
+        assert!(matches!(
+            &missing,
+            super::ItemReadError::Io { path: actual, source }
+                if actual == &path && source.kind() == std::io::ErrorKind::NotFound
+        ));
+        assert!(
+            missing
+                .source()
+                .unwrap()
+                .downcast_ref::<std::io::Error>()
+                .is_some()
+        );
+
+        std::fs::write(&path, b"{invalid").unwrap();
+        let malformed = read_item(&path, ID).unwrap_err();
+        assert!(matches!(
+            &malformed,
+            super::ItemReadError::Json { path: actual, .. } if actual == &path
+        ));
+        assert!(
+            malformed
+                .source()
+                .unwrap()
+                .downcast_ref::<serde_json::Error>()
+                .is_some()
+        );
+
+        std::fs::write(&path, b"{}").unwrap();
+        let invalid = read_item(&path, ID).unwrap_err();
+        assert!(matches!(
+            &invalid,
+            super::ItemReadError::InvalidData { path: actual, message }
+                if actual == &path && message.contains("unsupported or mismatched")
+        ));
+        assert!(invalid.source().is_none());
+        root.close().unwrap();
+    }
+
+    #[test]
     fn enumerates_canonical_item_directories_in_order() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
         let ids = list_project_item_ids(&root).unwrap();
         assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(ids.contains(&ID.to_owned()));
         assert!(ids.iter().all(|id| super::is_item_id(id)));
+    }
+
+    #[test]
+    fn envelope_validation_preserves_extensions_and_absent_fields() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("test-fixtures/pdf-project/items/01/{ID}/item.json"));
+        let mut original: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        original["customExtension"] = json!({"nested": [null, {"value": 42}]});
+        original["meta"]["custom_property"] = json!({"text": "Preserve me", "unset": null});
+        original.as_object_mut().unwrap().remove("pins");
+        let parsed = parse_item(&serde_json::to_vec(&original).unwrap(), ID).unwrap();
+        assert_eq!(parsed, original);
+        assert!(parsed.get("pins").is_none());
+        let envelope = super::super::envelope::ItemEnvelope::read(&parsed, ID).unwrap();
+        assert_eq!(envelope.kind, crate::engine::project::types::ItemType::Page);
+        assert_eq!(envelope.revision, parsed["revision"].as_str().unwrap());
+        assert_eq!(
+            envelope.metadata["custom_property"],
+            original["meta"]["custom_property"]
+        );
+        assert_eq!(envelope.content, &parsed["content"]);
+    }
+
+    #[test]
+    fn icons_and_covers_take_canonical_shapes_and_own_uploads() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("test-fixtures/pdf-project/items/01/{ID}/item.json"));
+        let original: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let with = |icon: serde_json::Value, cover: serde_json::Value| {
+            let mut item = original.clone();
+            item["meta"]["icon"] = icon;
+            item["meta"]["cover"] = cover;
+            parse_item(&serde_json::to_vec(&item).unwrap(), ID)
+        };
+        let own = format!("/assets/{ID}/cover.png");
+        let sea = json!({"kind": "gradient", "name": "sea"});
+        for (icon, cover) in [
+            (
+                json!({"kind": "symbol", "name": "book-open"}),
+                json!({"kind": "gradient", "name": "dusk"}),
+            ),
+            (
+                json!({"kind": "emoji", "value": "\u{1f9ed}"}),
+                json!({"kind": "image", "url": own, "position": 40}),
+            ),
+            (json!({"kind": "image", "url": own}), sea.clone()),
+        ] {
+            with(icon, cover).unwrap();
+        }
+        // Null unsets both.
+        with(json!(null), json!(null)).unwrap();
+        let other = "/assets/01a0e2a0-0000-7000-8000-000000000002/cover.png";
+        let book = json!({"kind": "symbol", "name": "book"});
+        for (icon, cover) in [
+            (json!({"kind": "symbol", "name": "Book Open"}), sea.clone()),
+            (json!({"kind": "emoji", "value": "two words"}), sea.clone()),
+            (json!({"kind": "image", "url": other}), sea.clone()),
+            (
+                json!({"kind": "image", "url": "https://example.com/a.png"}),
+                sea.clone(),
+            ),
+            (
+                json!({"kind": "symbol", "name": "book", "color": "blue"}),
+                sea,
+            ),
+            (book.clone(), json!({"kind": "gradient", "name": "neon"})),
+            (
+                book.clone(),
+                json!({"kind": "image", "url": own, "position": 101}),
+            ),
+            (book, json!({"kind": "image", "url": other, "position": 50})),
+        ] {
+            assert!(with(icon.clone(), cover.clone()).is_err(), "{icon} {cover}");
+        }
     }
 
     #[test]
@@ -488,7 +626,7 @@ mod tests {
     fn rejects_mismatched_identity_and_invalid_document() {
         let mut item = json!({
             "format": "bluink.item",
-            "formatVersion": 15,
+            "formatVersion": 17,
             "id": ID,
             "revision": ID,
             "createdAt": "2026-09-27T11:37:24.017Z",
@@ -508,7 +646,7 @@ mod tests {
     fn accepts_direct_document_content() {
         let item = json!({
             "format": "bluink.item",
-            "formatVersion": 15,
+            "formatVersion": 17,
             "id": ID,
             "revision": ID,
             "createdAt": "2026-09-27T11:37:24.017Z",
@@ -524,7 +662,7 @@ mod tests {
     fn rejects_invalid_item_dates_tags_tasks_and_block_ids() {
         let base = json!({
             "format": "bluink.item",
-            "formatVersion": 15,
+            "formatVersion": 17,
             "id": ID,
             "revision": ID,
             "createdAt": "2026-09-27T11:37:24.017Z",
@@ -559,7 +697,7 @@ mod tests {
         assert!(
             parse_item(&serde_json::to_vec(&invalid_task).unwrap(), ID)
                 .unwrap_err()
-                .contains("identity, text and timestamps")
+                .contains("Tasks must be independent item records")
         );
 
         let mut invalid_block = base;

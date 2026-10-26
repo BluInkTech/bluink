@@ -2,7 +2,8 @@
 // Copyright (c) 2023–2026 BluInk
 
 //! Bounded native subscriptions, batching and canonical-file reconciliation.
-use std::collections::HashSet;
+use crate::indexing::coordinator::MainSnapshot;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,12 +13,12 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
-use super::error::{ApplicationError, Result};
+use super::error::{ApplicationError, Result, internal_error};
 
 const QUIET: Duration = Duration::from_millis(250);
 const MAX_WAIT: Duration = Duration::from_secs(2);
 const RESCAN_INTERVAL: Duration = Duration::from_mins(5);
-const ROOTS: [&str; 4] = ["items", "properties", "facets", "analytics/events"];
+const ROOTS: [&str; 2] = ["items", "analytics/events"];
 const SUBSCRIPTION_FAILURE: &str =
     "Filesystem subscription unavailable; external changes use the periodic rescan.";
 
@@ -88,7 +89,7 @@ struct Subscriptions {
 
 impl Subscriptions {
     fn refresh(&mut self) {
-        // Reconnect four roots at each periodic scan, including replaced roots
+        // Reconnect the roots at each periodic scan, including replaced roots
         // whose old native subscriptions may no longer report any events.
         self.watcher.take();
         let ingress = self.ingress.clone();
@@ -121,9 +122,7 @@ impl Subscriptions {
 
 enum Change {
     Item(String),
-    Schema,
-    Activity,
-    Facets,
+    Activity(Option<String>),
     Full,
     Ignore,
 }
@@ -143,14 +142,18 @@ fn classify(filename: Option<&str>) -> Change {
     match parts.as_slice() {
         ["items"] | ["items", _] => Change::Full,
         ["items", shard, id] | ["items", shard, id, "item.json"]
-            if crate::engine::project::item::is_item_id(id)
+            if crate::engine::project::identity::is_item_id(id)
                 && id[..2].eq_ignore_ascii_case(shard) =>
         {
             Change::Item((*id).to_owned())
         }
-        ["properties", ..] => Change::Schema,
-        ["analytics", "events", ..] => Change::Activity,
-        ["facets", ..] => Change::Facets,
+        ["analytics", "events"] => Change::Activity(None),
+        ["analytics", "events", filename] => filename
+            .strip_suffix(".jsonl")
+            .filter(|date| crate::engine::project::item::is_canonical_date(date))
+            .map_or(Change::Ignore, |date| {
+                Change::Activity(Some(date.to_owned()))
+            }),
         _ => Change::Ignore,
     }
 }
@@ -201,6 +204,7 @@ impl Coordinator {
             stopping: stopping.clone(),
             failure: failure.clone(),
             subscriptions,
+            activity_stamps: None,
         };
         let worker = std::thread::Builder::new()
             .name("bluink-reconcile-events".to_owned())
@@ -219,6 +223,14 @@ impl Coordinator {
         self.ingress.enqueue(filename);
     }
 
+    #[cfg(test)]
+    pub(super) fn replace_with_failed_worker_for_test(&mut self) {
+        self.stop().unwrap();
+        self.worker = Some(std::thread::spawn(|| {
+            panic!("Injected event worker failure")
+        }));
+    }
+
     pub(super) fn failure(&self) -> Option<String> {
         self.failure.lock().ok().and_then(|failure| failure.clone())
     }
@@ -226,9 +238,9 @@ impl Coordinator {
     pub(super) fn stop(&mut self) -> Result<()> {
         self.stopping.store(true, Ordering::Release);
         if let Some(worker) = self.worker.take() {
-            worker.join().map_err(|_| {
-                ApplicationError::Internal("Project event worker panicked.".to_owned())
-            })?;
+            worker
+                .join()
+                .map_err(|_| internal_error("Project event worker panicked.".to_owned()))?;
         }
         Ok(())
     }
@@ -241,6 +253,7 @@ struct EventWorker {
     stopping: Arc<AtomicBool>,
     failure: Arc<Mutex<Option<String>>>,
     subscriptions: Subscriptions,
+    activity_stamps: Option<HashMap<String, crate::projection::FileStamp>>,
 }
 
 impl EventWorker {
@@ -285,7 +298,12 @@ impl EventWorker {
             }
             if !pending.empty()
                 && (stopping || last.elapsed() >= QUIET || first.elapsed() >= MAX_WAIT)
-                && let Err(error) = reconcile(&self.root, &self.index, std::mem::take(&mut pending))
+                && let Err(error) = reconcile(
+                    &self.root,
+                    &self.index,
+                    std::mem::take(&mut pending),
+                    &mut self.activity_stamps,
+                )
             {
                 self.report_failure(&error);
             }
@@ -295,7 +313,8 @@ impl EventWorker {
                     pending.add(classify(filename.as_deref()));
                 }
                 if !pending.empty()
-                    && let Err(error) = reconcile(&self.root, &self.index, pending)
+                    && let Err(error) =
+                        reconcile(&self.root, &self.index, pending, &mut self.activity_stamps)
                 {
                     self.report_failure(&error);
                 }
@@ -321,82 +340,139 @@ struct Pending {
     items: HashSet<String>,
     schema: bool,
     activity: bool,
+    activity_dates: HashSet<String>,
     facets: bool,
     full: bool,
 }
 impl Pending {
     fn empty(&self) -> bool {
-        self.items.is_empty() && !self.schema && !self.activity && !self.facets && !self.full
+        self.items.is_empty()
+            && self.activity_dates.is_empty()
+            && !self.schema
+            && !self.activity
+            && !self.facets
+            && !self.full
     }
     fn add(&mut self, change: Change) {
         match change {
             Change::Item(id) => {
                 self.items.insert(id);
             }
-            Change::Schema => self.schema = true,
-            Change::Activity => self.activity = true,
-            Change::Facets => self.facets = true,
+
+            Change::Activity(None) => self.activity = true,
+            Change::Activity(Some(date)) => {
+                self.activity_dates.insert(date);
+            }
             Change::Full => self.full = true,
             Change::Ignore => {}
         }
     }
 }
 
-fn reconcile(root: &Path, index: &str, mut pending: Pending) -> Result<()> {
+fn activity_projection_stamps(
+    root: &Path,
+) -> Result<HashMap<String, crate::projection::FileStamp>> {
+    let mut stamps = HashMap::new();
+    let entries = match std::fs::read_dir(root.join("analytics/events")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(stamps),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(date) = name
+            .to_str()
+            .and_then(|name| name.strip_suffix(".jsonl"))
+            .filter(|date| crate::engine::project::item::is_canonical_date(date))
+        else {
+            continue;
+        };
+        if let Some(stamp) =
+            crate::projection::FileStamp::read(&entry.path()).map_err(internal_error)?
+        {
+            stamps.insert(format!("journal:{date}"), stamp);
+        }
+        // The daily aggregate is rebuildable from its journal. Detect a missing
+        // or externally changed aggregate even when the journal itself is stable.
+        if let Some(stamp) =
+            crate::projection::FileStamp::read(&root.join("analytics").join(format!("{date}.json")))
+                .map_err(internal_error)?
+        {
+            stamps.insert(format!("daily:{date}"), stamp);
+        }
+    }
+    Ok(stamps)
+}
+
+fn reconcile(
+    root: &Path,
+    index: &str,
+    mut pending: Pending,
+    activity_stamps: &mut Option<HashMap<String, crate::projection::FileStamp>>,
+) -> Result<()> {
     let _span = tracing::debug_span!(
         "watcher.reconcile",
         full = pending.full,
         item_count = pending.items.len()
     )
     .entered();
+    let scanned_activity = if pending.full {
+        let current = activity_projection_stamps(root)?;
+        if activity_stamps.as_ref() != Some(&current) {
+            pending.activity = true;
+        }
+        Some(current)
+    } else {
+        None
+    };
     if pending.full {
         // Compare metadata with committed stamps, not a second resident copy of
         // every item. Unchanged files are never parsed or queued for projection.
-        let (_, reader, _) = crate::service::service_index(index)?;
-        let mut indexed = crate::index::indexed_file_stamps(&reader, "id", false, |_, _| {})
-            .map_err(ApplicationError::Internal)?;
-        crate::engine::project::item::visit_project_item_ids(root, |id| {
-            let key = crate::project::ItemId::parse(id)
-                .ok_or_else(|| format!("Invalid item ID: {id}"))?;
+        let MainSnapshot { reader, .. } = crate::indexing::service::service_index(index)?;
+        let mut indexed = crate::indexing::index::indexed_file_stamps(&reader, |_, _| Ok(()))
+            .map_err(internal_error)?;
+        let keys = crate::indexing::source::list(root).map_err(internal_error)?;
+        let stamps = crate::indexing::source::file_stamps(root, &keys, |_, _| Ok(()))
+            .map_err(internal_error)?;
+        for (key, current) in keys.into_iter().zip(stamps) {
             let previous = indexed.remove(&key);
-            let path = crate::project::item_path(root, id);
-            match crate::project::FileStamp::read(&path)? {
-                Some(stamp) => {
-                    if previous != Some(Some(stamp)) {
-                        pending.items.insert(id.to_owned());
-                    }
-                }
-                None => {
-                    if previous.is_some() {
-                        pending.items.insert(id.to_owned());
-                    }
-                }
+            if previous != current.map(Some) {
+                pending.items.insert(key.as_str().to_owned());
             }
-            Ok(())
-        })
-        .map_err(ApplicationError::Internal)?;
+        }
         pending
             .items
             .extend(indexed.into_keys().map(|id| id.as_str().to_owned()));
-        pending.schema = true;
-        pending.activity = true;
-        pending.facets = true;
     }
     for id in pending.items {
-        crate::service::enqueue_external_index_item(index.to_owned(), id)
-            .map_err(|error| ApplicationError::Internal(error.to_string()))?;
+        if id.as_bytes().get(14) == Some(&b'8') {
+            match crate::engine::project::named_items::observe(root, &id)
+                .map_err(internal_error)?
+                .as_deref()
+            {
+                Some("property") => pending.schema = true,
+                Some("tag" | "label") => pending.facets = true,
+                _ => {}
+            }
+        }
+        crate::indexing::service::enqueue_external_index_item(index.to_owned(), id)?;
     }
     if pending.schema {
-        crate::service::refresh_query_fields(index.to_owned())
-            .map_err(|error| ApplicationError::Internal(error.to_string()))?;
+        crate::indexing::service::refresh_query_fields(index.to_owned())?;
     }
     if pending.facets {
-        crate::catalogue::invalidate_facets(&root.to_string_lossy())
-            .map_err(|error| ApplicationError::Internal(error.to_string()))?;
+        crate::catalogue::invalidate_facets(&root.to_string_lossy())?;
     }
     if pending.activity {
         crate::engine::project::activity::reconcile_activity(root.to_string_lossy().into_owned())
-            .map_err(ApplicationError::Internal)?;
+            .map_err(internal_error)?;
+    } else if !pending.activity_dates.is_empty() {
+        crate::engine::project::activity::reconcile_activity_dates(root, &pending.activity_dates)
+            .map_err(internal_error)?;
+    }
+    if let Some(current) = scanned_activity {
+        *activity_stamps = Some(current);
     }
     Ok(())
 }
@@ -406,6 +482,21 @@ mod tests {
     use super::*;
     use notify::event::{AccessKind, ModifyKind, RenameMode};
     const ID: &str = "00000000-0000-7000-8000-000000000099";
+
+    #[test]
+    fn full_scan_notices_a_missing_activity_projection() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(activity_projection_stamps(root.path()).unwrap().is_empty());
+        let events = root.path().join("analytics/events");
+        std::fs::create_dir_all(&events).unwrap();
+        std::fs::write(events.join("2026-10-25.jsonl"), b"event\n").unwrap();
+        let missing = activity_projection_stamps(root.path()).unwrap();
+        let daily = root.path().join("analytics/2026-10-25.json");
+        std::fs::write(&daily, b"daily").unwrap();
+        assert_ne!(missing, activity_projection_stamps(root.path()).unwrap());
+        std::fs::remove_file(daily).unwrap();
+        assert_eq!(missing, activity_projection_stamps(root.path()).unwrap());
+    }
 
     fn ingress(root: &Path, capacity: usize) -> (Ingress, Receiver<Option<String>>) {
         let (sender, receiver) = bounded(capacity);
@@ -428,14 +519,14 @@ mod tests {
         ingress.receive(Ok(Event::new(EventKind::Modify(ModifyKind::Name(
             RenameMode::Both,
         )))
-        .add_path(directory.path().join("properties/old.string.property"))
-        .add_path(directory.path().join("properties/new.string.property"))));
+        .add_path(directory.path().join(format!("items/00/{ID}/.item.tmp")))
+        .add_path(directory.path().join(format!("items/00/{ID}/item.json")))));
         let names: Vec<_> = received.try_iter().collect();
-        assert_eq!(names.len(), 2);
+        assert_eq!(names.len(), 1);
         assert!(
             names
                 .iter()
-                .all(|name| matches!(classify(name.as_deref()), Change::Schema))
+                .all(|name| matches!(classify(name.as_deref()), Change::Item(_)))
         );
         for path in [
             directory.path().join(".cache/file"),
@@ -447,7 +538,7 @@ mod tests {
             ingress.receive(Ok(Event::new(EventKind::Any).add_path(path)));
         }
         ingress.receive(Ok(Event::new(EventKind::Access(AccessKind::Any))
-            .add_path(directory.path().join("properties/field"))));
+            .add_path(directory.path().join(format!("items/00/{ID}/item.json")))));
         assert!(received.is_empty());
         ingress.receive(Ok(Event::new(EventKind::Any)));
         assert_eq!(received.try_recv().unwrap(), None);
@@ -463,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn native_subscriptions_deliver_all_four_roots_and_stop_without_node() {
+    fn native_subscriptions_deliver_all_roots_and_stop_without_node() {
         let directory = tempfile::tempdir().unwrap();
         for prefix in ROOTS {
             std::fs::create_dir_all(directory.path().join(prefix).join("nested/deep")).unwrap();
@@ -481,8 +572,16 @@ mod tests {
         let mut probe = 0;
         while observed.len() != ROOTS.len() {
             for prefix in ROOTS {
-                std::fs::write(root.join(prefix).join(format!("probe-{probe}")), "external")
-                    .unwrap();
+                let filename = if prefix == "analytics/events" {
+                    "2026-10-21.jsonl".to_owned()
+                } else {
+                    format!("probe-{probe}")
+                };
+                std::fs::write(
+                    root.join(prefix).join(filename),
+                    format!("external-{probe}"),
+                )
+                .unwrap();
             }
             probe += 1;
             std::thread::sleep(Duration::from_millis(50));
@@ -504,7 +603,7 @@ mod tests {
         ingress.stopping.store(true, Ordering::Release);
         subscriptions.watcher.take();
         received.try_iter().for_each(drop);
-        std::fs::write(root.join("properties/after-stop"), "ignored").unwrap();
+        std::fs::write(root.join("items/after-stop"), "ignored").unwrap();
         std::thread::sleep(Duration::from_millis(100));
         assert!(received.is_empty());
     }
@@ -528,10 +627,10 @@ mod tests {
         }
         subscriptions.refresh();
         assert!(ingress.failure.lock().unwrap().is_none());
-        std::fs::remove_dir(root.join("facets")).unwrap();
+        std::fs::remove_dir(root.join("items")).unwrap();
         subscriptions.refresh();
         assert!(ingress.failure.lock().unwrap().is_some());
-        std::fs::create_dir(root.join("facets")).unwrap();
+        std::fs::create_dir(root.join("items")).unwrap();
         subscriptions.refresh();
         assert!(ingress.failure.lock().unwrap().is_none());
     }
@@ -550,18 +649,29 @@ mod tests {
             format!("items/../{ID}/item.json"),
             format!("items/ff/{ID}/item.json"),
             ".cache/index/file".to_owned(),
+            "analytics/events/day.json".to_owned(),
+            "analytics/events/2026-02-30.jsonl".to_owned(),
+            "analytics/events/2026-10-21.jsonl.tmp".to_owned(),
+            "catalogue/.properties.tmp".to_owned(),
+            "catalogue/unrelated.json".to_owned(),
         ] {
             assert!(matches!(classify(Some(&path)), Change::Ignore));
         }
         assert!(matches!(
-            classify(Some("properties/kind.string.property")),
-            Change::Schema
+            classify(Some("catalogue/properties.json")),
+            Change::Ignore
         ));
         assert!(matches!(
-            classify(Some("analytics/events/day.json")),
-            Change::Activity
+            classify(Some("analytics/events/2026-10-21.jsonl")),
+            Change::Activity(Some(date)) if date == "2026-10-21"
+        ));
+        assert!(matches!(
+            classify(Some("analytics/events")),
+            Change::Activity(None)
         ));
         let mut pending = Pending::default();
+        pending.add(classify(Some("items")));
+        assert!(pending.full);
         pending.add(Change::Item(ID.to_owned()));
         pending.add(Change::Item(ID.to_owned()));
         assert_eq!(pending.items.len(), 1);

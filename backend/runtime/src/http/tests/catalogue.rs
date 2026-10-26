@@ -12,9 +12,13 @@ use serde_json::json;
 )]
 fn catalogue_mutations_refresh_schema_and_facets_and_distinguish_storage_errors() {
     let f = Fixture::new(true);
-    assert_eq!(
-        f.call("analyze_query", json!({"query":"+export_stage:ready"}))["valid"],
-        false
+    assert!(
+        !f.call(
+            "validate_query",
+            json!({"document":crate::query::document::test_query("+export_stage:ready")})
+        )["valid"]
+            .as_bool()
+            .unwrap()
     );
     let created = f.call(
         "create_property",
@@ -22,14 +26,18 @@ fn catalogue_mutations_refresh_schema_and_facets_and_distinguish_storage_errors(
     );
     assert_eq!(
         created,
-        json!({"key":"export_stage","label":"Export stage","valueType":"select","source":"registered","options":["draft","review"]})
+        json!({"key":"export_stage","valueType":"select","source":"registered","options":["draft","review"]})
     );
-    assert_eq!(
-        f.call("analyze_query", json!({"query":"+export_stage:ready"}))["valid"],
-        true
+    assert!(
+        f.call(
+            "validate_query",
+            json!({"document":crate::query::document::test_query("+export_stage:ready")})
+        )["valid"]
+            .as_bool()
+            .unwrap()
     );
     let updated = f.call(
-        "add_property_options",
+        "update_property_options",
         json!({"key":"export_stage","valueType":"select","options":["ready"]}),
     );
     assert_eq!(updated["options"], json!(["draft", "ready", "review"]));
@@ -39,13 +47,44 @@ fn catalogue_mutations_refresh_schema_and_facets_and_distinguish_storage_errors(
             .unwrap()
             .contains(&updated)
     );
+    // Colours are saved with the property and reach every reader of its fields.
+    let coloured = f.call(
+        "update_property_options",
+        json!({"key":"export_stage","valueType":"select",
+            "optionAppearance":{"ready":{"color":"green"},"review":{"color":"amber"}}}),
+    );
+    assert_eq!(coloured["options"], updated["options"]);
+    assert_eq!(
+        coloured["optionAppearance"],
+        json!({"ready":{"color":"green"},"review":{"color":"amber"}})
+    );
+    assert!(
+        f.call("read_metadata_fields", json!({}))
+            .as_array()
+            .unwrap()
+            .contains(&coloured)
+    );
+    for appearance in [
+        json!({"ready":{"color":"magenta"}}),
+        json!({"gone":{"color":"blue"}}),
+    ] {
+        f.error(
+            "update_property_options",
+            json!({"key":"export_stage","valueType":"select","optionAppearance":appearance}),
+            StatusCode::BAD_REQUEST,
+        );
+    }
     assert_eq!(
         f.call("remove_property", json!({"key":"export_stage"})),
         json!({"removed":true})
     );
-    assert_eq!(
-        f.call("analyze_query", json!({"query":"+export_stage:ready"}))["valid"],
-        false
+    assert!(
+        !f.call(
+            "validate_query",
+            json!({"document":crate::query::document::test_query("+export_stage:ready")})
+        )["valid"]
+            .as_bool()
+            .unwrap()
     );
     for kind in ["tag", "label"] {
         assert_eq!(f.call("list_facets", json!({"kind":kind})), json!([]));
@@ -77,7 +116,7 @@ fn catalogue_mutations_refresh_schema_and_facets_and_distinguish_storage_errors(
             json!({"key":"Bad Key","valueType":"text"}),
         ),
         (
-            "add_property_options",
+            "update_property_options",
             json!({"key":"status","valueType":"select","options":["Bad Value"]}),
         ),
         ("remove_property", json!({"key":"missing"})),
@@ -103,17 +142,18 @@ fn catalogue_mutations_refresh_schema_and_facets_and_distinguish_storage_errors(
         json!({"kind":"tag","key":"used_tag"}),
         StatusCode::BAD_REQUEST,
     );
-    let properties = f.root.path().join("properties");
-    let backup = f.root.path().join("saved-properties");
-    std::fs::rename(&properties, &backup).unwrap();
-    std::fs::write(&properties, "not a directory").unwrap();
+    let properties =
+        crate::engine::project::named_items::path(f.root.path(), "property", "storage_failure")
+            .unwrap();
+    let parent = properties.parent().unwrap();
+    std::fs::create_dir_all(parent.parent().unwrap()).unwrap();
+    std::fs::write(parent, "not a directory").unwrap();
     f.error(
         "create_property",
         json!({"key":"storage_failure","valueType":"text"}),
         StatusCode::INTERNAL_SERVER_ERROR,
     );
-    std::fs::remove_file(&properties).unwrap();
-    std::fs::rename(&backup, &properties).unwrap();
+    std::fs::remove_file(parent).unwrap();
     assert!(
         f.call("read_metadata_fields", json!({}))
             .as_array()
@@ -123,18 +163,21 @@ fn catalogue_mutations_refresh_schema_and_facets_and_distinguish_storage_errors(
     );
     let config = f.root.path().join("bluink.json");
     let backup = f.root.path().join("saved-bluink.json");
-    let view = f.call("read_default_view", json!({}));
+    let view = f.call("read_workspace_context", json!({}))["defaultWorkspace"].clone();
     std::fs::rename(&config, &backup).unwrap();
     f.error(
-        "read_default_view",
+        "read_workspace_context",
         json!({}),
         StatusCode::INTERNAL_SERVER_ERROR,
     );
     f.error(
-        "update_default_view",
-        json!({"content":view}),
+        "set_default_workspace",
+        json!({"id":view["id"]}),
         StatusCode::INTERNAL_SERVER_ERROR,
     );
     std::fs::rename(backup, config).unwrap();
-    assert_eq!(f.call("read_default_view", json!({})), view);
+    assert_eq!(
+        f.call("read_workspace_context", json!({}))["defaultWorkspace"],
+        view
+    );
 }

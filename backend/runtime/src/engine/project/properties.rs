@@ -1,358 +1,235 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2023–2026 BluInk
 
-use std::collections::HashSet;
-use std::fs::{self, OpenOptions};
-use std::path::Path;
-
-use fs4::fs_std::FileExt;
+use super::catalogues::{Attributes, DeclarationStore};
+use super::item::{is_canonical_date, is_canonical_instant};
+use super::types::{ChoiceAppearance, MetadataFieldValueType};
+use super::write::MutationError;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::time::Instant;
 
-use crate::engine::project::io::{create_json_atomic, write_json_atomic};
-use crate::engine::project::item::{is_canonical_date, is_canonical_instant};
-use crate::engine::project::write::{MutationError, lock_relationships};
-
-#[derive(Debug)]
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Declaration {
-    key: String,
-    value_type: &'static str,
+    value_type: MetadataFieldValueType,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     options: Vec<String>,
+    /// How chosen options look; options without an entry are automatic.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    option_appearance: BTreeMap<String, ChoiceAppearance>,
+    #[serde(flatten)]
+    attributes: Attributes,
+}
+
+const CATALOGUE: DeclarationStore<Declaration> = DeclarationStore {
+    kind: "property",
+    validate: validate_declaration,
+};
+
+pub(crate) fn validate_content(content: &Value) -> Result<(), String> {
+    let key = content["key"].as_str().ok_or("Property has no key")?;
+    let declaration = serde_json::from_value(content.clone()).map_err(|error| error.to_string())?;
+    validate_declaration(key, &declaration)
+}
+
+fn validate_declaration(key: &str, declaration: &Declaration) -> Result<(), String> {
+    if !is_snake_case(key) || key == "summary" {
+        return Err(
+            "Property keys must be lowercase snake-case strings other than summary.".to_owned(),
+        );
+    }
+    let normalized = normalize_options(
+        declaration.value_type.as_str(),
+        Some(&json!(declaration.options)),
+    )?;
+    if normalized != declaration.options {
+        return Err(format!(
+            "Property {key} options must be sorted, unique, and only used with select types."
+        ));
+    }
+    if let Some(option) = declaration
+        .option_appearance
+        .keys()
+        .find(|option| !declaration.options.contains(option))
+    {
+        return Err(format!(
+            "Property {key} has no option {option} to give an appearance."
+        ));
+    }
+    Ok(())
 }
 
 impl Declaration {
-    fn as_json(&self) -> Value {
-        let mut value = json!({"key": self.key, "valueType": self.value_type});
-        if crate::engine::project::config::is_required_builtin_property(&self.key) {
+    fn as_json(&self, key: &str) -> Value {
+        let mut value = json!({"key": key, "valueType": self.value_type});
+        if super::config::is_required_builtin_property(key) {
             value["system"] = json!(true);
         }
         if !self.options.is_empty() {
             value["options"] = json!(self.options);
         }
-        value
-    }
-
-    fn marker(&self) -> Value {
-        let mut value = json!({"format": "bluink.property", "formatVersion": 1});
-        if !self.options.is_empty() {
-            value["options"] = json!(self.options);
+        if !self.option_appearance.is_empty() {
+            value["optionAppearance"] = json!(self.option_appearance);
         }
         value
     }
-
-    fn path(&self, root: &Path) -> Result<std::path::PathBuf, String> {
-        let token = type_token(self.value_type).ok_or("Unsupported property type")?;
-        Ok(root
-            .join("properties")
-            .join(format!("{}.{token}.property", self.key)))
-    }
 }
 
-/// Read version-one property markers. The filename is the declaration's
-/// identity; unsupported filenames are not declarations.
+pub(crate) fn initialize(root: &Path) -> Result<(), MutationError> {
+    CATALOGUE.initialize(root)
+}
+
 pub(crate) fn list_property_declarations(root: &Path) -> Result<Value, String> {
-    with_declarations_lock(root, || {
-        Ok(Value::Array(
-            read_declarations(root)?
-                .iter()
-                .map(Declaration::as_json)
-                .collect(),
-        ))
-    })
+    CATALOGUE
+        .read(root, |entries| {
+            Ok(Value::Array(
+                entries
+                    .iter()
+                    .map(|(key, value)| value.as_json(key))
+                    .collect(),
+            ))
+        })
+        .map_err(|error| error.to_string())
 }
 
-/// Keep the declaration snapshot stable until the canonical item is durable.
+/// Validate declared metadata while the caller holds the project mutation gate.
 pub(crate) fn with_validated_metadata<T>(
     root: &Path,
     meta: &Map<String, Value>,
-    commit: impl FnOnce() -> Result<T, String>,
-) -> Result<T, String> {
-    with_declarations_lock(root, || {
-        for declaration in read_declarations(root)? {
-            let Some(value) = meta.get(&declaration.key).filter(|value| !value.is_null()) else {
-                continue;
-            };
-            validate_value(&declaration, value)?;
+    commit: impl FnOnce() -> Result<T, MutationError>,
+) -> Result<T, MutationError> {
+    let started = Instant::now();
+    let mut checked = 0usize;
+    for (key, value) in meta.iter().filter(|(_, value)| !value.is_null()) {
+        let Some(record) =
+            super::named_items::read(root, "property", key).map_err(MutationError::Internal)?
+        else {
+            continue;
+        };
+        if record["meta"]["state"] != "active" {
+            continue;
         }
-        commit()
-    })
+        let declaration: Declaration = serde_json::from_value(record["content"].clone())
+            .map_err(MutationError::Serialization)?;
+        validate_declaration(key, &declaration).map_err(MutationError::Internal)?;
+        validate_value(key, &declaration, value).map_err(MutationError::Validation)?;
+        checked += 1;
+    }
+    tracing::debug!(
+        operation = "validate_item_properties",
+        checked,
+        elapsed_ms = started.elapsed().as_secs_f64() * 1000.0
+    );
+    commit()
 }
+
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "The operation consumes its input snapshot rather than exposing a borrowed transaction API."
+    reason = "The mutation consumes its input at the engine boundary."
 )]
 pub(crate) fn create_property(root: &Path, input: Value) -> Result<Value, MutationError> {
+    let _gate = super::transaction::lock(root, super::io::LockMode::Exclusive)?;
+    super::transaction::recover(root).map_err(MutationError::Internal)?;
     let key = input.get("key").and_then(Value::as_str).unwrap_or("");
-    if !is_snake_case(key) {
-        return Err(MutationError::Expected(
-            "Property keys must be lowercase snake-case strings.".to_owned(),
-        ));
-    }
-    if key == "summary" {
-        return Err(MutationError::Expected(
-            "Summary is a built-in page property and cannot be redefined.".to_owned(),
-        ));
-    }
-    let requested_type = input.get("valueType").and_then(Value::as_str).unwrap_or("");
-    let Some(token) = type_token(requested_type) else {
-        return Err(MutationError::Expected(format!(
-            "Unsupported property type {requested_type}."
-        )));
-    };
+    let value_type: MetadataFieldValueType = serde_json::from_value(input["valueType"].clone())
+        .map_err(|_| MutationError::Validation("Unsupported property type.".to_owned()))?;
     let declaration = Declaration {
-        key: key.to_owned(),
-        value_type: value_type(token)
-            .ok_or_else(|| MutationError::Expected("Unsupported property type".to_owned()))?,
-        options: normalize_options(requested_type, input.get("options"))
-            .map_err(MutationError::Expected)?,
+        value_type,
+        options: normalize_options(value_type.as_str(), input.get("options"))
+            .map_err(MutationError::Validation)?,
+        option_appearance: BTreeMap::new(),
+        attributes: Attributes::new(),
     };
-    let _lock = declarations_lock(root).map_err(MutationError::Unexpected)?;
-    if read_declarations(root)
-        .map_err(MutationError::Unexpected)?
-        .iter()
-        .any(|existing| existing.key == key)
-    {
-        return Err(MutationError::Expected(format!(
-            "Property {key} already exists."
-        )));
-    }
-    create_json_atomic(
-        &declaration.path(root).map_err(MutationError::Unexpected)?,
-        &declaration.marker(),
-    )
-    .map_err(MutationError::Unexpected)?;
-    Ok(declaration.as_json())
+    validate_declaration(key, &declaration).map_err(MutationError::Validation)?;
+    CATALOGUE.update(root, key, |existing| {
+        if existing.is_some() {
+            return Err(MutationError::Validation(format!(
+                "Property {key} already exists."
+            )));
+        }
+        let result = declaration.as_json(key);
+        Ok((Some(declaration), result))
+    })
 }
+
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "The operation consumes its input snapshot rather than exposing a borrowed transaction API."
+    reason = "The mutation consumes its input at the engine boundary."
 )]
-pub(crate) fn add_property_options(
+/// Adds options to a select property and, when `appearance` is given,
+/// replaces how its options look. Existing options are never renamed or
+/// removed, so no note's value changes.
+pub(crate) fn update_property_options(
     root: &Path,
     key: &str,
     requested_type: &str,
     additions: Value,
+    appearance: Option<BTreeMap<String, ChoiceAppearance>>,
 ) -> Result<Value, MutationError> {
+    let _gate = super::transaction::lock(root, super::io::LockMode::Exclusive)?;
+    super::transaction::recover(root).map_err(MutationError::Internal)?;
     if !is_snake_case(key) {
-        return Err(MutationError::Expected(
+        return Err(MutationError::Validation(
             "Property keys must be lowercase snake-case strings.".to_owned(),
         ));
     }
-    if type_token(requested_type).is_none() {
-        return Err(MutationError::Expected(format!(
-            "Unsupported property type {requested_type}."
-        )));
-    }
-    let _lock = declarations_lock(root).map_err(MutationError::Unexpected)?;
-    let mut declaration = read_declarations(root)
-        .map_err(MutationError::Unexpected)?
-        .into_iter()
-        .find(|declaration| declaration.key == key && declaration.value_type == requested_type)
-        .ok_or_else(|| MutationError::Expected(format!("Property {key} does not exist.")))?;
     if !matches!(requested_type, "select" | "multiSelect") {
-        return Err(MutationError::Expected(format!(
-            "Property {key} does not support options."
-        )));
+        return Err(MutationError::Validation(
+            "Property must support options.".to_owned(),
+        ));
     }
-    let mut values: Vec<Value> = declaration
-        .options
-        .iter()
-        .map(|option| json!(option))
-        .collect();
-    let additional = additions.as_array().ok_or_else(|| {
-        MutationError::Expected(
-            "Property options must be an array of lowercase snake-case strings.".to_owned(),
-        )
-    })?;
-    values.extend(additional.iter().cloned());
-    declaration.options = normalize_options(requested_type, Some(&Value::Array(values)))
-        .map_err(MutationError::Expected)?;
-    let mut marker = declaration.marker();
-    marker["options"] = json!(declaration.options);
-    write_json_atomic(
-        &declaration.path(root).map_err(MutationError::Unexpected)?,
-        &marker,
-    )
-    .map_err(MutationError::Unexpected)?;
-    let mut result = declaration.as_json();
-    result["options"] = json!(declaration.options);
-    Ok(result)
+    let additional =
+        normalize_options(requested_type, Some(&additions)).map_err(MutationError::Validation)?;
+    CATALOGUE.update(root, key, |existing| {
+        let mut declaration = existing
+            .filter(|entry| entry.value_type.as_str() == requested_type)
+            .ok_or_else(|| MutationError::NotFound(format!("Property {key} does not exist.")))?;
+        declaration.options.extend(additional);
+        declaration.options.sort();
+        declaration.options.dedup();
+        if let Some(appearance) = appearance {
+            declaration.option_appearance = appearance;
+        }
+        validate_declaration(key, &declaration).map_err(MutationError::Validation)?;
+        let result = declaration.as_json(key);
+        Ok((Some(declaration), result))
+    })
 }
 
-pub(crate) fn remove_property(root: &Path, key: &str) -> Result<(), MutationError> {
+pub(crate) fn remove_property(
+    root: &Path,
+    key: &str,
+    used: impl FnOnce() -> Result<bool, MutationError>,
+) -> Result<(), MutationError> {
+    let _gate = super::transaction::lock(root, super::io::LockMode::Exclusive)?;
+    super::transaction::recover(root).map_err(MutationError::Internal)?;
     if !is_snake_case(key) {
-        return Err(MutationError::Expected(
+        return Err(MutationError::Validation(
             "Property keys must be lowercase snake-case strings.".to_owned(),
         ));
     }
-    if crate::engine::project::config::is_required_builtin_property(key) {
-        return Err(MutationError::Expected(format!(
+    if super::config::is_required_builtin_property(key) {
+        return Err(MutationError::Validation(format!(
             "Built-in property {key} is required and cannot be deleted."
         )));
     }
-    let _relationships = lock_relationships(root).map_err(MutationError::Unexpected)?;
-    if crate::engine::project::usage::property_used(root, key).map_err(MutationError::Unexpected)? {
-        return Err(MutationError::Expected(format!(
-            "Property {key} is used by one or more items."
-        )));
-    }
-    let _lock = declarations_lock(root).map_err(MutationError::Unexpected)?;
-    let declaration = read_declarations(root)
-        .map_err(MutationError::Unexpected)?
-        .into_iter()
-        .find(|declaration| declaration.key == key)
-        .ok_or_else(|| MutationError::Expected(format!("Property {key} does not exist.")))?;
-    let path = declaration.path(root).map_err(MutationError::Unexpected)?;
-    fs::remove_file(&path)
-        .map_err(|error| MutationError::Unexpected(format!("{}: {error}", path.display())))
-}
-
-fn with_declarations_lock<T>(
-    root: &Path,
-    operation: impl FnOnce() -> Result<T, String>,
-) -> Result<T, String> {
-    let _lock = declarations_lock(root)?;
-    operation()
-}
-
-fn declarations_lock(root: &Path) -> Result<fs::File, String> {
-    let directory = root.join(".cache");
-    fs::create_dir_all(&directory).map_err(|error| format!("{}: {error}", directory.display()))?;
-    let path = directory.join("property-declarations.lock");
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
-        .map_err(|error| format!("{}: {error}", path.display()))?;
-    lock.lock_exclusive()
-        .map_err(|error| format!("{}: {error}", path.display()))?;
-    Ok(lock)
-}
-
-fn read_declarations(root: &Path) -> Result<Vec<Declaration>, String> {
-    let directory = root.join("properties");
-    let entries =
-        fs::read_dir(&directory).map_err(|error| format!("{}: {error}", directory.display()))?;
-    let mut declarations = Vec::new();
-    let mut keys = HashSet::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| error.to_string())?;
-        if !entry
-            .file_type()
-            .map_err(|error| error.to_string())?
-            .is_file()
-        {
-            continue;
-        }
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        let Some((key, token)) = name
-            .strip_suffix(".property")
-            .and_then(|stem| stem.rsplit_once('.'))
-        else {
-            continue;
-        };
-        if !is_snake_case(key)
-            || !token
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
-        {
-            continue;
-        }
-        let Some(value_type) = value_type(token) else {
-            continue;
-        };
-        let path = entry.path();
-        let marker: Value = serde_json::from_slice(
-            &fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?,
-        )
-        .map_err(|error| format!("{}: {error}", path.display()))?;
-        if marker.get("format").and_then(Value::as_str) != Some("bluink.property")
-            || marker.get("formatVersion").and_then(Value::as_u64) != Some(1)
-        {
-            return Err(format!("{name} is not a supported Bluink property marker."));
-        }
-        let options = if matches!(value_type, "select" | "multiSelect") {
-            match marker.get("options") {
-                None => Vec::new(),
-                Some(Value::Array(values))
-                    if values
-                        .iter()
-                        .all(|value| value.as_str().is_some_and(is_snake_case)) =>
-                {
-                    let mut options: Vec<String> = values
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
-                        .collect();
-                    options.sort();
-                    options.dedup();
-                    options
-                }
-                _ => {
-                    return Err(
-                        "Property options must be an array of lowercase snake-case strings."
-                            .to_owned(),
-                    );
-                }
-            }
-        } else {
-            Vec::new()
-        };
-        if !keys.insert(key.to_owned()) {
-            return Err(format!("Property {key} is declared more than once."));
-        }
-        declarations.push(Declaration {
-            key: key.to_owned(),
-            value_type,
-            options,
-        });
-    }
-    declarations.sort_by(|left, right| left.key.cmp(&right.key));
-    Ok(declarations)
-}
-
-fn value_type(token: &str) -> Option<&'static str> {
-    Some(match token {
-        "string" => "text",
-        "number" => "number",
-        "checkbox" => "checkbox",
-        "date" => "date",
-        "datetime" => "dateTime",
-        "timestamp" => "timestamp",
-        "select" => "select",
-        "multi_select" => "multiSelect",
-        "language" => "language",
-        "color" => "color",
-        "url" => "url",
-        "email" => "email",
-        "tel" => "tel",
-        "rating" => "rating",
-        "image" => "image",
-        _ => return None,
-    })
-}
-
-fn type_token(value_type: &str) -> Option<&'static str> {
-    Some(match value_type {
-        "text" => "string",
-        "number" => "number",
-        "checkbox" => "checkbox",
-        "date" => "date",
-        "dateTime" => "datetime",
-        "timestamp" => "timestamp",
-        "select" => "select",
-        "multiSelect" => "multi_select",
-        "language" => "language",
-        "color" => "color",
-        "url" => "url",
-        "email" => "email",
-        "tel" => "tel",
-        "rating" => "rating",
-        "image" => "image",
-        _ => return None,
-    })
+    super::usage::remove_if_unused(
+        root,
+        super::usage::Usage::Property(key),
+        || Ok(()),
+        || used().map(usize::from),
+        |()| {
+            CATALOGUE.update(root, key, |existing| {
+                existing.ok_or_else(|| {
+                    MutationError::NotFound(format!("Property {key} does not exist."))
+                })?;
+                Ok((None, ()))
+            })
+        },
+    )
 }
 
 fn normalize_options(value_type: &str, values: Option<&Value>) -> Result<Vec<String>, String> {
@@ -404,8 +281,121 @@ fn valid_segment(segment: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
 }
 
-fn validate_value(declaration: &Declaration, value: &Value) -> Result<(), String> {
-    let valid = match declaration.value_type {
+/// A property a workspace setup relies on.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SetupProperty {
+    key: String,
+    value_type: MetadataFieldValueType,
+    #[serde(default)]
+    options: Vec<String>,
+    #[serde(default)]
+    option_appearance: BTreeMap<String, ChoiceAppearance>,
+}
+
+/// The declarations a setup's templates are checked against. A property the
+/// project already declares is reused unchanged, never replaced; a missing
+/// one becomes a new declaration item written with the rest of the setup.
+pub(crate) struct SetupDeclarations {
+    declarations: BTreeMap<String, Declaration>,
+    /// New declaration items, for the caller's single write.
+    pub(crate) items: Vec<Value>,
+}
+
+impl SetupDeclarations {
+    /// The caller holds the project mutation gate.
+    pub(crate) fn prepare(
+        root: &Path,
+        properties: &[SetupProperty],
+    ) -> Result<Self, MutationError> {
+        let mut prepared = Self {
+            declarations: BTreeMap::new(),
+            items: Vec::new(),
+        };
+        for property in properties {
+            let key = property.key.as_str();
+            if super::config::is_required_builtin_property(key) {
+                return Err(MutationError::Validation(format!(
+                    "{key} is built in, so the setup must not declare it."
+                )));
+            }
+            if prepared.declarations.contains_key(key) {
+                return Err(MutationError::Validation(format!(
+                    "Property {key} appears twice."
+                )));
+            }
+            if let Some(existing) = Self::active(root, key)? {
+                prepared.declarations.insert(key.to_owned(), existing);
+                continue;
+            }
+            let declaration = Declaration {
+                value_type: property.value_type,
+                options: property.options.clone(),
+                option_appearance: property.option_appearance.clone(),
+                attributes: Attributes::new(),
+            };
+            validate_declaration(key, &declaration).map_err(MutationError::Validation)?;
+            let id = super::named_items::id("property", key);
+            let archived =
+                super::named_items::read(root, "property", key).map_err(MutationError::Internal)?;
+            let mut content =
+                serde_json::to_value(&declaration).map_err(MutationError::Serialization)?;
+            content["key"] = json!(key);
+            let item = super::assemble::assemble_item(
+                &json!({"id": id, "meta": {"type": "property", "state": "active", "title": key}, "content": content}),
+                archived.as_ref(),
+                "UTC",
+            )
+            .map_err(MutationError::Validation)?;
+            super::item::validate_item(&item, &id).map_err(MutationError::Validation)?;
+            super::named_items::validate_mutation(root, archived.as_ref(), &item)?;
+            prepared.items.push(item);
+            prepared.declarations.insert(key.to_owned(), declaration);
+        }
+        Ok(prepared)
+    }
+
+    fn active(root: &Path, key: &str) -> Result<Option<Declaration>, MutationError> {
+        let Some(record) =
+            super::named_items::read(root, "property", key).map_err(MutationError::Internal)?
+        else {
+            return Ok(None);
+        };
+        if record["meta"]["state"] != "active" {
+            return Ok(None);
+        }
+        serde_json::from_value(record["content"].clone())
+            .map(Some)
+            .map_err(MutationError::Serialization)
+    }
+
+    /// Checks that `key` is declared, by the setup or the project, and that
+    /// `value`, when given, suits its declaration.
+    pub(crate) fn check(
+        &mut self,
+        root: &Path,
+        owner: &str,
+        key: &str,
+        value: Option<&Value>,
+    ) -> Result<(), MutationError> {
+        if !self.declarations.contains_key(key) {
+            let declaration = Self::active(root, key)?.ok_or_else(|| {
+                MutationError::Validation(format!(
+                    "{owner} uses {key}, which neither the setup nor the project declares."
+                ))
+            })?;
+            self.declarations.insert(key.to_owned(), declaration);
+        }
+        if let (Some(value), Some(declaration)) = (value, self.declarations.get(key)) {
+            validate_value(key, declaration, value)
+                .map_err(|error| MutationError::Validation(format!("{owner}: {error}")))?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_value(key: &str, declaration: &Declaration, value: &Value) -> Result<(), String> {
+    let valid = match declaration.value_type.as_str() {
         "number" | "rating" => value.is_number(),
         "checkbox" => value.is_boolean(),
         "date" => value.as_str().is_some_and(is_canonical_date),
@@ -418,16 +408,17 @@ fn validate_value(declaration: &Declaration, value: &Value) -> Result<(), String
     if !valid {
         return Err(format!(
             "Property {} must use a {} value.",
-            declaration.key, declaration.value_type
+            key,
+            declaration.value_type.as_str()
         ));
     }
     if !declaration.options.is_empty() {
-        let values: Vec<&str> = match declaration.value_type {
+        let values: Vec<&str> = match declaration.value_type.as_str() {
             "select" => vec![value.as_str().unwrap_or("")],
             "multiSelect" => value
                 .as_array()
-                .unwrap()
-                .iter()
+                .into_iter()
+                .flatten()
                 .filter_map(Value::as_str)
                 .collect(),
             _ => Vec::new(),
@@ -436,12 +427,12 @@ fn validate_value(declaration: &Declaration, value: &Value) -> Result<(), String
             .iter()
             .any(|value| !declaration.options.iter().any(|option| option == value))
         {
-            let suffix = if declaration.value_type == "select" {
+            let suffix = if declaration.value_type.as_str() == "select" {
                 "a declared option"
             } else {
                 "declared options"
             };
-            return Err(format!("Property {} must use {suffix}.", declaration.key));
+            return Err(format!("Property {key} must use {suffix}."));
         }
     }
     Ok(())
@@ -449,131 +440,176 @@ fn validate_value(declaration: &Declaration, value: &Value) -> Result<(), String
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        add_property_options, create_property, list_property_declarations, remove_property,
-        with_validated_metadata,
-    };
-    use serde_json::{Map, json};
+    use super::*;
 
     #[test]
-    fn validates_markers_and_item_metadata() {
-        let root = std::env::temp_dir().join(format!("bluink-property-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(root.join("properties")).unwrap();
-        std::fs::write(root.join("properties/workflow.select.property"), br#"{"format":"bluink.property","formatVersion":1,"options":["review","draft","review"]}"#).unwrap();
-        std::fs::write(
-            root.join("properties/due_date.date.property"),
-            br#"{"format":"bluink.property","formatVersion":1}"#,
+    fn mutations_preserve_entry_attributes_and_validate_values() {
+        let root = tempfile::tempdir().unwrap();
+        initialize(root.path()).unwrap();
+        create_property(
+            root.path(),
+            json!({"key":"workflow","valueType":"select","options":["review","draft","draft"]}),
         )
         .unwrap();
-        let declarations = list_property_declarations(&root).unwrap();
-        assert_eq!(
-            declarations,
-            json!([
-                {"key":"due_date","valueType":"date","system":true},
-                {"key":"workflow","valueType":"select","options":["draft","review"]}
-            ])
-        );
-        let mut meta = Map::new();
-        meta.insert("workflow".to_owned(), json!("draft"));
-        meta.insert("due_date".to_owned(), json!("2026-09-28"));
-        with_validated_metadata(&root, &meta, || Ok(())).unwrap();
-        meta.insert("workflow".to_owned(), json!("other"));
-        assert!(
-            with_validated_metadata(&root, &meta, || Ok(()))
-                .unwrap_err()
-                .contains("declared option")
-        );
-        meta.insert("workflow".to_owned(), json!("review"));
-        meta.insert("due_date".to_owned(), json!("2026-02-30"));
-        assert!(
-            with_validated_metadata(&root, &meta, || Ok(()))
-                .unwrap_err()
-                .contains("date value")
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn owns_marker_creation_update_and_removal() {
-        let root =
-            std::env::temp_dir().join(format!("bluink-property-writes-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(root.join("properties")).unwrap();
-        std::fs::create_dir_all(root.join("items")).unwrap();
-        assert!(create_property(&root, json!({"key":"Not valid","valueType":"select"})).is_err());
-        assert!(create_property(&root, json!({"key":"summary","valueType":"text"})).is_err());
-        let created = create_property(
-            &root,
-            json!({
-                "key":"workflow", "valueType":"select", "options":["review","draft","review"]
-            }),
+        create_property(root.path(), json!({"key":"due_date","valueType":"date"})).unwrap();
+        let path = super::super::named_items::path(root.path(), "property", "workflow").unwrap();
+        let mut document: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        document["content"]["color"] = json!("blue");
+        document["content"]["display"] = json!({"note": "kept by other editors"});
+        std::fs::write(&path, document.to_string()).unwrap();
+        let updated = update_property_options(
+            root.path(),
+            "workflow",
+            "select",
+            json!(["ready", "draft"]),
+            None,
         )
         .unwrap();
-        assert_eq!(
-            created,
-            json!({"key":"workflow","valueType":"select","options":["draft","review"]})
-        );
+        assert_eq!(updated["options"], json!(["draft", "ready", "review"]));
+        let stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["content"]["color"], "blue");
+        assert_eq!(stored["content"]["display"], document["content"]["display"]);
+        assert!(stored["content"].get("metadata").is_none());
+        let mut meta = Map::from_iter([
+            ("workflow".to_owned(), json!("ready")),
+            ("due_date".to_owned(), json!("2026-10-22")),
+        ]);
+        with_validated_metadata(root.path(), &meta, || Ok(())).unwrap();
+        meta.insert("workflow".into(), json!("invalid"));
         assert!(
-            create_property(&root, json!({"key":"workflow","valueType":"text"}))
-                .unwrap_err()
-                .to_string()
-                .contains("already exists")
+            with_validated_metadata::<()>(root.path(), &meta, || panic!("Invalid value committed"))
+                .is_err()
         );
-        let updated =
-            add_property_options(&root, "workflow", "select", json!(["in_progress", "draft"]))
-                .unwrap();
-        assert_eq!(
-            updated["options"],
-            json!(["draft", "in_progress", "review"])
-        );
-        assert_eq!(
-            std::fs::read_to_string(root.join("properties/workflow.select.property")).unwrap(),
-            r#"{"format":"bluink.property","formatVersion":1,"options":["draft","in_progress","review"]}"#
-        );
-        assert_eq!(list_property_declarations(&root).unwrap(), json!([updated]));
-        assert!(add_property_options(&root, "workflow", "select", json!(["bad option"])).is_err());
-        assert!(add_property_options(&root, "workflow", "text", json!(["draft"])).is_err());
-        remove_property(&root, "workflow").unwrap();
-        assert_eq!(list_property_declarations(&root).unwrap(), json!([]));
+        meta.insert("workflow".into(), json!("draft"));
+        meta.insert("due_date".into(), json!("2026-02-30"));
+        assert!(with_validated_metadata(root.path(), &meta, || Ok(())).is_err());
         assert!(
-            remove_property(&root, "workflow")
-                .unwrap_err()
-                .to_string()
-                .contains("does not exist")
+            create_property(root.path(), json!({"key":"workflow","valueType":"text"})).is_err()
         );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn protects_required_properties_but_allows_removing_default_kind() {
-        let root = std::env::temp_dir().join(format!(
-            "bluink-default-properties-{}",
-            uuid::Uuid::now_v7()
+        assert!(create_property(root.path(), json!({"key":"summary","valueType":"text"})).is_err());
+        assert!(update_property_options(root.path(), "workflow", "text", json!([]), None).is_err());
+        assert!(remove_property(root.path(), "workflow", || Ok(true)).is_err());
+        remove_property(root.path(), "workflow", || Ok(false)).unwrap();
+        assert!(matches!(
+            remove_property(root.path(), "workflow", || Ok(false)),
+            Err(MutationError::NotFound(_))
         ));
-        crate::engine::project::config::open_or_create_project(&root, "UTC").unwrap();
-        let fields = list_property_declarations(&root).unwrap();
-        let kind = fields
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|field| field["key"] == "kind")
-            .unwrap();
-        assert_eq!(kind.get("system"), None);
-        let status = fields
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|field| field["key"] == "status")
-            .unwrap();
-        assert_eq!(status["system"], json!(true));
-        assert!(
-            remove_property(&root, "status")
-                .unwrap_err()
-                .to_string()
-                .contains("required and cannot be deleted")
+        assert_eq!(
+            list_property_declarations(root.path())
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
         );
-        remove_property(&root, "kind").unwrap();
-        create_property(&root, json!({"key":"custom_field","valueType":"text"})).unwrap();
-        remove_property(&root, "custom_field").unwrap();
-        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn options_keep_their_appearance_until_it_is_replaced() {
+        use super::super::types::ChoiceColor;
+        let root = tempfile::tempdir().unwrap();
+        initialize(root.path()).unwrap();
+        create_property(
+            root.path(),
+            json!({"key":"workflow","valueType":"select","options":["draft","review"]}),
+        )
+        .unwrap();
+        let colours = |pairs: &[(&str, ChoiceColor)]| {
+            pairs
+                .iter()
+                .map(|(option, color)| ((*option).to_owned(), ChoiceAppearance { color: *color }))
+                .collect::<BTreeMap<_, _>>()
+        };
+        // New options and their colours arrive together.
+        let updated = update_property_options(
+            root.path(),
+            "workflow",
+            "select",
+            json!(["final"]),
+            Some(colours(&[
+                ("final", ChoiceColor::Green),
+                ("review", ChoiceColor::Amber),
+            ])),
+        )
+        .unwrap();
+        assert_eq!(updated["options"], json!(["draft", "final", "review"]));
+        assert_eq!(
+            updated["optionAppearance"],
+            json!({"final": {"color": "green"}, "review": {"color": "amber"}})
+        );
+        // Adding options alone leaves colours as they were.
+        let kept =
+            update_property_options(root.path(), "workflow", "select", json!(["ready"]), None)
+                .unwrap();
+        assert_eq!(kept["optionAppearance"], updated["optionAppearance"]);
+        // A new map replaces the old; an empty one makes every option automatic.
+        let replaced = update_property_options(
+            root.path(),
+            "workflow",
+            "select",
+            json!([]),
+            Some(colours(&[("draft", ChoiceColor::Neutral)])),
+        )
+        .unwrap();
+        assert_eq!(
+            replaced["optionAppearance"],
+            json!({"draft": {"color": "neutral"}})
+        );
+        let cleared = update_property_options(
+            root.path(),
+            "workflow",
+            "select",
+            json!([]),
+            Some(BTreeMap::new()),
+        )
+        .unwrap();
+        assert!(cleared.get("optionAppearance").is_none());
+        // Only existing options can have a colour, and a refused update changes nothing.
+        assert!(
+            update_property_options(
+                root.path(),
+                "workflow",
+                "select",
+                json!([]),
+                Some(colours(&[("missing", ChoiceColor::Blue)])),
+            )
+            .is_err()
+        );
+        let listed = list_property_declarations(root.path()).unwrap();
+        let workflow = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["key"] == "workflow")
+            .unwrap();
+        assert!(workflow.get("optionAppearance").is_none());
+    }
+
+    #[test]
+    fn required_properties_are_protected_but_default_kind_can_be_removed() {
+        let root = tempfile::tempdir().unwrap();
+        super::super::config::open_or_create_project(root.path(), "UTC").unwrap();
+        assert!(remove_property(root.path(), "status", || Ok(false)).is_err());
+        remove_property(root.path(), "kind", || Ok(false)).unwrap();
+    }
+
+    #[test]
+    fn invalid_property_blocks_its_own_values_without_overwriting_the_source() {
+        let root = tempfile::tempdir().unwrap();
+        initialize(root.path()).unwrap();
+        create_property(root.path(), json!({"key":"broken","valueType":"text"})).unwrap();
+        let file = super::super::named_items::path(root.path(), "property", "broken").unwrap();
+        std::fs::write(&file, "invalid JSON").unwrap();
+        let meta = Map::from_iter([("broken".to_owned(), json!("value"))]);
+        assert!(
+            with_validated_metadata::<()>(root.path(), &meta, || panic!(
+                "Invalid property committed"
+            ))
+            .is_err()
+        );
+        with_validated_metadata(root.path(), &Map::new(), || Ok(())).unwrap();
+        assert!(create_property(root.path(), json!({"key":"broken","valueType":"text"})).is_err());
+        create_property(root.path(), json!({"key":"other","valueType":"text"})).unwrap();
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "invalid JSON");
     }
 }

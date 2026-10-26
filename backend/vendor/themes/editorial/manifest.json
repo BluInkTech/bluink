@@ -3,43 +3,284 @@
   "id": "editorial",
   "version": "1.0.0",
   "name": "Editorial",
-  "settings": {
-    "colors": {
-      "ink": "#202b38",
-      "muted": "#4e5a68",
-      "link": "#164d84",
-      "accent": "#a2453a",
-      "surface": "#f1efe9",
-      "paper": "#fffaf2"
+  "tokens": {
+    "body-font": {
+      "type": "font",
+      "value": "source-serif-4"
     },
-    "typography": {
-      "bodyFamily": "source-serif-4",
-      "headingFamily": "inter",
-      "bodyScale": 1.05,
-      "leading": 1.65
+    "heading-font": {
+      "type": "font",
+      "value": "inter"
     },
-    "layout": {
-      "measureCh": 68,
-      "spacing": 1.15
+    "code-font": {
+      "type": "font",
+      "value": "ibm-plex-mono"
+    },
+    "root-size": {
+      "type": "length",
+      "value": "12.6pt"
+    },
+    "body-size": {
+      "type": "length",
+      "value": "1rem"
+    },
+    "paragraph-gap": {
+      "type": "length",
+      "value": "0.8625rem"
+    },
+    "leading": {
+      "type": "number",
+      "value": 1.65
+    },
+    "ink": {
+      "type": "color",
+      "value": "#202b38"
+    },
+    "link": {
+      "type": "color",
+      "value": "#164d84"
+    },
+    "accent": {
+      "type": "color",
+      "value": "#a2453a"
     }
   },
-  "templates": {
-    "pdf": "pdf/document.typ",
+  "root": {
+    "fontSize": {
+      "ref": "root-size"
+    }
+  },
+  "colors": {
+    "ink": {
+      "ref": "ink"
+    },
+    "muted": "#4e5a68",
+    "link": {
+      "ref": "link"
+    },
+    "accent": {
+      "ref": "accent"
+    },
+    "surface": "#f1efe9",
+    "paper": "#fffaf2"
+  },
+  "styles": {
+    "body": {
+      "fontFamily": {
+        "ref": "body-font"
+      },
+      "fontSize": {
+        "ref": "body-size"
+      },
+      "lineHeight": {
+        "ref": "leading"
+      },
+      "spaceAfter": {
+        "ref": "paragraph-gap"
+      }
+    },
+    "heading1": {
+      "fontFamily": {
+        "ref": "heading-font"
+      },
+      "fontSize": "2rem",
+      "fontWeight": "bold",
+      "lineHeight": 1.2,
+      "spaceBefore": "2rem",
+      "keepWithNext": true,
+      "color": {
+        "ref": "accent"
+      }
+    },
+    "heading2": {
+      "fontFamily": {
+        "ref": "heading-font"
+      },
+      "fontSize": "1.6rem",
+      "fontWeight": "bold",
+      "keepWithNext": true,
+      "color": {
+        "ref": "accent"
+      }
+    },
+    "heading3": {
+      "fontFamily": {
+        "ref": "heading-font"
+      },
+      "fontSize": "1.3rem",
+      "fontWeight": "bold",
+      "keepWithNext": true,
+      "color": {
+        "ref": "accent"
+      }
+    },
+    "heading4": {
+      "fontFamily": {
+        "ref": "heading-font"
+      },
+      "fontSize": "1.15rem",
+      "fontWeight": "bold",
+      "keepWithNext": true,
+      "color": {
+        "ref": "accent"
+      }
+    },
+    "heading5": {
+      "fontFamily": {
+        "ref": "heading-font"
+      },
+      "fontSize": "1rem",
+      "fontWeight": "bold",
+      "keepWithNext": true,
+      "color": {
+        "ref": "accent"
+      }
+    },
+    "heading6": {
+      "fontFamily": {
+        "ref": "heading-font"
+      },
+      "fontSize": "0.9rem",
+      "fontWeight": "bold",
+      "keepWithNext": true,
+      "color": {
+        "ref": "accent"
+      }
+    },
+    "link": {
+      "color": {
+        "ref": "link"
+      }
+    },
+    "quote": {
+      "italic": true,
+      "indent": "1.5rem",
+      "borderWidth": "1pt",
+      "padding": "0.75rem"
+    },
+    "code": {
+      "fontFamily": {
+        "ref": "code-font"
+      },
+      "fontSize": "0.85rem",
+      "background": "#f1efe9",
+      "padding": "1rem",
+      "keepTogether": true
+    },
+    "inlineCode": {
+      "fontFamily": {
+        "ref": "code-font"
+      },
+      "fontSize": "0.9rem"
+    },
+    "list": {
+      "indent": "1.5rem"
+    },
+    "table": {
+      "borderWidth": "0.5pt",
+      "spaceAfter": "1rem"
+    },
+    "tableHeader": {
+      "fontWeight": "bold",
+      "background": "#f1efe9",
+      "padding": "0.4rem"
+    },
+    "tableCell": {
+      "padding": "0.4rem"
+    },
+    "caption": {
+      "fontSize": "0.9rem",
+      "color": "#4e5a68",
+      "captionPosition": "after"
+    },
+    "footnote": {
+      "fontSize": "0.8rem"
+    },
+    "embed": {},
+    "rule": {
+      "borderWidth": "0.5pt",
+      "spaceBefore": "1rem",
+      "spaceAfter": "1rem"
+    },
+    "box": {
+      "background": "#f1efe9",
+      "borderWidth": "0.5pt",
+      "padding": "1rem"
+    },
+    "boxHeading": {
+      "fontWeight": "bold",
+      "keepWithNext": true
+    },
+    "boxInfo": {},
+    "boxAbstract": {},
+    "boxNote": {},
+    "boxTip": {},
+    "boxSuccess": {},
+    "boxImportant": {},
+    "boxWarning": {},
+    "boxError": {},
+    "boxQuestion": {},
+    "boxExample": {}
+  },
+  "page": {
+    "width": "210mm",
+    "height": "297mm",
+    "orientation": "portrait",
+    "marginTop": "25mm",
+    "marginRight": "28mm",
+    "marginBottom": "25mm",
+    "marginLeft": "28mm",
+    "headerDistance": "12mm",
+    "footerDistance": "12mm",
+    "chapterStart": "next-page",
+    "header": {
+      "left": [
+        {
+          "kind": "documentTitle"
+        }
+      ],
+      "center": [],
+      "right": [
+        {
+          "kind": "chapterTitle"
+        }
+      ],
+      "showOnFirstPage": false
+    },
+    "footer": {
+      "left": [],
+      "center": [
+        {
+          "kind": "pageNumber"
+        },
+        {
+          "kind": "text",
+          "text": " / "
+        },
+        {
+          "kind": "pageCount"
+        }
+      ],
+      "right": [],
+      "showOnFirstPage": false
+    },
+    "measureCharacters": 68
+  },
+  "targets": {},
+  "web": {
     "html": "html/article.html",
     "site": "site/page.html",
     "siteRoles": {
       "listing": "site/listing.html",
       "archive": "site/listing.html"
-    }
-  },
-  "macros": {},
-  "controls": [
-    {
-      "id": "sidebar",
-      "label": "Show site navigation",
-      "kind": "toggle",
-      "default": true,
-      "choices": []
-    }
-  ]
+    },
+    "controls": [
+      {
+        "kind": "toggle",
+        "id": "sidebar",
+        "label": "Show site navigation",
+        "default": true
+      }
+    ]
+  }
 }

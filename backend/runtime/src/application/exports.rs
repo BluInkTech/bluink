@@ -9,14 +9,18 @@ use crate::export::{jobs::Context, model::*};
 impl Application {
     pub(crate) fn create_export(&self, request: ExportRequest) -> Result<JobId> {
         let _operation = self.begin_operation()?;
-        let context = Context {
+        self.exports.create(self.export_context()?, request)
+    }
+
+    pub(super) fn export_context(&self) -> Result<Context> {
+        Ok(Context {
             root: self.root.clone(),
             index: self.state()?.index.as_ref().map(|index| index.path.clone()),
             web_fonts: self.options.web_font_folder.clone(),
             pdf_fonts: self.options.pdf_font_folder.clone(),
+            docx_fonts: self.options.docx_font_folder.clone(),
             typst: self.options.typst_binary.clone(),
-        };
-        self.exports.create(context, request)
+        })
     }
 
     pub(crate) fn read_export(&self, request: ReadRequest) -> Result<Status> {
@@ -59,7 +63,10 @@ impl Application {
         self.exports.open_artifact(id, path)
     }
 
-    pub(crate) fn export_site_zip(&self, id: &str) -> Result<Option<std::sync::Arc<Vec<u8>>>> {
+    pub(crate) fn export_site_zip(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::export::jobs::OpenedArtifact>> {
         let _operation = self.begin_operation()?;
         self.exports.site_zip(id)
     }

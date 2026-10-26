@@ -10,6 +10,6 @@
 <body class="publication publication--classic publication--site{% if not theme_options.sidebar %} publication--no-sidebar{% endif %}">
   <a href="#main-content" class="skip-link">Skip to content</a>
   {% if theme_options.sidebar %}<nav aria-label="Site navigation">{{ navigation }}</nav>{% endif %}
-  <main id="main-content">{{ contents }}{{ body }}</main>
+  <main id="main-content" class="publication-content">{{ contents }}{{ body }}</main>
 </body>
 </html>

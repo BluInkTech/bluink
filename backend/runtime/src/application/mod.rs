@@ -17,9 +17,11 @@ pub(crate) mod items;
 pub(crate) mod mutations;
 pub(crate) mod operation;
 pub(crate) mod queries;
+mod query_documents;
 pub(crate) mod request;
 mod settings;
 mod snippets;
+mod themes;
 mod watch;
 
 use std::path::PathBuf;
@@ -31,8 +33,8 @@ use chrono::Utc;
 use serde_json::{Value, json};
 
 use self::cache::CacheLease;
-use self::error::{ApplicationError, Result};
-use crate::service;
+use self::error::{ApplicationError, Result, internal_error};
+use crate::indexing::service;
 
 struct OwnedIndex {
     path: String,
@@ -52,18 +54,25 @@ pub(crate) struct Application {
     pub(crate) options: ApplicationOptions,
     root: PathBuf,
     timezone: String,
+    workspace_template: Value,
     state: Mutex<State>,
     lifecycle: Mutex<()>,
     operations: RwLock<()>,
     stopping: AtomicBool,
     pub(crate) http: crate::http::Runtime,
-    snippets: crate::snippets::SnippetIndex,
     exports: std::sync::Arc<crate::export::jobs::Manager>,
 }
 
 impl Application {
     pub(crate) fn project_root(&self) -> &std::path::Path {
         &self.root
+    }
+
+    /// Where browser-sized copies of image assets are kept: beside the search
+    /// index and, like it, a projection that can be deleted and remade.
+    pub(crate) fn image_cache(&self) -> Option<std::path::PathBuf> {
+        let index = self.index_path().ok()?;
+        Some(std::path::Path::new(&index).parent()?.join("images-v1"))
     }
 
     fn new(options: ApplicationOptions) -> Result<Self> {
@@ -78,7 +87,14 @@ impl Application {
             .clone()
             .unwrap_or_else(|| iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_owned()));
         clock::timezone(&timezone)?;
+        let workspace_template: Value = serde_json::from_slice(
+            &std::fs::read(&options.workspace_template_path).map_err(internal_error)?,
+        )
+        .map_err(internal_error)?;
+        crate::engine::project::workspace::validate_content(&workspace_template)
+            .map_err(internal_error)?;
         Ok(Self {
+            workspace_template,
             options,
             root,
             timezone,
@@ -93,22 +109,19 @@ impl Application {
             operations: RwLock::new(()),
             stopping: AtomicBool::new(false),
             http: crate::http::Runtime::default(),
-            snippets: crate::snippets::SnippetIndex::default(),
             exports: std::sync::Arc::default(),
         })
     }
 
     fn state(&self) -> Result<MutexGuard<'_, State>> {
-        self.state.lock().map_err(|_| {
-            ApplicationError::Internal("Application state lock was poisoned.".to_owned())
-        })
+        self.state
+            .lock()
+            .map_err(|_| internal_error("Application state lock was poisoned.".to_owned()))
     }
 
     pub(crate) fn check_running(&self) -> Result<()> {
         if self.stopping.load(Ordering::Acquire) {
-            return Err(ApplicationError::InvalidRequest(
-                "The application is shutting down.".to_owned(),
-            ));
+            return Err(ApplicationError::ShuttingDown);
         }
         Ok(())
     }
@@ -117,10 +130,13 @@ impl Application {
         let _wait =
             crate::diagnostics::waits::Wait::new(crate::diagnostics::waits::Kind::Admission);
         self.check_running()?;
-        let guard = self.operations.read().map_err(error::internal_error)?;
+        let guard = self
+            .operations
+            .read()
+            .map_err(crate::application::error::poison_error)?;
         self.check_running()?;
         if self.state()?.config.is_none() {
-            return Err(error::invalid_request(
+            return Err(ApplicationError::NotInitialized(
                 "Initialize the project before using it.",
             ));
         }
@@ -132,9 +148,9 @@ impl Application {
             .index
             .as_ref()
             .map(|index| index.path.clone())
-            .ok_or_else(|| {
-                error::invalid_request("Initialize the search index before querying items.")
-            })
+            .ok_or(ApplicationError::NotInitialized(
+                "Initialize the search index before querying items.",
+            ))
     }
 
     fn initialize_sync(&self, with_index: bool) -> Result<Value> {
@@ -147,10 +163,14 @@ impl Application {
         deadline: Option<Instant>,
     ) -> Result<Value> {
         let _span = tracing::info_span!("application.initialize", with_index).entered();
-        let _lifecycle = self.lifecycle.lock().map_err(|_| {
-            ApplicationError::Internal("Application lifecycle lock was poisoned.".to_owned())
-        })?;
-        let _operations = self.operations.write().map_err(error::internal_error)?;
+        let _lifecycle = self
+            .lifecycle
+            .lock()
+            .map_err(|_| internal_error("Application lifecycle lock was poisoned.".to_owned()))?;
+        let _operations = self
+            .operations
+            .write()
+            .map_err(crate::application::error::poison_error)?;
         self.check_running()?;
         let result = self.open_sync(with_index, deadline);
         if let Err(error) = &result {
@@ -163,9 +183,18 @@ impl Application {
         result
     }
     fn open_sync(&self, with_index: bool, deadline: Option<Instant>) -> Result<Value> {
-        let config =
-            crate::engine::project::config::open_or_create_project(&self.root, &self.timezone)
-                .map_err(ApplicationError::Internal)?;
+        if !with_index {
+            use crate::engine::project::{io::LockMode, transaction};
+            let _mutation =
+                transaction::lock(&self.root, LockMode::Exclusive).map_err(internal_error)?;
+            transaction::recover(&self.root).map_err(internal_error)?;
+        }
+        let config = crate::engine::project::config::open_or_create_project_with_workspace(
+            &self.root,
+            &self.timezone,
+            &self.workspace_template,
+        )
+        .map_err(internal_error)?;
         let zone = config["analytics"]["timezone"].as_str().ok_or_else(|| {
             ApplicationError::InvalidRequest("Project timezone is missing.".to_owned())
         })?;
@@ -178,14 +207,19 @@ impl Application {
             })?;
             let path = cache::resolve(&self.root, id, self.options.cache_location.as_deref())?;
             let lease = CacheLease::acquire(&path)?;
+            {
+                use crate::engine::project::{io::LockMode, transaction};
+                let _mutation =
+                    transaction::lock(&self.root, LockMode::Exclusive).map_err(internal_error)?;
+                transaction::recover(&self.root).map_err(internal_error)?;
+            }
             let path = path
                 .to_str()
                 .ok_or_else(|| {
                     ApplicationError::InvalidRequest("Cache path must be valid Unicode.".to_owned())
                 })?
                 .to_owned();
-            service::start_index_service_typed(self.options.project_root.clone(), path.clone())
-                .map_err(|error| ApplicationError::Internal(error.to_string()))?;
+            service::start_index_service_typed(self.options.project_root.clone(), &path)?;
             let events = match watch::Coordinator::start(self.root.clone(), path.clone()) {
                 Ok(events) => events,
                 Err(error) => {
@@ -204,14 +238,13 @@ impl Application {
                 crate::diagnostics::waits::Wait::new(crate::diagnostics::waits::Kind::Readiness);
             loop {
                 self.check_running()?;
-                let status = service::index_service_status_typed(&path)
-                    .map_err(|error| ApplicationError::Internal(error.to_string()))?;
+                let status = service::index_service_status_typed(&path)?;
                 match status.state.as_str() {
                     "ready" => break,
                     "error" => {
-                        return Err(ApplicationError::Internal(status.error.unwrap_or_else(
-                            || "Search index reconciliation failed.".to_owned(),
-                        )));
+                        return Err(internal_error(status.error.unwrap_or_else(|| {
+                            "Search index reconciliation failed.".to_owned()
+                        })));
                     }
                     _ => {
                         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
@@ -227,7 +260,7 @@ impl Application {
             drop(readiness_span);
             self.state()?.phase = "Reconciling writing activity";
             crate::engine::project::activity::reconcile_activity(self.options.project_root.clone())
-                .map_err(ApplicationError::Internal)?;
+                .map_err(internal_error)?;
         }
         self.check_running()?;
         crate::memory::release_unused();
@@ -248,10 +281,7 @@ impl Application {
     pub(crate) fn status(&self) -> Result<Value> {
         let state = self.state()?;
         let index = if let Some(index) = &state.index {
-            Some(
-                service::index_service_status_typed(&index.path)
-                    .map_err(|error| ApplicationError::Internal(error.to_string()))?,
-            )
+            Some(service::index_service_status_typed(&index.path)?)
         } else {
             None
         };
@@ -274,18 +304,21 @@ impl Application {
             .config
             .as_ref()
             .and_then(|config| config["analytics"]["timezone"].as_str())
-            .ok_or_else(|| {
-                ApplicationError::InvalidRequest("Initialize the project first.".to_owned())
-            })?;
+            .ok_or(ApplicationError::NotInitialized(
+                "Initialize the project first.",
+            ))?;
         Ok(clock::activity_date(Utc::now(), clock::timezone(zone)?))
     }
 
     fn release_index(&self) -> Result<()> {
         let index = self.state()?.index.take();
+        Self::stop_index(index)
+    }
+
+    fn stop_index(index: Option<OwnedIndex>) -> Result<()> {
         if let Some(mut index) = index {
             let events = index.events.stop();
-            let service = service::shutdown_index_service(index.path.clone())
-                .map_err(|error| ApplicationError::Internal(error.to_string()));
+            let service = service::shutdown_index_service(index.path.clone());
             // The worker has joined before its cache lease is dropped.
             drop(index);
             events?;
@@ -293,24 +326,34 @@ impl Application {
         }
         Ok(())
     }
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "Keep application state guarded throughout admission checks and related operations."
-    )]
     fn stop_sync(&self) -> Result<()> {
         let _span = tracing::info_span!("application.stop").entered();
         self.stopping.store(true, Ordering::Release);
-        let _lifecycle = self.lifecycle.lock().map_err(|_| {
-            ApplicationError::Internal("Application lifecycle lock was poisoned.".to_owned())
-        })?;
-        let _operations = self.operations.write().map_err(error::internal_error)?;
-        self.exports.stop();
-        self.release_index()?;
-        self.snippets.stop()?;
-        let mut state = self.state()?;
+        let (_lifecycle, lifecycle_result) =
+            error::recover_for_cleanup(self.lifecycle.lock(), "Application lifecycle");
+        let (_operations, operations_result) =
+            error::recover_for_cleanup(self.operations.write(), "Application operations");
+        let (mut state, state_result) =
+            error::recover_for_cleanup(self.state.lock(), "Application state");
+        let index = state.index.take();
         state.ready = false;
+        state.phase = "Stopping";
+        drop(state);
+        self.exports.stop();
+        // Attempt every component's cleanup before reporting the first failure.
+        let index_result = Self::stop_index(index);
+        let inventory_result =
+            crate::engine::project::named_items::invalidate(&self.root).map_err(internal_error);
+        let (mut state, final_state_result) =
+            error::recover_for_cleanup(self.state.lock(), "Application state");
         state.phase = "Stopped";
-        Ok(())
+        drop(state);
+        lifecycle_result
+            .and(operations_result)
+            .and(state_result)
+            .and(index_result)
+            .and(inventory_result)
+            .and(final_state_result)
     }
 }
 

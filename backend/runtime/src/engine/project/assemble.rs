@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2023–2026 BluInk
 
-use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use chrono::{SecondsFormat, Utc};
@@ -11,7 +10,7 @@ use uuid::Uuid;
 
 use crate::engine::document::content::prepare_page_content;
 use crate::engine::document::projection::project_document;
-use crate::engine::project::item::is_item_id;
+use crate::engine::project::identity::is_item_id;
 
 /// Assemble the version-one item envelope from a write request and the
 /// current canonical revision, which the caller reads under its item lock.
@@ -57,12 +56,17 @@ pub(crate) fn assemble_item(
         .or_else(|| existing.and_then(|item| item.get("content")))
         .cloned()
         .ok_or("Item content is missing.")?;
-    let content = if kind == "page" {
+    let content = if matches!(kind, "page" | "template") {
         prepare_page_content(content)?
     } else {
         content
     };
     let text = project_document(&content).text;
+    let content_hash = if kind == "task" {
+        hash_text(&content.to_string())
+    } else {
+        hash_text(&text)
+    };
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     let mut next = json!({
         "format": "bluink.item",
@@ -76,7 +80,7 @@ pub(crate) fn assemble_item(
         "analytics": {
             "analyzerVersion": 1,
             "timezone": timezone,
-            "current": {"contentHash": hash_text(&text), "wordCount": count_words(&text)}
+            "current": {"contentHash": content_hash, "wordCount": count_words(&text)}
         }
     });
     if input.get("references").is_some() {
@@ -91,12 +95,8 @@ pub(crate) fn assemble_item(
             next[field] = Value::Array(values);
         }
     }
-    if let Some(tasks) = normalized_tasks(
-        input
-            .get("tasks")
-            .or_else(|| existing.and_then(|item| item.get("tasks"))),
-    )? {
-        next["tasks"] = Value::Array(tasks);
+    if input.contains_key("tasks") {
+        return Err("Tasks are independent items; use task mutations.".to_owned());
     }
     Ok(next)
 }
@@ -129,37 +129,10 @@ fn normalized_strings(value: Option<&Value>) -> Result<Option<Vec<Value>>, Strin
     ))
 }
 
-fn normalized_tasks(value: Option<&Value>) -> Result<Option<Vec<Value>>, String> {
-    let Some(value) = value.filter(|value| !value.is_null()) else {
-        return Ok(None);
-    };
-    let values = value.as_array().ok_or("Item tasks must be an array.")?;
-    if values.is_empty() {
-        return Ok(None);
-    }
-    let mut seen = HashSet::new();
-    let mut tasks = Vec::with_capacity(values.len());
-    for value in values {
-        let mut task = value
-            .as_object()
-            .cloned()
-            .ok_or("Note tasks must be objects.")?;
-        let id = task.get("id").and_then(Value::as_str).unwrap_or("");
-        if !is_item_id(id) || !seen.insert(id.to_owned()) {
-            return Err("Note tasks need unique UUIDs.".to_owned());
-        }
-        let text = task
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim();
-        task.insert("text".to_owned(), Value::String(text.to_owned()));
-        tasks.push(Value::Object(task));
-    }
-    tasks.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
-    Ok(Some(tasks))
-}
-
+#[expect(
+    clippy::expect_used,
+    reason = "The cached regular expression is a compile-time literal covered by word-count tests."
+)]
 fn count_words(text: &str) -> usize {
     static WORDS: OnceLock<Regex> = OnceLock::new();
     WORDS
@@ -197,8 +170,7 @@ mod tests {
         let existing = json!({
             "createdAt":"2026-09-01T00:00:00.000Z",
             "meta":{"type":"page","title":"First","state":"active"},
-            "tags":["z","a"],
-            "tasks":[{"id":"01a0e2a0-0000-7000-8000-000000000002","text":" Earlier ","createdAt":"2026-09-01T00:00:00.000Z"}]
+            "tags":["z","a"]
         });
         let next = assemble_item(&json!({
             "id":"01a0e2a0-0000-7000-8000-000000000001",
@@ -208,7 +180,7 @@ mod tests {
         assert_eq!(next["meta"]["title"], "Second");
         assert_eq!(next["meta"]["type"], "page");
         assert_eq!(next["tags"], json!(["a", "z"]));
-        assert_eq!(next["tasks"][0]["text"], "Earlier");
+        assert!(next.get("tasks").is_none());
         assert_eq!(next["analytics"]["current"]["wordCount"], 2);
         assert!(next["content"]["content"][0]["attrs"]["id"].is_string());
     }

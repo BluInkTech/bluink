@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2023–2026 BluInk
 
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::Application;
 use super::error::{Result, internal_error, invalid_request};
-use crate::engine::project::types::{Metadata, NoteTask};
+use crate::engine::project::types::{ItemState, ItemType, Metadata};
 use crate::model::SearchHit;
+use crate::query::document::QueryDocument;
 use crate::search;
 
 #[derive(Default, Deserialize)]
@@ -34,7 +35,7 @@ pub(crate) struct ReadItemRequest {
 #[cfg_attr(test, ts(optional_fields = nullable))]
 pub(crate) struct ReadItemsRequest {
     pub(crate) ids: Option<Vec<String>>,
-    pub(crate) query: Option<String>,
+    pub(crate) query: Option<QueryDocument>,
     #[serde(default)]
     #[cfg_attr(test, ts(as = "Option<ReadOptions>", optional))]
     pub(crate) options: ReadOptions,
@@ -47,13 +48,24 @@ pub(crate) struct ReadItemsRequest {
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[cfg_attr(test, ts(optional_fields = nullable))]
 pub(crate) struct QueryItemsRequest {
-    pub(crate) query: String,
+    pub(crate) query: QueryDocument,
     #[serde(default)]
     #[cfg_attr(test, ts(as = "Option<ReadOptions>", optional))]
     pub(crate) options: ReadOptions,
     pub(crate) limit: Option<u32>,
     pub(crate) offset: Option<u32>,
     pub(crate) pin_scope_id: Option<String>,
+    pub(crate) prioritize_pins: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(test, ts(optional_fields = nullable))]
+pub(crate) struct ResolveWorkspaceNotesRequest {
+    workspace_id: String,
+    ids: Vec<String>,
+    limit: Option<u8>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -78,9 +90,6 @@ pub(crate) struct PublicItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
     pub(crate) pins: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(optional))]
-    pub(crate) tasks: Option<Vec<NoteTask>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
     pub(crate) preview: Option<String>,
@@ -118,23 +127,89 @@ fn indexed_item(hit: SearchHit) -> Result<PublicItem> {
         content: serde_json::Map::new(),
         tags: (!hit.tags.is_empty()).then_some(hit.tags),
         pins: None,
-        tasks: None,
         preview: (!hit.preview.is_empty()).then_some(hit.preview),
         preview_image: hit.preview_image,
     })
 }
 
 fn read_canonical(root: &Path, id: &str, with_content: bool) -> Result<Option<PublicItem>> {
-    if !crate::engine::project::item::is_item_id(id) {
+    if !crate::engine::project::identity::is_item_id(id) {
         return Err(invalid_request(format!("Invalid Bluink item id: {id}")));
     }
-    crate::engine::project::item::read_project_item(root, id)
-        .map_err(internal_error)?
+    crate::engine::project::item::read_project_item(root, id)?
         .map(|value| canonical_item(value, with_content))
         .transpose()
 }
 
 impl Application {
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "RPC dispatch owns its decoded request."
+    )]
+    pub(crate) fn resolve_workspace_notes(
+        &self,
+        request: ResolveWorkspaceNotesRequest,
+    ) -> Result<Vec<PublicItem>> {
+        let _operation = self.begin_operation()?;
+        let limit = request.limit.unwrap_or(50);
+        if request.ids.len() > 50 || !(1..=50).contains(&limit) {
+            return Err(invalid_request(
+                "Resolve up to 50 workspace note candidates and choose a limit from 1 to 50.",
+            ));
+        }
+        if request
+            .ids
+            .iter()
+            .any(|id| !crate::engine::project::identity::is_item_id(id))
+        {
+            return Err(invalid_request(
+                "Workspace note candidates need valid Bluink note IDs.",
+            ));
+        }
+        let workspace = read_canonical(&self.root, &request.workspace_id, true)?
+            .ok_or_else(|| invalid_request("This workspace is unavailable."))?;
+        if workspace.meta.item_type != Some(ItemType::Workspace)
+            || workspace.meta.state != Some(ItemState::Active)
+        {
+            return Err(invalid_request("Choose an active workspace."));
+        }
+        let document: QueryDocument = serde_json::from_value(
+            workspace
+                .content
+                .get("query")
+                .cloned()
+                .ok_or_else(|| invalid_request("This workspace needs collection criteria."))?,
+        )
+        .map_err(invalid_request)?;
+        if request.ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let eligible: HashSet<_> = search::matching_candidate_note_ids_service_sync(
+            &self.index_path()?,
+            &document,
+            &request.workspace_id,
+            &request.ids,
+        )?
+        .into_iter()
+        .collect();
+        let mut seen = HashSet::new();
+        let mut notes = Vec::new();
+        for id in &request.ids {
+            if !eligible.contains(id) || !seen.insert(id) {
+                continue;
+            }
+            if let Some(item) = read_canonical(&self.root, id, false)?
+                && item.meta.item_type == Some(ItemType::Page)
+                && item.meta.state == Some(ItemState::Active)
+            {
+                notes.push(item);
+                if notes.len() == usize::from(limit) {
+                    break;
+                }
+            }
+        }
+        Ok(notes)
+    }
     #[tracing::instrument(level = "debug", skip_all)]
     #[expect(
         clippy::needless_pass_by_value,
@@ -169,6 +244,7 @@ impl Application {
                 limit: request.limit,
                 offset: request.offset,
                 pin_scope_id: None,
+                prioritize_pins: None,
             })?
             .items)
     }
@@ -180,8 +256,8 @@ impl Application {
 
     fn query_items_inner(&self, request: QueryItemsRequest) -> Result<QueryItemsResult> {
         let limit = request.limit.unwrap_or(1000);
-        if limit == 0 {
-            return Err(invalid_request("Choose a positive item page size."));
+        if !(1..=10_000).contains(&limit) {
+            return Err(invalid_request("Choose an item page size from 1 to 10000."));
         }
         let found = search::search_service_sync(
             self.index_path()?,
@@ -189,14 +265,18 @@ impl Application {
             limit,
             request.offset.unwrap_or(0),
             request.pin_scope_id,
+            request.prioritize_pins.unwrap_or(true),
         )?;
         let items = found
             .hits
             .into_iter()
             .map(|hit| {
-                if request.options.content == Some(true)
-                    && let Some(canonical) = read_canonical(&self.root, &hit.id, true)?
-                {
+                if request.options.content == Some(true) {
+                    let canonical = read_canonical(&self.root, &hit.id, true)?
+                        .filter(|item| item.version == hit.revision)
+                        .ok_or_else(|| invalid_request(
+                            "An item changed while reading query content. Retry the query to use its current revision.",
+                        ))?;
                     return Ok(canonical);
                 }
                 indexed_item(hit)

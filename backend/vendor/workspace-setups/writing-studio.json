@@ -1,0 +1,594 @@
+{
+	"format": "bluink.workspace-setup",
+	"version": 1,
+	"name": "Writing studio",
+	"summary": "Drafts by stage, a word goal, and pieces ready to publish.",
+	"description": "For essays, stories and chapters: move each piece from idea to published, keep a daily word goal, and see the rhythm it builds.",
+	"properties": [
+		{
+			"key": "draft_stage",
+			"valueType": "select",
+			"options": [
+				"drafting",
+				"idea",
+				"published",
+				"ready",
+				"revising"
+			],
+			"optionAppearance": {
+				"idea": {
+					"color": "neutral"
+				},
+				"drafting": {
+					"color": "blue"
+				},
+				"revising": {
+					"color": "amber"
+				},
+				"ready": {
+					"color": "purple"
+				},
+				"published": {
+					"color": "green"
+				}
+			}
+		}
+	],
+	"templates": [
+		{
+			"key": "idea",
+			"title": "Idea",
+			"values": {
+				"draft_stage": "idea"
+			},
+			"document": {
+				"type": "doc",
+				"content": [
+					{
+						"type": "paragraph",
+						"content": [
+							{
+								"type": "text",
+								"text": "The idea in one sentence."
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Why it matters"
+							}
+						]
+					},
+					{
+						"type": "paragraph",
+						"content": [
+							{
+								"type": "text",
+								"text": "What makes it worth writing?"
+							}
+						]
+					}
+				]
+			}
+		},
+		{
+			"key": "draft",
+			"title": "Draft",
+			"values": {
+				"draft_stage": "drafting"
+			},
+			"propertyKeys": [
+				"word_target",
+				"due_date"
+			],
+			"document": {
+				"type": "doc",
+				"content": [
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Working title"
+							}
+						]
+					},
+					{
+						"type": "paragraph",
+						"content": [
+							{
+								"type": "text",
+								"text": "Start anywhere; shape it later."
+							}
+						]
+					}
+				]
+			}
+		},
+		{
+			"key": "essay",
+			"title": "Essay outline",
+			"values": {
+				"draft_stage": "drafting"
+			},
+			"propertyKeys": [
+				"word_target"
+			],
+			"document": {
+				"type": "doc",
+				"content": [
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Claim"
+							}
+						]
+					},
+					{
+						"type": "paragraph",
+						"content": [
+							{
+								"type": "text",
+								"text": "What are you arguing?"
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Moves"
+							}
+						]
+					},
+					{
+						"type": "list",
+						"attrs": {
+							"kind": "bullet"
+						},
+						"content": [
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "Opening scene or question"
+											}
+										]
+									}
+								]
+							},
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "Complication"
+											}
+										]
+									}
+								]
+							},
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "Turn"
+											}
+										]
+									}
+								]
+							},
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "Close"
+											}
+										]
+									}
+								]
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Sources"
+							}
+						]
+					},
+					{
+						"type": "paragraph",
+						"content": [
+							{
+								"type": "text",
+								"text": "Notes this essay draws on."
+							}
+						]
+					}
+				]
+			}
+		}
+	],
+	"workspace": {
+		"title": "Writing studio",
+		"summary": "Every piece, from idea to published.",
+		"icon": {
+			"kind": "symbol",
+			"name": "pen-nib"
+		},
+		"color": "rose",
+		"cover": {
+			"kind": "gradient",
+			"name": "bloom"
+		},
+		"query": {
+			"version": 1,
+			"clauses": [
+				{
+					"polarity": "required",
+					"predicate": {
+						"kind": "field",
+						"field": "type",
+						"operator": "match",
+						"value": "page"
+					}
+				},
+				{
+					"polarity": "required",
+					"predicate": {
+						"kind": "field",
+						"field": "state",
+						"operator": "match",
+						"value": "active"
+					}
+				},
+				{
+					"polarity": "required",
+					"predicate": {
+						"kind": "has",
+						"field": "draft_stage"
+					}
+				}
+			],
+			"sort": [
+				{
+					"field": "title",
+					"direction": "asc"
+				}
+			]
+		},
+		"widgets": [
+			{
+				"title": "Start",
+				"home": {
+					"span": 8,
+					"height": "compact"
+				},
+				"config": {
+					"kind": "create_buttons",
+					"templateIds": [
+						"draft",
+						"idea",
+						"essay"
+					]
+				}
+			},
+			{
+				"title": "Ready to publish",
+				"home": {
+					"span": 4,
+					"height": "compact"
+				},
+				"config": {
+					"kind": "count",
+					"query": {
+						"version": 1,
+						"clauses": [
+							{
+								"polarity": "required",
+								"predicate": {
+									"kind": "field",
+									"field": "draft_stage",
+									"operator": "match",
+									"value": "ready"
+								}
+							}
+						],
+						"sort": []
+					}
+				}
+			},
+			{
+				"home": {
+					"span": 8
+				},
+				"config": {
+					"kind": "continue_writing",
+					"noteId": null
+				}
+			},
+			{
+				"home": {
+					"span": 4
+				},
+				"config": {
+					"kind": "writing_goal"
+				}
+			},
+			{
+				"title": "Pieces by stage",
+				"home": {
+					"span": 12,
+					"height": "regular"
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [],
+						"sort": []
+					},
+					"mode": "kanban",
+					"kanban": {
+						"groupBy": "meta.draft_stage",
+						"columns": [
+							{
+								"id": "idea"
+							},
+							{
+								"id": "drafting"
+							},
+							{
+								"id": "revising"
+							},
+							{
+								"id": "ready"
+							},
+							{
+								"id": "published"
+							}
+						]
+					},
+					"cards": {
+						"version": 1,
+						"media": {
+							"position": "none",
+							"height": 176,
+							"fit": "cover"
+						},
+						"titleLines": 2,
+						"header": {
+							"start": {
+								"field": "modified",
+								"show": "text"
+							}
+						},
+						"body": [
+							{
+								"start": {
+									"field": "summary",
+									"show": "text",
+									"lines": 2
+								}
+							}
+						]
+					}
+				}
+			},
+			{
+				"home": {
+					"span": 4,
+					"height": "regular"
+				},
+				"config": {
+					"kind": "writing_stats",
+					"stats": [
+						"words_today",
+						"streak",
+						"active_days",
+						"words_added"
+					],
+					"days": 30
+				}
+			},
+			{
+				"home": {
+					"span": 8,
+					"height": "regular"
+				},
+				"config": {
+					"kind": "writing_rhythm",
+					"days": 30
+				}
+			},
+			{
+				"title": "Ready to publish",
+				"home": {
+					"span": 12,
+					"height": "compact"
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [
+							{
+								"polarity": "required",
+								"predicate": {
+									"kind": "field",
+									"field": "draft_stage",
+									"operator": "match",
+									"value": "ready"
+								}
+							}
+						],
+						"sort": []
+					},
+					"mode": "table",
+					"table": {
+						"columns": [
+							{
+								"field": "title"
+							},
+							{
+								"field": "word_target"
+							},
+							{
+								"field": "due_date"
+							}
+						]
+					}
+				}
+			},
+			{
+				"title": "Board",
+				"topBar": true,
+				"home": {
+					"span": 12,
+					"height": "tall",
+					"hidden": true
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [],
+						"sort": []
+					},
+					"mode": "kanban",
+					"kanban": {
+						"groupBy": "meta.draft_stage",
+						"columns": [
+							{
+								"id": "idea"
+							},
+							{
+								"id": "drafting"
+							},
+							{
+								"id": "revising"
+							},
+							{
+								"id": "ready"
+							},
+							{
+								"id": "published"
+							}
+						]
+					},
+					"cards": {
+						"version": 1,
+						"media": {
+							"position": "none",
+							"height": 176,
+							"fit": "cover"
+						},
+						"titleLines": 2,
+						"header": {
+							"start": {
+								"field": "modified",
+								"show": "text"
+							}
+						},
+						"body": [
+							{
+								"start": {
+									"field": "summary",
+									"show": "text",
+									"lines": 2
+								}
+							}
+						]
+					}
+				}
+			},
+			{
+				"title": "Table",
+				"topBar": true,
+				"home": {
+					"span": 12,
+					"height": "tall",
+					"hidden": true
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [],
+						"sort": []
+					},
+					"mode": "table",
+					"table": {
+						"columns": [
+							{
+								"field": "title"
+							},
+							{
+								"field": "draft_stage"
+							},
+							{
+								"field": "word_target"
+							},
+							{
+								"field": "due_date"
+							},
+							{
+								"field": "modified"
+							}
+						]
+					}
+				}
+			}
+		],
+		"templates": {
+			"offered": [
+				"draft",
+				"idea",
+				"essay"
+			],
+			"default": "draft"
+		},
+		"calendar": {
+			"dateField": "meta.due_date"
+		}
+	}
+}

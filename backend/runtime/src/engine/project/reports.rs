@@ -17,17 +17,26 @@ use crate::engine::project::item::read_project_item;
 pub(crate) enum ReportError {
     InvalidInput(String),
     Storage(String),
+    Read(super::item::ItemReadError),
 }
 
 impl std::fmt::Display for ReportError {
     fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidInput(message) | Self::Storage(message) => output.write_str(message),
+            Self::Read(error) => std::fmt::Display::fmt(error, output),
         }
     }
 }
 
-impl std::error::Error for ReportError {}
+impl std::error::Error for ReportError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Read(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 fn date(value: &str) -> Result<NaiveDate, String> {
     if value.len() != 10 {
@@ -80,7 +89,7 @@ pub(crate) fn dashboard_analytics(
             "startDate must be no later than endDate.".to_owned(),
         ));
     }
-    let recorded = activity_days(root, &start.to_string(), &end.to_string(), selected)
+    let mut recorded = activity_days(root, &start.to_string(), &end.to_string(), selected)
         .map_err(ReportError::Storage)?
         .into_iter()
         .map(|day| (day.date.clone(), day))
@@ -91,7 +100,7 @@ pub(crate) fn dashboard_analytics(
     let mut current = start;
     loop {
         let key = current.to_string();
-        let day = recorded.get(&key).cloned().unwrap_or_else(|| ActivityDay {
+        let day = recorded.remove(&key).unwrap_or_else(|| ActivityDay {
             date: key,
             activity: ItemActivity::default(),
             notes_touched: 0,
@@ -155,7 +164,7 @@ pub(crate) fn dashboard_day_details(
                 continue;
             }
             let item = read_project_item(root, &id)
-                .map_err(ReportError::Storage)?
+                .map_err(ReportError::Read)?
                 .ok_or_else(|| ReportError::Storage(format!("Item {id} not found")))?;
             if item["meta"]["type"] != "page"
                 || (activity.editing_events == 0 && activity.tasks_completed == 0)
@@ -191,9 +200,7 @@ pub(crate) fn completed_calendar_buckets(
         return Err("Choose a valid calendar date range and granularity.".to_owned());
     }
     let mut buckets = BTreeMap::<String, usize>::new();
-    let mut current = start;
-    loop {
-        let key = current.to_string();
+    for key in super::activity::daily_dates(root, start_date, end_date)? {
         if let Some(day) = read_daily_activity(root, &key)? {
             let count = day
                 .items
@@ -211,14 +218,27 @@ pub(crate) fn completed_calendar_buckets(
                 *buckets.entry(bucket.to_owned()).or_default() += count;
             }
         }
-        if current == end {
-            break;
-        }
-        current = current
-            .succ_opt()
-            .ok_or("Calendar date range is too large.")?;
     }
     Ok(
         json!({"buckets": buckets.into_iter().map(|(date, count)| json!({"date":date,"count":count})).collect::<Vec<_>>() }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn completed_calendar_handles_a_sparse_range_without_opening_each_day() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(
+            super::completed_calendar_buckets(
+                root.path(),
+                "0001-01-01",
+                "9999-12-31",
+                "year",
+                None
+            )
+            .unwrap(),
+            serde_json::json!({"buckets":[]})
+        );
+    }
 }

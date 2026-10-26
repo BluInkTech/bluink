@@ -42,12 +42,12 @@ fn publication(app: &Application, collection: bool) -> String {
         "kind": "publication", "preset": "book", "selectedOutput": "pdf",
         "rootPageId": HOME, "outline": if collection {
             json!([{"kind": "section", "id": "00000000-0000-7000-8000-000000000503", "title": "Chapters", "children": [
-                {"kind": "collection", "id": "00000000-0000-7000-8000-000000000504", "title": "Fiction", "query": "#fiction"}
+                {"kind": "collection", "id": "00000000-0000-7000-8000-000000000504", "title": "Fiction", "query": crate::query::document::test_query("#fiction")}
             ]}])
         } else { json!([{"kind": "page", "pageId": CHAPTER, "children": []}]) },
         "selectionRules": [], "themeId": "classic", "targets": {
             "pdf": {"profile": "default", "outsideLinks": "error"},
-            "html": {"outsideLinks": "error"},
+            "html": {"outsideLinks": "error"},"docx": {"outsideLinks": "error"},"epub":{"outsideLinks": "error"},
             "site": {"layout": "documentation", "outsideLinks": "error"}
         }
     }});
@@ -66,9 +66,10 @@ fn publication(app: &Application, collection: bool) -> String {
 
 #[test]
 fn standalone_commands_validate_and_plan_without_an_index_or_listener() {
-    let app = application("cli-note");
+    let project = TestProject::new("cli-note");
+    let app = project.application();
     pages(&app);
-    for format in ["pdf", "html"] {
+    for format in ["pdf", "docx", "html"] {
         let plan = run(&app, "export", format, json!({"note": HOME, "check": true})).unwrap();
         assert_eq!(plan["value"]["pageId"], HOME);
         assert_eq!(plan["value"]["title"], "Home");
@@ -108,18 +109,46 @@ fn standalone_commands_validate_and_plan_without_an_index_or_listener() {
     }
     app.stop_sync().unwrap();
     assert!(run(&app, "export", "html", json!({"note": HOME, "check": true})).is_err());
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
+}
+
+#[test]
+fn linked_commands_plan_every_format_without_an_index_or_listener() {
+    let project = TestProject::new("cli-linked");
+    let app = project.application();
+    pages(&app);
+    let page = crate::engine::project::item::read_project_item(&app.root, HOME)
+        .unwrap()
+        .unwrap();
+    crate::engine::project::write::write_item_input(&app.root, json!({"id":HOME,"meta":{},"content":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Chapter","marks":[{"type":"link","attrs":{"href":format!("/?note={CHAPTER}")}}]}]}]}}), page["revision"].as_str(), &app.activity_date().unwrap()).unwrap();
+    for (format, target) in [("pdf", "pdf"), ("docx", "docx"), ("html", "site")] {
+        let plan = run(
+            &app,
+            "export",
+            format,
+            json!({"note":HOME,"include-linked":true,"check":true}),
+        )
+        .unwrap();
+        assert_eq!(plan["kind"], "publication_plan");
+        assert_eq!(plan["value"]["sourceKind"], "linked_pages");
+        assert_eq!(plan["value"]["format"], target);
+        assert_eq!(plan["value"]["pages"].as_array().unwrap().len(), 2);
+        assert!(app.state().unwrap().index.is_none());
+    }
+    app.stop_sync().unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn static_publication_create_inspect_and_plan_share_canonical_rules_without_indexing() {
-    let app = application("cli-static-publication");
+    let project = TestProject::new("cli-static-publication");
+    let app = project.application();
     pages(&app);
     let id = publication(&app, false);
     let item = run(&app, "publication", "inspect", json!({"id": id})).unwrap();
     assert_eq!(item["value"]["meta"]["type"], "publication");
     assert!(item["value"]["revision"].is_string());
-    for format in ["pdf", "html", "site"] {
+    for format in ["pdf", "docx", "html", "site"] {
         let plan = run(
             &app,
             "publication",
@@ -151,12 +180,13 @@ fn static_publication_create_inspect_and_plan_share_canonical_rules_without_inde
         before
     );
     app.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn query_publication_uses_owned_index_and_reports_exclusion_until_owner_stops() {
-    let app = application("cli-query-publication");
+    let project = TestProject::new("cli-query-publication");
+    let app = project.application();
     pages(&app);
     let id = publication(&app, true);
     let first = run(
@@ -169,7 +199,7 @@ fn query_publication_uses_owned_index_and_reports_exclusion_until_owner_stops() 
     let membership = &first["value"]["collections"][0]["resolvedIds"];
     assert_eq!(membership, &json!([CHAPTER, HOME]));
     let index = app.index_path().unwrap();
-    let other = application("cli-query-publication");
+    let other = project.application();
     let error = run(
         &other,
         "publication",
@@ -190,12 +220,13 @@ fn query_publication_uses_owned_index_and_reports_exclusion_until_owner_stops() 
     assert_eq!(&next["value"]["collections"][0]["resolvedIds"], membership);
     assert_eq!(other.index_path().unwrap(), index);
     other.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn commands_do_not_create_missing_projects_and_hold_plans_typed() {
-    let app = application("cli-missing-project");
+    let project = TestProject::new("cli-missing-project");
+    let app = project.application();
     assert!(!app.root.exists());
     let error = run(&app, "export", "html", json!({"note": HOME, "check": true})).unwrap_err();
     assert!(error.to_string().contains("No Bluink project exists"));
@@ -214,7 +245,7 @@ fn commands_do_not_create_missing_projects_and_hold_plans_typed() {
             },
         )
         .unwrap();
-    let CommandResult::ArticlePlan(plan) = result else {
+    let CommandResult::PagePlan(plan) = result else {
         panic!("Expected a typed article plan")
     };
     let item = crate::engine::project::item::read_project_item(&app.root, HOME)
@@ -240,5 +271,5 @@ fn commands_do_not_create_missing_projects_and_hold_plans_typed() {
     assert!(error.to_string().contains("changed"), "{error}");
     assert!(!output.exists());
     app.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }

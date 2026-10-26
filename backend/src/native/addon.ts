@@ -33,10 +33,12 @@ export function backendPackageRoot(): string {
 export function publicationRuntime(): {
 	typstBinary: string
 	fontFolder: string
+	docxFontFolder: string
 } {
 	return {
 		typstBinary: typstBinary(),
 		fontFolder: fontDirectory('pdf'),
+		docxFontFolder: fontDirectory('docx'),
 	}
 }
 
@@ -66,4 +68,20 @@ export function nativeAddon(): NativeAddon {
 	}
 	cachedAddon = addon
 	return addon
+}
+
+/** Resolve UI-authored bootstrap data outside the native binary. */
+export function createApplication(
+	options: Omit<
+		import('../../runtime/index.js').ApplicationOptions,
+		'workspaceTemplatePath'
+	>,
+) {
+	return new (nativeAddon().BluinkApplication)({
+		...options,
+		workspaceTemplatePath: path.join(
+			backendPackageRoot(),
+			'vendor/workspace-starter.json',
+		),
+	})
 }

@@ -1,0 +1,724 @@
+{
+	"format": "bluink.workspace-setup",
+	"version": 1,
+	"name": "Getting Things Done",
+	"summary": "Inbox, next actions by context, waiting for and someday.",
+	"description": "David Allen’s method: capture everything, clarify it at a weekly review, and keep next actions by the context where you can do them.",
+	"properties": [
+		{
+			"key": "stage",
+			"valueType": "select",
+			"options": [
+				"done",
+				"inbox",
+				"next",
+				"reference",
+				"scheduled",
+				"someday",
+				"waiting"
+			],
+			"optionAppearance": {
+				"inbox": {
+					"color": "neutral"
+				},
+				"next": {
+					"color": "blue"
+				},
+				"waiting": {
+					"color": "amber"
+				},
+				"scheduled": {
+					"color": "purple"
+				},
+				"someday": {
+					"color": "cyan"
+				},
+				"reference": {
+					"color": "neutral"
+				},
+				"done": {
+					"color": "green"
+				}
+			}
+		},
+		{
+			"key": "context",
+			"valueType": "select",
+			"options": [
+				"anywhere",
+				"calls",
+				"computer",
+				"errands",
+				"home"
+			]
+		},
+		{
+			"key": "area",
+			"valueType": "select",
+			"options": [
+				"finances",
+				"health",
+				"home",
+				"learning",
+				"writing"
+			]
+		}
+	],
+	"templates": [
+		{
+			"key": "capture",
+			"title": "Capture",
+			"values": {
+				"stage": "inbox"
+			},
+			"document": {
+				"type": "doc",
+				"content": [
+					{
+						"type": "paragraph",
+						"content": [
+							{
+								"type": "text",
+								"text": "Write it down now; decide what it means at the next weekly review."
+							}
+						]
+					}
+				]
+			}
+		},
+		{
+			"key": "project",
+			"title": "Project",
+			"values": {
+				"stage": "next"
+			},
+			"propertyKeys": [
+				"area",
+				"context",
+				"due_date"
+			],
+			"document": {
+				"type": "doc",
+				"content": [
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Outcome"
+							}
+						]
+					},
+					{
+						"type": "paragraph",
+						"content": [
+							{
+								"type": "text",
+								"text": "What will be true when this is finished?"
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Next steps"
+							}
+						]
+					},
+					{
+						"type": "list",
+						"attrs": {
+							"kind": "bullet"
+						},
+						"content": [
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "The very next physical action"
+											}
+										]
+									}
+								]
+							}
+						]
+					}
+				]
+			}
+		},
+		{
+			"key": "weekly-review",
+			"title": "Weekly review",
+			"values": {
+				"stage": "reference"
+			},
+			"tags": [
+				"gtd/review"
+			],
+			"document": {
+				"type": "doc",
+				"content": [
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Get clear"
+							}
+						]
+					},
+					{
+						"type": "list",
+						"attrs": {
+							"kind": "bullet"
+						},
+						"content": [
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "Empty the inbox"
+											}
+										]
+									}
+								]
+							},
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "File loose notes"
+											}
+										]
+									}
+								]
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Get current"
+							}
+						]
+					},
+					{
+						"type": "list",
+						"attrs": {
+							"kind": "bullet"
+						},
+						"content": [
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "Next actions"
+											}
+										]
+									}
+								]
+							},
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "Waiting for"
+											}
+										]
+									}
+								]
+							},
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "The next two weeks of the calendar"
+											}
+										]
+									}
+								]
+							}
+						]
+					},
+					{
+						"type": "heading",
+						"attrs": {
+							"level": 2
+						},
+						"content": [
+							{
+								"type": "text",
+								"text": "Get creative"
+							}
+						]
+					},
+					{
+						"type": "list",
+						"attrs": {
+							"kind": "bullet"
+						},
+						"content": [
+							{
+								"type": "listItem",
+								"content": [
+									{
+										"type": "paragraph",
+										"content": [
+											{
+												"type": "text",
+												"text": "Someday / maybe: anything to start?"
+											}
+										]
+									}
+								]
+							}
+						]
+					}
+				]
+			}
+		}
+	],
+	"workspace": {
+		"title": "Getting things done",
+		"summary": "An inbox, next actions by context, and a weekly review.",
+		"icon": {
+			"kind": "symbol",
+			"name": "target"
+		},
+		"color": "green",
+		"cover": {
+			"kind": "gradient",
+			"name": "meadow"
+		},
+		"query": {
+			"version": 1,
+			"clauses": [
+				{
+					"polarity": "required",
+					"predicate": {
+						"kind": "field",
+						"field": "type",
+						"operator": "match",
+						"value": "page"
+					}
+				},
+				{
+					"polarity": "required",
+					"predicate": {
+						"kind": "field",
+						"field": "state",
+						"operator": "match",
+						"value": "active"
+					}
+				},
+				{
+					"polarity": "required",
+					"predicate": {
+						"kind": "has",
+						"field": "stage"
+					}
+				}
+			],
+			"sort": [
+				{
+					"field": "title",
+					"direction": "asc"
+				}
+			]
+		},
+		"widgets": [
+			{
+				"title": "How it works",
+				"home": {
+					"span": 12,
+					"height": "compact"
+				},
+				"config": {
+					"kind": "introduction",
+					"title": "",
+					"description": "Everything starts in the inbox. At the weekly review each note gets a stage: a next action with its context, something you are waiting for, a scheduled date, someday, or reference."
+				}
+			},
+			{
+				"title": "Start",
+				"home": {
+					"span": 8,
+					"height": "compact"
+				},
+				"config": {
+					"kind": "create_buttons",
+					"templateIds": [
+						"capture",
+						"weekly-review"
+					]
+				}
+			},
+			{
+				"title": "In the inbox",
+				"home": {
+					"span": 4,
+					"height": "compact"
+				},
+				"config": {
+					"kind": "count",
+					"query": {
+						"version": 1,
+						"clauses": [
+							{
+								"polarity": "required",
+								"predicate": {
+									"kind": "field",
+									"field": "stage",
+									"operator": "match",
+									"value": "inbox"
+								}
+							}
+						],
+						"sort": []
+					}
+				}
+			},
+			{
+				"title": "Inbox",
+				"home": {
+					"span": 6,
+					"height": "regular"
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [
+							{
+								"polarity": "required",
+								"predicate": {
+									"kind": "field",
+									"field": "stage",
+									"operator": "match",
+									"value": "inbox"
+								}
+							}
+						],
+						"sort": []
+					},
+					"mode": "list"
+				}
+			},
+			{
+				"home": {
+					"span": 6,
+					"height": "regular"
+				},
+				"config": {
+					"kind": "tasks",
+					"status": "open",
+					"count": 5
+				}
+			},
+			{
+				"title": "Next actions by context",
+				"home": {
+					"span": 12,
+					"height": "regular"
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [
+							{
+								"polarity": "required",
+								"predicate": {
+									"kind": "field",
+									"field": "stage",
+									"operator": "match",
+									"value": "next"
+								}
+							}
+						],
+						"sort": []
+					},
+					"mode": "kanban",
+					"kanban": {
+						"groupBy": "meta.context",
+						"columns": [
+							{
+								"id": "computer"
+							},
+							{
+								"id": "calls"
+							},
+							{
+								"id": "errands"
+							},
+							{
+								"id": "home"
+							},
+							{
+								"id": "anywhere"
+							}
+						]
+					},
+					"cards": {
+						"version": 1,
+						"media": {
+							"position": "none",
+							"height": 176,
+							"fit": "cover"
+						},
+						"titleLines": 2,
+						"header": {
+							"start": {
+								"field": "modified",
+								"show": "text"
+							}
+						},
+						"body": [
+							{
+								"start": {
+									"field": "summary",
+									"show": "text",
+									"lines": 2
+								}
+							}
+						],
+						"footer": {
+							"start": {
+								"field": "meta.area",
+								"show": "chips",
+								"maxItems": 1
+							}
+						}
+					}
+				}
+			},
+			{
+				"title": "Waiting for",
+				"home": {
+					"span": 6,
+					"height": "compact"
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [
+							{
+								"polarity": "required",
+								"predicate": {
+									"kind": "field",
+									"field": "stage",
+									"operator": "match",
+									"value": "waiting"
+								}
+							}
+						],
+						"sort": []
+					},
+					"mode": "table",
+					"table": {
+						"columns": [
+							{
+								"field": "title"
+							},
+							{
+								"field": "due_date",
+								"label": "Chase by"
+							}
+						]
+					}
+				}
+			},
+			{
+				"title": "Someday / maybe",
+				"home": {
+					"span": 6,
+					"height": "compact"
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [
+							{
+								"polarity": "required",
+								"predicate": {
+									"kind": "field",
+									"field": "stage",
+									"operator": "match",
+									"value": "someday"
+								}
+							}
+						],
+						"sort": []
+					},
+					"mode": "list"
+				}
+			},
+			{
+				"title": "By stage",
+				"topBar": true,
+				"home": {
+					"span": 12,
+					"height": "tall",
+					"hidden": true
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [],
+						"sort": []
+					},
+					"mode": "kanban",
+					"kanban": {
+						"groupBy": "meta.stage",
+						"columns": [
+							{
+								"id": "inbox"
+							},
+							{
+								"id": "next"
+							},
+							{
+								"id": "waiting"
+							},
+							{
+								"id": "scheduled"
+							},
+							{
+								"id": "someday"
+							},
+							{
+								"id": "reference"
+							},
+							{
+								"id": "done",
+								"hidden": true
+							}
+						]
+					},
+					"cards": {
+						"version": 1,
+						"media": {
+							"position": "none",
+							"height": 176,
+							"fit": "cover"
+						},
+						"titleLines": 2,
+						"header": {
+							"start": {
+								"field": "modified",
+								"show": "text"
+							}
+						},
+						"body": [
+							{
+								"start": {
+									"field": "summary",
+									"show": "text",
+									"lines": 2
+								}
+							}
+						],
+						"footer": {
+							"start": {
+								"field": "meta.area",
+								"show": "chips",
+								"maxItems": 1
+							}
+						}
+					}
+				}
+			},
+			{
+				"title": "Table",
+				"topBar": true,
+				"home": {
+					"span": 12,
+					"height": "tall",
+					"hidden": true
+				},
+				"config": {
+					"kind": "layout",
+					"query": {
+						"version": 1,
+						"clauses": [],
+						"sort": []
+					},
+					"mode": "table",
+					"table": {
+						"columns": [
+							{
+								"field": "title"
+							},
+							{
+								"field": "stage"
+							},
+							{
+								"field": "context"
+							},
+							{
+								"field": "area"
+							},
+							{
+								"field": "due_date"
+							}
+						]
+					}
+				}
+			}
+		],
+		"templates": {
+			"offered": [
+				"capture",
+				"project",
+				"weekly-review"
+			],
+			"default": "capture"
+		},
+		"calendar": {
+			"dateField": "meta.due_date"
+		}
+	}
+}

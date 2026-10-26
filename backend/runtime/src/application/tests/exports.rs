@@ -8,11 +8,16 @@ use std::net::TcpStream;
 const PAGE: &str = "00000000-0000-7000-8000-000000000601";
 const TARGET: &str = "00000000-0000-7000-8000-000000000602";
 
-fn fixture(name: &str) -> Application {
-    let mut app = application(name);
+fn fixture(project: &TestProject) -> Application {
+    let mut app = project.application();
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     app.options.web_font_folder =
         Some(root.join("fonts/assets/web").to_string_lossy().into_owned());
+    app.options.docx_font_folder = Some(
+        root.join("fonts/assets/docx")
+            .to_string_lossy()
+            .into_owned(),
+    );
     app.initialize_sync(false).unwrap();
     for (id, title, content) in [
         (
@@ -77,6 +82,35 @@ fn settled(app: &Application, id: &str) -> Value {
     }
 }
 
+#[test]
+fn word_artifact_leases_hold_shutdown_and_release_temporary_files() {
+    let project = TestProject::new("word-download-lease");
+    let app = Arc::new(fixture(&project));
+    let id = create(&app, "note", "docx", true, "classic");
+    assert_eq!(settled(&app, &id)["state"], "ready");
+    let artifact = app.open_export_artifact(&id, "").unwrap().unwrap();
+    let path = artifact.path.clone();
+    assert_eq!(
+        artifact.content_type,
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    );
+    assert!(path.exists());
+    let stopping = Arc::clone(&app);
+    let stopped = std::thread::spawn(move || stopping.stop_sync());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !app.stopping.load(Ordering::Acquire) {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!(!stopped.is_finished());
+    assert!(path.exists());
+    drop(artifact);
+    stopped.join().unwrap().unwrap();
+    assert!(!path.exists());
+    assert!(app.open_export_artifact(&id, "").is_err());
+    project.close().unwrap();
+}
+
 fn get(address: &str, path: &str) -> String {
     let mut stream = TcpStream::connect(address).unwrap();
     stream
@@ -94,11 +128,12 @@ fn get(address: &str, path: &str) -> String {
 
 #[test]
 fn typed_jobs_hold_immutable_plans_and_cleanup_html_outputs() {
-    let app = fixture("export-html");
+    let project = TestProject::new("export-html");
+    let app = fixture(&project);
     let id = create(&app, "note", "html", false, "classic");
     let mut status = settled(&app, &id);
     assert_eq!(status["state"], "prepared", "{status}");
-    assert_eq!(status["plan"]["kind"], "article");
+    assert_eq!(status["plan"]["kind"], "page");
     status["plan"]["value"]["title"] = json!("Untrusted client mutation");
     assert_eq!(
         run(
@@ -130,7 +165,7 @@ fn typed_jobs_hold_immutable_plans_and_cleanup_html_outputs() {
     assert!(app.state().unwrap().index.is_none());
     app.stop_sync().unwrap();
     assert!(!PathBuf::from(artifact.path).exists());
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
@@ -139,7 +174,8 @@ fn typed_jobs_hold_immutable_plans_and_cleanup_html_outputs() {
     reason = "Collect all worker handles before joining so work remains concurrent."
 )]
 fn linked_site_preview_reuses_listener_and_shutdown_closes_connections() {
-    let app = Arc::new(fixture("export-preview"));
+    let project = TestProject::new("export-preview");
+    let app = Arc::new(fixture(&project));
     let id = create(&app, "linked-pages", "site", true, "classic");
     let status = settled(&app, &id);
     assert_eq!(status["state"], "ready", "{status}");
@@ -181,12 +217,17 @@ fn linked_site_preview_reuses_listener_and_shutdown_closes_connections() {
         )
         .contains("content-type: font/woff2")
     );
-    let zip = app.export_site_zip(&id).unwrap().unwrap();
-    assert!(zip.starts_with(b"PK\x03\x04"));
-    assert!(Arc::ptr_eq(
-        &zip,
-        &app.export_site_zip(&id).unwrap().unwrap()
-    ));
+    let mut zip = app.export_site_zip(&id).unwrap().unwrap();
+    let mut bytes = Vec::new();
+    zip.file.read_to_end(&mut bytes).unwrap();
+    assert!(bytes.starts_with(b"PK\x03\x04"));
+    let mut again = app.export_site_zip(&id).unwrap().unwrap();
+    let mut second = Vec::new();
+    again.file.read_to_end(&mut second).unwrap();
+    assert_eq!(bytes, second);
+    // Close streams before testing shutdown, which waits for artifact leases.
+    drop(zip);
+    drop(again);
     assert!(app.export_artifact(&id, "../index.html").unwrap().is_none());
     let artifact = app.export_artifact(&id, "index.html").unwrap().unwrap();
     let mut connected = TcpStream::connect(address).unwrap();
@@ -202,12 +243,13 @@ fn linked_site_preview_reuses_listener_and_shutdown_closes_connections() {
     let mut byte = [0];
     assert!(matches!(connected.read(&mut byte), Ok(0) | Err(_)));
     assert!(!PathBuf::from(artifact.path).exists());
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn stale_content_fails_generation_and_cancelled_jobs_cannot_restart() {
-    let app = fixture("export-stale");
+    let project = TestProject::new("export-stale");
+    let app = fixture(&project);
     let id = create(&app, "note", "html", false, "classic");
     assert_eq!(settled(&app, &id)["state"], "prepared");
     let version = run(&app, "read_item", json!({"id": PAGE}))["version"].clone();
@@ -244,19 +286,12 @@ fn stale_content_fails_generation_and_cancelled_jobs_cannot_restart() {
         .is_err()
     );
     app.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }
 
 fn copy_theme(app: &Application) {
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../examples/themes/field-notes");
-    for name in [
-        "manifest.json",
-        "html/article.html",
-        "html/macros.html",
-        "site/page.html",
-        "pdf/document.typ",
-        "pdf/macros.j2",
-    ] {
+    for name in ["manifest.json", "html/article.html", "site/page.html"] {
         let target = app.root.join("themes/field-notes").join(name);
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         std::fs::copy(source.join(name), target).unwrap();
@@ -265,8 +300,10 @@ fn copy_theme(app: &Application) {
 
 #[test]
 fn theme_approval_is_application_local_and_invalidated_by_theme_changes() {
-    let first = fixture("export-trust-first");
-    let second = fixture("export-trust-second");
+    let first_project = TestProject::new("export-trust-first");
+    let first = fixture(&first_project);
+    let second_project = TestProject::new("export-trust-second");
+    let second = fixture(&second_project);
     copy_theme(&first);
     copy_theme(&second);
     let id = create(&first, "note", "html", false, "field-notes");
@@ -292,6 +329,24 @@ fn theme_approval_is_application_local_and_invalidated_by_theme_changes() {
     assert_eq!(settled(&first, &id)["state"], "prepared");
     let repeated = create(&first, "note", "html", false, "field-notes");
     assert_eq!(settled(&first, &repeated)["state"], "prepared");
+    let package = run(
+        &first,
+        "read_publication_theme_package",
+        json!({"themeId":"field-notes"}),
+    );
+    let mut definition = package["definition"].clone();
+    definition["root"]["fontSize"] = json!("14pt");
+    run(
+        &first,
+        "update_publication_theme",
+        json!({"themeId":"field-notes","revision":package["summary"]["revision"],"definition":definition}),
+    );
+    let restyled = create(&first, "note", "html", false, "field-notes");
+    let data_status = settled(&first, &restyled);
+    assert_eq!(data_status["state"], "prepared");
+    assert_eq!(data_status["themeTrust"]["hash"], hash);
+    run(&first, "start_export", json!({"jobId":repeated}));
+    assert_eq!(settled(&first, &repeated)["state"], "failed");
     let isolated = create(&second, "note", "html", false, "field-notes");
     assert_eq!(
         settled(&second, &isolated)["state"],
@@ -310,13 +365,15 @@ fn theme_approval_is_application_local_and_invalidated_by_theme_changes() {
     assert_eq!(settled(&first, &id)["state"], "failed");
     for app in [first, second] {
         app.stop_sync().unwrap();
-        std::fs::remove_dir_all(&app.root).unwrap();
     }
+    first_project.close().unwrap();
+    second_project.close().unwrap();
 }
 
 #[test]
 fn dropping_an_application_on_an_async_thread_joins_its_preview() {
-    let app = fixture("export-drop");
+    let project = TestProject::new("export-drop");
+    let app = fixture(&project);
     let id = create(&app, "linked-pages", "site", true, "classic");
     assert_eq!(settled(&app, &id)["state"], "ready");
     let url = run(&app, "start_export_preview", json!({"jobId": id}))["url"]
@@ -324,7 +381,6 @@ fn dropping_an_application_on_an_async_thread_joins_its_preview() {
         .unwrap()
         .to_owned();
     let artifact = app.export_artifact(&id, "index.html").unwrap().unwrap();
-    let root = app.root.clone();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -335,12 +391,13 @@ fn dropping_an_application_on_an_async_thread_joins_its_preview() {
     let address = url.trim_start_matches("http://").trim_end_matches('/');
     assert!(TcpStream::connect(address).is_err());
     assert!(!PathBuf::from(artifact.path).exists());
-    std::fs::remove_dir_all(root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn interrupted_http_download_releases_its_artifact_before_application_stop_finishes() {
-    let app = fixture("export-interrupted-download");
+    let project = TestProject::new("export-interrupted-download");
+    let app = fixture(&project);
     let id = create(&app, "linked-pages", "site", true, "classic");
     assert_eq!(settled(&app, &id)["state"], "ready");
     let artifact = app.export_artifact(&id, "index.html").unwrap().unwrap();
@@ -408,8 +465,8 @@ fn interrupted_http_download_releases_its_artifact_before_application_stop_finis
                 .is_err()
         );
         app.stop().await.unwrap();
-        std::fs::remove_dir_all(&app.inner.root).unwrap();
     });
+    project.close().unwrap();
 }
 
 #[cfg(unix)]
@@ -420,7 +477,8 @@ fn interrupted_http_download_releases_its_artifact_before_application_stop_finis
 )]
 fn shutdown_waits_for_the_typst_child_and_cancels_queued_pdf_work() {
     use std::os::unix::fs::PermissionsExt;
-    let mut app = fixture("export-active-child");
+    let project = TestProject::new("export-active-child");
+    let mut app = fixture(&project);
     let resources = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     let target = if cfg!(target_os = "macos") {
         "macos-arm64"
@@ -522,12 +580,13 @@ exit "$result"
     );
     assert!(!output.parent().unwrap().exists());
     assert!(app.export_artifact(&active, "").is_err());
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }
 
 #[test]
 fn linked_pages_preserve_text_only_policy_and_fail_on_unresolved_content() {
-    let app = fixture("export-linked-policy");
+    let project = TestProject::new("export-linked-policy");
+    let app = fixture(&project);
     let strict = run(
         &app,
         "create_export",
@@ -568,5 +627,5 @@ fn linked_pages_preserve_text_only_policy_and_fail_on_unresolved_content() {
     let text_only = create(&app, "linked-pages", "site", false, "classic");
     assert_eq!(settled(&app, &text_only)["state"], "prepared");
     app.stop_sync().unwrap();
-    std::fs::remove_dir_all(&app.root).unwrap();
+    project.close().unwrap();
 }

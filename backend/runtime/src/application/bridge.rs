@@ -13,12 +13,15 @@ use crate::error as bridge_error;
 #[derive(Clone)]
 pub struct ApplicationOptions {
     pub project_root: String,
+    /// Packaged, UI-authored workspace starter JSON.
+    pub workspace_template_path: String,
     pub timezone: Option<String>,
     pub cache_location: Option<String>,
     pub public_dir: Option<String>,
     pub data_dir: Option<String>,
     pub web_font_folder: Option<String>,
     pub pdf_font_folder: Option<String>,
+    pub docx_font_folder: Option<String>,
     pub typst_binary: Option<String>,
 }
 

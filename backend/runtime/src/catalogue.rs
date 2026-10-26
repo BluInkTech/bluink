@@ -8,17 +8,16 @@ use std::time::Instant;
 
 use crate::application::error::{Result, internal_error, invalid_request};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::engine::project::types::{FacetKind, FieldSource, MetadataFieldValueType};
 use crate::relations;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MetadataField {
     pub(crate) key: String,
-    pub(crate) label: String,
     pub(crate) value_type: MetadataFieldValueType,
     pub(crate) source: FieldSource,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -27,6 +26,11 @@ pub(crate) struct MetadataField {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
     pub(crate) options: Option<Vec<String>>,
+    /// How chosen options look; options without an entry are automatic.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub(crate) option_appearance:
+        Option<std::collections::BTreeMap<String, crate::engine::project::types::ChoiceAppearance>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -51,7 +55,7 @@ fn facet_cache() -> &'static FacetCache {
 pub(crate) fn invalidate_facets(project_root: &str) -> Result<()> {
     facet_cache()
         .lock()
-        .map_err(internal_error)?
+        .map_err(crate::application::error::poison_error)?
         .retain(|(root, _), _| root != project_root);
     Ok(())
 }
@@ -64,12 +68,14 @@ fn declared_facets(project_root: &str, kind: &str) -> Result<DeclaredFacets> {
     // Labels must not queue behind a cold tag catalogue (or another project).
     let entry = facet_cache()
         .lock()
-        .map_err(internal_error)?
+        .map_err(crate::application::error::poison_error)?
         .entry((project_root.to_owned(), kind.to_owned()))
         .or_default()
         .clone();
     let waiting = Instant::now();
-    let mut cache = entry.lock().map_err(internal_error)?;
+    let mut cache = entry
+        .lock()
+        .map_err(crate::application::error::poison_error)?;
     let cache_wait_ms = waiting.elapsed().as_secs_f64() * 1000.0;
     if let Some(declared) = cache.as_ref() {
         tracing::debug!(
@@ -105,13 +111,16 @@ pub(crate) fn read_metadata_fields(project_root: &str) -> Result<Vec<MetadataFie
             .map_err(internal_error)?;
     let mut fields = vec![MetadataField {
         key: "summary".to_owned(),
-        label: "Summary".to_owned(),
         value_type: MetadataFieldValueType::Text,
         source: FieldSource::Builtin,
         system: None,
         options: None,
+        option_appearance: None,
     }];
-    for declaration in declarations.as_array().into_iter().flatten() {
+    let declarations = declarations
+        .as_array()
+        .ok_or_else(|| internal_error("Property catalogue must be an array."))?;
+    for declaration in declarations {
         fields.push(metadata_field(declaration)?);
     }
     Ok(fields)
@@ -121,26 +130,32 @@ pub(crate) fn metadata_field(declaration: &Value) -> Result<MetadataField> {
     let key = declaration["key"]
         .as_str()
         .ok_or_else(|| internal_error("Property declaration has no key."))?;
-    let mut label = key.replace('_', " ");
-    if let Some(first) = label.get_mut(0..1) {
-        first.make_ascii_uppercase();
-    }
-    let mut field = json!({
-        "key": key,
-        "label": label,
-        "valueType": declaration["valueType"],
-        "source": if declaration["system"] == true { "builtin" } else { "registered" }
-    });
-    if declaration["system"] == true {
-        field["system"] = json!(true);
-    }
-    if declaration["options"]
+    let system = declaration["system"] == true;
+    let options = if declaration["options"]
         .as_array()
         .is_some_and(|options| !options.is_empty())
     {
-        field["options"] = declaration["options"].clone();
-    }
-    serde_json::from_value(field).map_err(internal_error)
+        Some(Vec::<String>::deserialize(&declaration["options"]).map_err(internal_error)?)
+    } else {
+        None
+    };
+    Ok(MetadataField {
+        key: key.to_owned(),
+        value_type: MetadataFieldValueType::deserialize(&declaration["valueType"])
+            .map_err(internal_error)?,
+        source: if system {
+            FieldSource::Builtin
+        } else {
+            FieldSource::Registered
+        },
+        system: system.then_some(true),
+        options,
+        option_appearance: declaration
+            .get("optionAppearance")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .map_err(internal_error)?,
+    })
 }
 
 pub(crate) fn list_facet_entries(
@@ -168,7 +183,8 @@ pub(crate) fn list_facet_entries(
             index_path.to_owned(),
             if current == "tag" { "tags" } else { "labels" }.to_owned(),
             Vec::new(),
-            None,
+            // Usage counts are about notes; templates protect facets but aren't counted.
+            Some("page".to_owned()),
         )?;
         tracing::debug!(
             operation = "facet_usage_counts",
@@ -212,15 +228,9 @@ mod tests {
 
     #[test]
     fn label_catalogue_does_not_wait_for_the_tag_cache() {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "bluink-catalogue-{}-{timestamp}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(root.join("facets")).unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
+        crate::engine::project::facets::initialize(&root).unwrap();
         crate::engine::project::facets::create_facet(&root, "tag", "research").unwrap();
         crate::engine::project::facets::create_facet(&root, "label", "review").unwrap();
         let root_string = root.to_str().unwrap().to_owned();
@@ -241,6 +251,6 @@ mod tests {
         assert_eq!(labels.len(), 1);
         assert_eq!(labels[0]["key"], "review");
         invalidate_facets(&root_string).unwrap();
-        std::fs::remove_dir_all(root).unwrap();
+        temporary.close().unwrap();
     }
 }
