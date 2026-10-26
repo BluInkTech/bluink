@@ -28,6 +28,7 @@ test('single-resource packing is reproducible, omits private tooling and needs n
 		const source = path.join(temporary, 'fonts')
 		await mkdir(path.join(source, 'assets/web'), { recursive: true })
 		await mkdir(path.join(source, 'assets/pdf/inter'), { recursive: true })
+		await mkdir(path.join(source, 'assets/docx/inter'), { recursive: true })
 		const manifest = {
 			name: '@bluink/fonts',
 			version: '26.10.1-alpha',
@@ -47,6 +48,8 @@ test('single-resource packing is reproducible, omits private tooling and needs n
 			'README.md': 'Synthetic resource\n',
 			'assets/web/inter.css': '/* synthetic font */\n',
 			'assets/pdf/inter/LICENSE': 'Synthetic font licence\n',
+			'assets/docx/manifest.json': '{"schemaVersion":1,"fonts":[]}\n',
+			'assets/docx/inter/inter-400-normal.ttf': 'Synthetic static font\n',
 			'private-notes.txt': 'Unpublished source notes\n',
 		}))
 			await writeFile(path.join(source, file), content)

@@ -13,7 +13,17 @@ import {
 	writeJson,
 } from './release-utils.mjs'
 
-export async function buildNative(targetName) {
+export async function buildNative(
+	targetName,
+	{ mode = 'release', outputDirectory } = {},
+) {
+	if (!['development', 'release'].includes(mode))
+		throw new Error(
+			`Unknown native build mode: ${mode}. Choose development or release.`,
+		)
+	if (mode === 'development' && process.env.BLUINK_PUBLIC_COMMIT)
+		throw new Error('Public release builds must use release mode.')
+	const started = performance.now()
 	const target = targets.find((value) =>
 		targetName
 			? value.rust === targetName
@@ -42,6 +52,7 @@ export async function buildNative(targetName) {
 		sourceDigest,
 		target: target.rust,
 		version,
+		mode,
 		...(publicCommit && { publicCommit }),
 	})
 	const env = { ...process.env, BLUINK_NATIVE_BUILD_INFO: info }
@@ -56,6 +67,13 @@ export async function buildNative(targetName) {
 	]
 		.filter(Boolean)
 		.join('\u001f')
+	const directory = outputDirectory
+		? path.resolve(outputDirectory)
+		: path.join(
+				root,
+				'backend/runtime',
+				mode === 'development' ? 'development' : '',
+			)
 	await npm(
 		[
 			'exec',
@@ -65,13 +83,14 @@ export async function buildNative(targetName) {
 			'napi',
 			'build',
 			'--platform',
-			'--release',
+			'--profile',
+			mode,
 			'--manifest-path',
 			'Cargo.toml',
 			'--package-json-path',
 			'package.json',
 			'--output-dir',
-			'runtime',
+			directory,
 			'--no-js',
 			'--target',
 			target.rust,
@@ -80,17 +99,27 @@ export async function buildNative(targetName) {
 	)
 	if (sourceDigest !== (await nativeSourceDigest()))
 		throw new Error(
-			'Native sources changed while compiling. Rebuild before releasing.',
+			'Native sources changed while compiling. Run the build again.',
 		)
-	const artifact = path.join(root, 'backend/runtime', target.artifact)
+	const artifact = path.join(directory, target.artifact)
 	const compiled = nativeBuildInfo(await readFile(artifact))
-	if (compiled.sourceDigest !== sourceDigest || compiled.target !== target.rust)
+	if (
+		compiled.sourceDigest !== sourceDigest ||
+		compiled.target !== target.rust ||
+		compiled.mode !== mode ||
+		compiled.version !== version ||
+		compiled.publicCommit !== publicCommit
+	)
 		throw new Error(
 			'The compiler did not produce the requested native build identity.',
 		)
 	await mkdir(path.dirname(artifact), { recursive: true })
 	await writeJson(`${artifact}.json`, compiled)
-	console.log(`Built ${target.artifact} from ${sourceDigest.slice(0, 12)}`)
+	const elapsedSeconds = (performance.now() - started) / 1000
+	console.log(
+		`Built ${target.artifact} (${mode}) from ${sourceDigest.slice(0, 12)} in ${elapsedSeconds.toFixed(2)}s`,
+	)
+	return { artifact, mode, elapsedSeconds }
 }
 
 if (
@@ -100,7 +129,12 @@ if (
 	const { values } = parseArgs({
 		options: {
 			target: { type: 'string' },
+			mode: { type: 'string', default: 'release' },
+			'output-dir': { type: 'string' },
 		},
 	})
-	await buildNative(values.target)
+	await buildNative(values.target, {
+		mode: values.mode,
+		outputDirectory: values['output-dir'],
+	})
 }

@@ -188,7 +188,7 @@ export async function smokePackage(archive, expectedVersion, resources) {
 			'runtime/index.cjs',
 			'vendor/themes/classic/manifest.json',
 			'vendor/themes/editorial/manifest.json',
-			'vendor/themes/classic/pdf/document.typ',
+			'vendor/themes/classic/html/article.html',
 			...release.native.map((entry) => `runtime/${entry.file}`),
 		]) {
 			if (
@@ -246,11 +246,28 @@ export async function smokePackage(archive, expectedVersion, resources) {
 		const { publicationRuntime } = await import(
 			pathToFileURL(path.join(packageRoot, 'dist/src/native/addon.js')).href
 		)
-		const { typstBinary: typst, fontFolder } = publicationRuntime()
+		const {
+			typstBinary: typst,
+			fontFolder,
+			docxFontFolder,
+		} = publicationRuntime()
 		if (!fontFolder.includes(`${path.sep}fonts${path.sep}assets${path.sep}pdf`))
 			throw new Error(
 				'PDF fonts did not resolve from the installed resource package.',
 			)
+		if (
+			!docxFontFolder.includes(
+				`${path.sep}fonts${path.sep}assets${path.sep}docx`,
+			)
+		)
+			throw new Error(
+				'Word fonts did not resolve from the installed resource package.',
+			)
+		const wordFonts = JSON.parse(
+			await readFile(path.join(docxFontFolder, 'manifest.json'), 'utf8'),
+		)
+		if (wordFonts.schemaVersion !== 1 || !wordFonts.fonts.length)
+			throw new Error('Installed Word font manifest is missing or unsupported.')
 		if (
 			process.platform !== 'win32' &&
 			((await stat(typst)).mode & 0o111) === 0
@@ -266,8 +283,8 @@ export async function smokePackage(archive, expectedVersion, resources) {
 				'--input-type=module',
 				'-e',
 				`
-import { nativeAddon, shutdownNativeDiagnostics } from ${JSON.stringify(pathToFileURL(path.join(packageRoot, 'dist/src/native/addon.js')).href)};
-const fresh = new (nativeAddon().BluinkApplication)({projectRoot: ${JSON.stringify(freshRoot)}, timezone: 'UTC'});
+import { createApplication, shutdownNativeDiagnostics } from ${JSON.stringify(pathToFileURL(path.join(packageRoot, 'dist/src/native/addon.js')).href)};
+const fresh = createApplication({projectRoot: ${JSON.stringify(freshRoot)}, timezone: 'UTC'});
 try {
   const opened = JSON.parse(await fresh.initialize(false));
   if (opened.config.format !== 'bluink-project') throw new Error('The packaged native library did not initialize a fresh project.');
@@ -289,7 +306,56 @@ try {
 		const html = path.join(temporary, 'article.html')
 		const pdf = path.join(temporary, 'article.pdf')
 		const book = path.join(temporary, 'book.pdf')
+		const word = path.join(temporary, 'article.docx')
+		const wordBook = path.join(temporary, 'book.docx')
+		const wordLinked = path.join(temporary, 'linked.docx')
 		const site = path.join(temporary, 'site')
+		await runInstalled(process.execPath, [
+			cli,
+			'export',
+			'docx',
+			'--project',
+			project,
+			'--note',
+			sourcePage,
+			'--out',
+			word,
+		])
+		await runInstalled(process.execPath, [
+			cli,
+			'publication',
+			'generate',
+			'--project',
+			project,
+			'--id',
+			publication,
+			'--format',
+			'docx',
+			'--output',
+			wordBook,
+		])
+		await runInstalled(process.execPath, [
+			cli,
+			'export',
+			'docx',
+			'--project',
+			project,
+			'--note',
+			'01a0e2a0-0000-7000-8000-000000000001',
+			'--include-linked',
+			'--out',
+			wordLinked,
+		])
+		for (const file of [word, wordBook, wordLinked]) {
+			const bytes = await readFile(file)
+			if (
+				!bytes.subarray(0, 4).equals(Buffer.from('504b0304', 'hex')) ||
+				!bytes.includes(Buffer.from('word/fontTable.xml'))
+			)
+				throw new Error(
+					'Installed Word export is missing its native document or embedded fonts.',
+				)
+		}
 		await runInstalled(process.execPath, [
 			cli,
 			'export',
@@ -363,6 +429,7 @@ try {
 				'bundled Typst',
 				'fresh project',
 				'note HTML/PDF',
+				'note/linked/Publication DOCX with embedded fonts',
 				'Publication PDF/site',
 				'HTTP UI hosting',
 			],

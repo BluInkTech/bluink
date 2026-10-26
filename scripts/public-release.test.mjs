@@ -303,7 +303,7 @@ test('official archive verification inspects embedded native identities and depe
 		for (const target of targets)
 			await writeFile(
 				path.join(source, 'runtime', target.artifact),
-				`BLUINK_NATIVE_BUILD_INFO_V1:${JSON.stringify({ sourceDigest: digest, target: target.rust, version: identity.version, publicCommit: identity.publicCommit })}:END_BLUINK_NATIVE_BUILD_INFO`,
+				`BLUINK_NATIVE_BUILD_INFO_V1:${JSON.stringify({ sourceDigest: digest, target: target.rust, mode: 'release', version: identity.version, publicCommit: identity.publicCommit })}:END_BLUINK_NATIVE_BUILD_INFO`,
 			)
 		for (const file of [
 			'bluink',

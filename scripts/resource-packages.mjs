@@ -250,6 +250,13 @@ export function resourceFileAllowed(kind, file) {
 	)
 		return true
 	if (kind === 'fonts')
+		if (
+			/^assets\/docx\/(?:manifest\.json|[\w-]+\/(?:LICENSE|[\w-]+\.ttf))$/.test(
+				file,
+			)
+		)
+			return true
+	if (kind === 'fonts')
 		return /^(?:catalogue\.(?:json|js|d\.ts)|assets\/(?:manifest\.json|web\/(?:[\w-]+\.css|licenses\.json|licenses\/[\w-]+\.txt|[\w-]+\/[\w-]+\.woff2)|pdf\/[\w-]+\/(?:LICENSE|[\w-]+\.ttf)))$/.test(
 			file,
 		)
@@ -352,7 +359,12 @@ export async function packResource(
 				'index.js',
 				'sources.json',
 				...(kind === 'fonts'
-					? ['assets/web/inter.css', 'assets/pdf/inter/LICENSE']
+					? [
+							'assets/web/inter.css',
+							'assets/pdf/inter/LICENSE',
+							'assets/docx/manifest.json',
+							'assets/docx/inter/inter-400-normal.ttf',
+						]
 					: [
 							'assets/linux-x64/typst',
 							'assets/macos-arm64/typst',

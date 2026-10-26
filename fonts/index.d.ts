@@ -3,4 +3,4 @@
 
 export { fonts, fontStylesheet, type BundledFont } from './catalogue.js'
 export const version: string
-export function fontDirectory(format: 'web' | 'pdf'): string
+export function fontDirectory(format: 'web' | 'pdf' | 'docx'): string

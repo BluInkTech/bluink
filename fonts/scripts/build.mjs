@@ -6,6 +6,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import wawoff2 from 'wawoff2'
 import { fonts } from '../catalogue.js'
+import { buildStaticFaces } from './static-faces.mjs'
 
 const root = path.resolve(import.meta.dirname, '..')
 const lock = JSON.parse(await readFile(path.join(root, 'sources.json'), 'utf8'))
@@ -99,7 +100,8 @@ await writeFile(
 	path.join(stage, 'manifest.json'),
 	`${JSON.stringify(manifest, null, 2)}\n`,
 )
+await buildStaticFaces(stage, lock.fonts)
 await rm(assets, { recursive: true, force: true })
 const { rename } = await import('node:fs/promises')
 await rename(stage, assets)
-console.log(`Prepared ${fonts.length} paired web/PDF font families.`)
+console.log(`Prepared ${fonts.length} web/PDF/Word font families.`)

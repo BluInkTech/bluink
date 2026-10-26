@@ -125,7 +125,9 @@ async function sourceFiles(folder) {
 export async function nativeSourceDigest() {
 	const files = [
 		...(await sourceFiles(path.join(root, 'backend/runtime/src'))),
-		...(await sourceFiles(path.join(root, 'backend/vendor'))),
+		...(await sourceFiles(path.join(root, 'backend/vendor'))).filter(
+			(file) => path.basename(file) !== 'workspace-starter.json',
+		),
 		...[
 			'rust-toolchain.toml',
 			'fonts/catalogue.json',
@@ -181,12 +183,20 @@ export async function verifyNativeArtifacts(
 					)
 				})
 				const info = nativeBuildInfo(bytes)
+				if (info.mode !== 'release')
+					throw new Error(
+						`Native artifact is not a release build: ${target.artifact}. Run npm run build:native:release.`,
+					)
 				if (
 					Object.keys(info).some(
 						(key) =>
-							!['sourceDigest', 'target', 'version', 'publicCommit'].includes(
-								key,
-							),
+							![
+								'sourceDigest',
+								'target',
+								'version',
+								'publicCommit',
+								'mode',
+							].includes(key),
 					) ||
 					(identity.version && info.version !== identity.version) ||
 					(identity.publicCommit && info.publicCommit !== identity.publicCommit)

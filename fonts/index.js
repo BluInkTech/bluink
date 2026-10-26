@@ -9,7 +9,7 @@ export { fonts, fontStylesheet } from './catalogue.js'
 export const version = pkg.version
 
 export function fontDirectory(format) {
-	if (format !== 'web' && format !== 'pdf')
+	if (format !== 'web' && format !== 'pdf' && format !== 'docx')
 		throw new Error(`Unsupported font format: ${format}`)
 	const directory = fileURLToPath(
 		new URL(`./assets/${format}/`, import.meta.url),
