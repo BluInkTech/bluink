@@ -217,6 +217,26 @@ export async function prepareResource(input, identity) {
 	return record
 }
 
+/** Install only the exact tools that the copied installed-package tests import. */
+export function smokeDependencies(input, sourceManifest, archive) {
+	const dependencies = { [input.artifact.name]: `file:${archive}` }
+	if (input.kind === 'fonts') {
+		const version = sourceManifest.devDependencies?.['@bluink/typst']
+		if (!versionPattern.test(version))
+			throw new Error(
+				'Fonts smoke tests require an exact Typst test dependency.',
+			)
+		dependencies['@bluink/typst'] = version
+		const harfbuzzVersion = sourceManifest.devDependencies?.harfbuzzjs
+		if (!/^\d+\.\d+\.\d+$/.test(harfbuzzVersion))
+			throw new Error(
+				'Fonts smoke tests require an exact HarfBuzz test dependency.',
+			)
+		dependencies.harfbuzzjs = harfbuzzVersion
+	}
+	return dependencies
+}
+
 /** Exercise installed package code and assets, never source-tree replacements. */
 export async function smokeResource(input, identity, sourceManifest) {
 	const target = targets.find(
@@ -229,19 +249,10 @@ export async function smokeResource(input, identity, sourceManifest) {
 		path.join(os.tmpdir(), 'bluink-resource-smoke-'),
 	)
 	try {
-		const dependencies = { [record.name]: `file:${record.archive}` }
-		if (input.kind === 'fonts') {
-			const version = sourceManifest.devDependencies?.['@bluink/typst']
-			if (!versionPattern.test(version))
-				throw new Error(
-					'Fonts smoke tests require an exact Typst test dependency.',
-				)
-			dependencies['@bluink/typst'] = version
-		}
 		await writeJson(path.join(temporary, 'package.json'), {
 			private: true,
 			type: 'module',
-			dependencies,
+			dependencies: smokeDependencies(input, sourceManifest, record.archive),
 		})
 		await npm(['install', '--ignore-scripts', '--no-audit', '--no-fund'], {
 			cwd: temporary,

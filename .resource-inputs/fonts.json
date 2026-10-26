@@ -2,13 +2,13 @@
   "format": "bluink.resource-input",
   "formatVersion": 1,
   "kind": "fonts",
-  "version": "26.10.4",
+  "version": "26.10.5",
   "publicRepository": "https://github.com/BluInkTech/bluink",
   "artifact": {
     "name": "@bluink/fonts",
-    "version": "26.10.4",
-    "filename": "bluink-fonts-26.10.4.tgz",
-    "integrity": "sha512-NWEOB3IDS2xeJiUZJ3Fv8+BnPsoRKFU15mvtSaAvnr2AIOUXOvJbUdEBZSl7ujxxSwiI8tD63ZnPBelL1XZ9ww==",
-    "sha256": "79833f6e9fe257464649f13b62657cb73bf7e89dadd00559f593f94638cd7cbc"
+    "version": "26.10.5",
+    "filename": "bluink-fonts-26.10.5.tgz",
+    "integrity": "sha512-KtpxaLOtvZgzg5jGJZH16moXPmsFFMV5mC44H9NkpxiSg7thMDUvNBqtVLybvkm3MuK9ltkK4xjwHiOD+HgEHg==",
+    "sha256": "540982ae99a5b0ffccd85a748c280d9d1a6d9ddc200f543382059af32854b1fa"
   }
 }

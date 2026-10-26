@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+	smokeDependencies,
 	validateResourceContext,
 	validateResourceInput,
 	validateResourceReports,
@@ -113,5 +114,33 @@ test('resource publication requires all platform reports for exactly the tested 
 	assert.throws(
 		() => validateResourceReports(input, identity, {}),
 		/Missing matching/,
+	)
+})
+
+test('installed Fonts smoke test installs its pinned shaping dependency', () => {
+	const manifest = {
+		devDependencies: {
+			'@bluink/typst': '26.10.2',
+			harfbuzzjs: '1.6.3',
+		},
+	}
+	assert.deepEqual(smokeDependencies(input, manifest, '/fonts.tgz'), {
+		'@bluink/fonts': 'file:/fonts.tgz',
+		'@bluink/typst': '26.10.2',
+		harfbuzzjs: '1.6.3',
+	})
+	assert.throws(
+		() =>
+			smokeDependencies(
+				input,
+				{
+					devDependencies: {
+						...manifest.devDependencies,
+						harfbuzzjs: '^1.6.3',
+					},
+				},
+				'/fonts.tgz',
+			),
+		/exact HarfBuzz/,
 	)
 })
