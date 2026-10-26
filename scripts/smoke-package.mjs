@@ -91,7 +91,10 @@ async function checkServer(cli, project) {
 				const css = await fetch(
 					new URL('/fonts/inter.css', `http://127.0.0.1:${port}/`),
 				)
-				if (!css.ok || css.headers.get('content-type') !== 'text/css')
+				if (
+					!css.ok ||
+					css.headers.get('content-type')?.split(';')[0] !== 'text/css'
+				)
 					throw new Error(
 						'Packaged font stylesheet is missing or has an incorrect MIME type.',
 					)
