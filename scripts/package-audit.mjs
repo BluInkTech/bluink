@@ -87,6 +87,6 @@ export const webFileAllowed = (file) =>
 	)
 export const cliFileAllowed = (file) =>
 	(file.startsWith('web/') && webFileAllowed(file.slice(4))) ||
-	/^(?:bluink|package\.json|npm-shrinkwrap\.json|LICENSE|README\.md|THIRD_PARTY_NOTICES\.txt|release\.json|dist\/(?:package\.json|(?:src\/)?(?:native\/)?[\w-]+\.js)|runtime\/(?:index\.cjs|bluink_runtime\.(?:linux-x64-gnu|win32-x64-msvc|darwin-arm64)\.node)|vendor\/(?:(?:theme-preview|workspace-starter)\.json|themes\/(?:classic|editorial)\/(?:manifest\.json|html\/article\.html|site\/(?:page|listing)\.html)))$/.test(
+	/^(?:bluink|package\.json|npm-shrinkwrap\.json|LICENSE|README\.md|THIRD_PARTY_NOTICES\.txt|release\.json|dist\/(?:package\.json|(?:src\/)?(?:native\/)?[\w-]+\.js)|runtime\/(?:index\.cjs|bluink_runtime\.(?:linux-x64-gnu|win32-x64-msvc|darwin-arm64)\.node)|vendor\/(?:(?:theme-preview|workspace-starter)\.json|workspace-setups\/[\w-]+\.json|themes\/(?:classic|editorial)\/(?:manifest\.json|html\/article\.html|site\/(?:page|listing)\.html)))$/.test(
 		file,
 	)
