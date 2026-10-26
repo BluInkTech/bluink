@@ -1,6 +1,6 @@
 {
 	"name": "@bluink/cli",
-	"version": "26.10.11-alpha",
+	"version": "26.10.12-alpha",
 	"description": "Structured writing & self-publishing application",
 	"private": true,
 	"type": "module",

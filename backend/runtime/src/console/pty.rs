@@ -2,6 +2,11 @@
 // Copyright (c) 2023–2026 BluInk
 
 //! Exercise the actual renderer, input reader and restoration in an isolated PTY.
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "PTY integration helpers intentionally fail the test on unexpected results."
+)]
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
