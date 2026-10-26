@@ -2,11 +2,6 @@ name: Public release
 
 on:
   workflow_dispatch:
-    inputs:
-      promote_latest:
-        description: Point latest to the current alpha while no stable CLI exists
-        type: boolean
-        default: false
   push:
     tags: ['v*']
 
@@ -26,7 +21,7 @@ env:
 
 jobs:
   resources:
-    if: github.event.repository.private == false && !inputs.promote_latest
+    if: github.event.repository.private == false && !startsWith(github.ref, 'refs/tags/v-latest-')
     name: Verify published Fonts, Typst and Web
     runs-on: ubuntu-22.04
     env:
@@ -265,7 +260,7 @@ jobs:
           if-no-files-found: error
 
   promote_latest:
-    if: github.event_name == 'workflow_dispatch' && inputs.promote_latest && github.event.repository.private == false
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v-latest-') && github.event.repository.private == false
     runs-on: ubuntu-22.04
     environment: npm
     permissions:
@@ -286,6 +281,7 @@ jobs:
           alpha="$(npm view @bluink/cli dist-tags.alpha)"
           latest="$(npm view @bluink/cli dist-tags.latest)"
           [[ "$alpha" == *-alpha ]] || { echo 'alpha tag does not point to an alpha release'; exit 1; }
+          [[ "$GITHUB_REF_NAME" == "v-latest-$alpha" ]] || { echo 'promotion tag differs from the current alpha'; exit 1; }
           [[ "$latest" == *-alpha || "$latest" == *-beta || "$latest" == *-rc ]] || { echo 'latest points to a stable release'; exit 1; }
           npm dist-tag add "@bluink/cli@$alpha" latest
           for attempt in {1..12}; do
