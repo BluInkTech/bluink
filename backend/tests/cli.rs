@@ -627,7 +627,10 @@ fn export_forwards_flags_resolves_packaged_pdf_resources_and_separates_errors() 
             "./note.pdf",
         ],
     );
-    assert_eq!(generated.trim(), path(&root.join("note.pdf")));
+    assert_eq!(
+        Path::new(generated.trim()).canonicalize().unwrap(),
+        root.join("note.pdf").canonicalize().unwrap()
+    );
     assert!(
         std::fs::read(root.join("note.pdf"))
             .unwrap()
@@ -720,7 +723,12 @@ fn publication_create_inspect_plan_and_generate_return_json_results() {
             "./site",
         ],
     );
-    assert_eq!(generated["output"], path(&root.join("site")));
+    assert_eq!(
+        Path::new(generated["output"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        root.join("site").canonicalize().unwrap()
+    );
     assert_ne!(std::fs::read(root.join("site/index.html")).unwrap(), b"");
 }
 
