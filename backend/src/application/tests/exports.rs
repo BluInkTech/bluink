@@ -535,7 +535,7 @@ fn interrupted_http_download_releases_its_artifact_before_application_stop_finis
     clippy::too_many_lines,
     reason = "Keep each end-to-end scenario together so setup, failure checks and cleanup remain visible."
 )]
-fn shutdown_waits_for_the_typst_child_and_cancels_queued_pdf_work() {
+fn shutdown_stops_the_typst_child_and_cancels_queued_pdf_work() {
     use std::os::unix::fs::PermissionsExt;
     let project = TestProject::new("export-active-child");
     let mut app = fixture(&project);
@@ -560,6 +560,7 @@ fn shutdown_waits_for_the_typst_child_and_cancels_queued_pdf_work() {
     let started = control.path().join("started");
     let release = control.path().join("release");
     let finished = control.path().join("finished");
+    let child_pid = control.path().join("pid");
     let wrapper = control.path().join("typst");
     let quote =
         |path: &std::path::Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
@@ -571,6 +572,7 @@ fn shutdown_waits_for_the_typst_child_and_cancels_queued_pdf_work() {
             r#"#!/bin/sh
 if [ "$1" = '--version' ]; then exec {} "$@"; fi
 for argument do output="$argument"; done
+printf '%s\n' "$$" > {}
 printf '%s\n' "$output" >> {}
 attempt=0
 while [ ! -f {} ]; do
@@ -584,6 +586,7 @@ printf '%s\n' "$result" > {}
 exit "$result"
 "#,
             quote(&typst),
+            quote(&child_pid),
             quote(&started),
             quote(&release),
             quote(&typst),
@@ -619,20 +622,24 @@ exit "$result"
         assert!(Instant::now() < deadline, "Second PDF did not queue");
         std::thread::yield_now();
     }
-    let stopping = Arc::clone(&app);
-    let stop = std::thread::spawn(move || stopping.stop_sync());
-    while !app.stopping.load(Ordering::Acquire) {
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
-    assert!(!stop.is_finished());
+    let pid = std::fs::read_to_string(&child_pid).unwrap();
+    let stopping = Instant::now();
+    app.stop_sync().unwrap();
     assert!(
-        output.parent().unwrap().exists(),
-        "Active renderer files were removed"
+        stopping.elapsed() < Duration::from_secs(5),
+        "Shutdown waited for the blocked compiler instead of cancelling it"
     );
-    std::fs::write(&release, "continue").unwrap();
-    stop.join().unwrap().unwrap();
-    assert_eq!(std::fs::read_to_string(&finished).unwrap().trim(), "0");
+    assert!(
+        !std::process::Command::new("/bin/kill")
+            .args(["-0", pid.trim()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success(),
+        "Typst child was not reaped before shutdown returned"
+    );
+    assert!(!finished.exists(), "Cancelled compiler finished rendering");
     assert_eq!(
         std::fs::read_to_string(&started).unwrap().lines().count(),
         1,

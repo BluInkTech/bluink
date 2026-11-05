@@ -277,7 +277,9 @@ fn network_volume(path: &Path) -> Result<Option<bool>> {
     )]
     // SAFETY: The successful statfs call initialized this exact output struct.
     let information = unsafe { information.assume_init() };
-    Ok(Some(information.f_flags & libc::MNT_LOCAL == 0))
+    Ok(Some(
+        information.f_flags & libc::MNT_LOCAL.cast_unsigned() == 0,
+    ))
 }
 
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]

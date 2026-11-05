@@ -442,12 +442,14 @@ fn long_event_details_scroll_without_changing_the_selected_event() {
     session.send(b"e");
     session.wait_for("fixture_error");
     session.send(b"\r");
-    session.wait_for("timestampMs");
+    // At the minimum height, explanatory text precedes the raw event fields.
+    session.wait_for("Something unexpected happened.");
     session.send(b"\x1b[F");
     session.wait_for("durationMs");
     session.capture("60x12-details-scrolled");
     session.send(b"\x1b[H");
-    session.wait_for("timestampMs");
+    session.wait_for("Something unexpected happened.");
+    session.wait_for("fixture_error");
     session.quit(b"q");
 }
 
