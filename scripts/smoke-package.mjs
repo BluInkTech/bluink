@@ -1,24 +1,99 @@
 import { spawn } from 'node:child_process'
-import { cp, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
-import { createServer } from 'node:net'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
-import { json, npm, root, run, targets } from './release-utils.mjs'
+import {
+	fileHash,
+	json,
+	nativeHostTarget,
+	npm,
+	packageExecutable,
+	root,
+	run,
+} from './release-utils.mjs'
 
-async function checkServer(cli, project) {
-	const reservation = createServer()
-	await new Promise((resolve, reject) => {
-		reservation.once('error', reject)
-		reservation.listen(0, '127.0.0.1', resolve)
-	})
-	const port = reservation.address().port
-	await new Promise((resolve) => reservation.close(resolve))
+/** HTTP media types may carry parameters such as a charset. */
+export function hasMediaType(response, expected) {
+	return (
+		response.ok &&
+		response.headers
+			.get('content-type')
+			?.split(';', 1)[0]
+			.trim()
+			.toLowerCase() === expected
+	)
+}
+
+/** The installed UI, its bundles and its fonts, with no source or debug paths. */
+async function checkInterface(origin) {
+	const response = await fetch(origin, { signal: AbortSignal.timeout(10_000) })
+	const html = await response.text()
+	if (!response.ok || !html.includes('<html') || !html.includes('/assets/'))
+		throw new Error('Packaged server did not serve the built UI.')
+	const assets = [
+		...html.matchAll(/<(?:script|link)\b[^>]*(?:src|href)="([^"]+)"/g),
+	]
+		.map((match) => match[1])
+		.filter((url) => /\.(?:css|js)(?:\?|$)/.test(url))
+	if (
+		!assets.some((url) => url.endsWith('.css')) ||
+		!assets.some((url) => url.endsWith('.js'))
+	)
+		throw new Error(
+			'Packaged HTML does not reference CSS and JavaScript bundles.',
+		)
+	for (const asset of assets) {
+		const resource = await fetch(new URL(asset, origin))
+		const expectedType = asset.split('?')[0].endsWith('.css')
+			? 'text/css'
+			: 'text/javascript'
+		if (!hasMediaType(resource, expectedType))
+			throw new Error(
+				`Packaged frontend asset ${asset} returned HTTP ${resource.status} with ${resource.headers.get('content-type')}.`,
+			)
+		if (!(await resource.arrayBuffer()).byteLength)
+			throw new Error(`Packaged frontend asset is empty: ${asset}`)
+	}
+	for (const forbidden of [
+		'/src/main.tsx',
+		'/@vite/client',
+		'/.env',
+		'/package.json',
+		...assets.map((asset) => `${asset}.map`),
+	]) {
+		const response = await fetch(new URL(forbidden, origin))
+		if (response.status !== 404)
+			throw new Error(
+				`Production source/debug path is accessible: ${forbidden}`,
+			)
+	}
+	// Fonts are loaded by CSS at runtime and do not appear in index.html.
+	const css = await fetch(new URL('/fonts/inter.css', origin))
+	if (!hasMediaType(css, 'text/css'))
+		throw new Error(
+			'Packaged font stylesheet is missing or has an incorrect MIME type.',
+		)
+	const fontPath = (await css.text()).match(/url\('\.\/([^']+\.woff2)'\)/)?.[1]
+	if (!fontPath) throw new Error('Packaged font stylesheet has no font asset.')
+	const font = await fetch(new URL(`/fonts/${fontPath}`, origin))
+	if (
+		!hasMediaType(font, 'font/woff2') ||
+		!(await font.arrayBuffer()).byteLength
+	)
+		throw new Error(
+			'Packaged UI font is missing or served with an incorrect MIME type.',
+		)
+}
+
+/** Start a plain server on a fresh project, check it, then stop it through
+ * standard input as a supervisor would. Windows cannot signal the child. */
+async function checkServer(executable, project, env) {
 	const child = spawn(
-		process.execPath,
-		[cli, 'server', '--project', project, '--port', String(port)],
-		{ cwd: path.dirname(project), stdio: ['ignore', 'pipe', 'pipe'] },
+		executable,
+		['server', '--no-tui', '--port', '0', '--project', project],
+		{ cwd: path.dirname(project), env, stdio: ['pipe', 'pipe', 'pipe'] },
 	)
 	let output = ''
 	let failure
@@ -31,106 +106,52 @@ async function checkServer(cli, project) {
 	child.stderr.on('data', (chunk) => {
 		output += chunk
 	})
-	const closed = new Promise((resolve) => child.once('close', resolve))
+	const closed = new Promise((resolve) =>
+		child.once('close', (code, signal) => resolve({ code, signal })),
+	)
 	try {
-		for (let attempt = 0; attempt < 100; attempt++) {
-			if (failure || child.exitCode !== null)
-				throw new Error(`Packaged server failed: ${failure?.message ?? output}`)
-			const response = await fetch(`http://127.0.0.1:${port}/`, {
-				signal: AbortSignal.timeout(1000),
-			}).catch(() => null)
-			if (response?.ok) {
-				const html = await response.text()
-				if (!html.includes('<html') || !html.includes('/assets/'))
-					throw new Error('Packaged server did not serve the built UI.')
-				const assets = [
-					...html.matchAll(/<(?:script|link)\b[^>]*(?:src|href)="([^"]+)"/g),
-				]
-					.map((match) => match[1])
-					.filter((url) => /\.(?:css|js)(?:\?|$)/.test(url))
-				if (
-					!assets.some((url) => url.endsWith('.css')) ||
-					!assets.some((url) => url.endsWith('.js'))
+		let origin
+		for (let attempt = 0; !origin; attempt++) {
+			if (failure || child.exitCode !== null || attempt === 1200)
+				throw new Error(
+					`Packaged server did not start: ${failure?.message ?? output}`,
 				)
-					throw new Error(
-						'Packaged HTML does not reference CSS and JavaScript bundles.',
-					)
-				for (const asset of assets) {
-					const resource = await fetch(
-						new URL(asset, `http://127.0.0.1:${port}/`),
-					)
-					const expectedType = asset.split('?')[0].endsWith('.css')
-						? 'text/css'
-						: 'text/javascript'
-					if (
-						!resource.ok ||
-						resource.headers.get('content-type')?.split(';')[0] !== expectedType
-					)
-						throw new Error(
-							`Packaged frontend asset ${asset} returned HTTP ${resource.status} with ${resource.headers.get('content-type')}.`,
-						)
-					if (!(await resource.arrayBuffer()).byteLength)
-						throw new Error(`Packaged frontend asset is empty: ${asset}`)
-				}
-				for (const forbidden of [
-					'/src/main.tsx',
-					'/@vite/client',
-					'/.env',
-					'/package.json',
-					...assets.map((asset) => `${asset}.map`),
-				]) {
-					const response = await fetch(
-						new URL(forbidden, `http://127.0.0.1:${port}/`),
-					)
-					if (response.status !== 404)
-						throw new Error(
-							`Production source/debug path is accessible: ${forbidden}`,
-						)
-				}
-				// Fonts are loaded by CSS at runtime and do not appear in index.html.
-				const css = await fetch(
-					new URL('/fonts/inter.css', `http://127.0.0.1:${port}/`),
-				)
-				if (
-					!css.ok ||
-					css.headers.get('content-type')?.split(';')[0] !== 'text/css'
-				)
-					throw new Error(
-						'Packaged font stylesheet is missing or has an incorrect MIME type.',
-					)
-				const fontPath = (await css.text()).match(
-					/url\('\.\/([^']+\.woff2)'\)/,
-				)?.[1]
-				if (!fontPath)
-					throw new Error('Packaged font stylesheet has no font asset.')
-				const fontUrl = `/fonts/${fontPath}`
-				const font = await fetch(new URL(fontUrl, `http://127.0.0.1:${port}/`))
-				if (
-					!font.ok ||
-					font.headers.get('content-type') !== 'font/woff2' ||
-					!(await font.arrayBuffer()).byteLength
-				)
-					throw new Error(
-						'Packaged UI font is missing or served with an incorrect MIME type.',
-					)
-				return
-			}
-			await new Promise((resolve) => setTimeout(resolve, 100))
+			origin = /Server started at (http:\/\/127\.0\.0\.1:\d+)\//.exec(
+				output,
+			)?.[1]
+			if (!origin) await new Promise((resolve) => setTimeout(resolve, 100))
 		}
-		throw new Error(`Packaged server did not become ready: ${output}`)
-	} finally {
-		child.kill('SIGTERM')
+		await checkInterface(`${origin}/`)
+	} catch (error) {
+		child.kill()
 		await closed
+		throw error
 	}
+	child.stdin.end('stop\n')
+	const timer = setTimeout(() => child.kill(), 30_000)
+	const { code, signal } = await closed
+	clearTimeout(timer)
+	if (code !== 0)
+		throw new Error(
+			`Packaged server did not stop cleanly on stdin (${signal ?? `exit ${code}`}): ${output}`,
+		)
+	if (!(await stat(project).catch(() => null))?.isDirectory())
+		throw new Error('The packaged server did not create a fresh project.')
 }
 
-/** Exercise an npm-installed archive, including the actual global command shim. */
+/** Exercise an npm-installed archive, including its install step and the
+ * actual global command shim. */
 export async function smokePackage(archive, expectedVersion, resources) {
 	const temporary = await mkdtemp(
 		path.join(os.tmpdir(), 'bluink-package-smoke-'),
 	)
+	const env = {
+		...process.env,
+		HOME: path.join(temporary, 'user-home'),
+		USERPROFILE: path.join(temporary, 'user-home'),
+	}
 	const runInstalled = (command, args, options = {}) =>
-		run(command, args, { cwd: temporary, ...options })
+		run(command, args, { cwd: temporary, env, ...options })
 	try {
 		const prefix = path.join(temporary, 'install')
 		const resourceArchives =
@@ -138,12 +159,12 @@ export async function smokePackage(archive, expectedVersion, resources) {
 			(await json(path.join(root, '.resource-packages/dependencies.json'))).map(
 				(entry) => entry.archive,
 			)
+		// Install scripts stay enabled: install.mjs selects the executable.
 		await npm([
 			'install',
 			'--global',
 			'--prefix',
 			prefix,
-			'--ignore-scripts',
 			'--no-audit',
 			'--no-fund',
 			'--offline',
@@ -174,25 +195,24 @@ export async function smokePackage(archive, expectedVersion, resources) {
 		if (
 			manifest.name !== '@bluink/cli' ||
 			manifest.version !== cliVersion ||
-			(await json(path.join(packageRoot, 'dist/package.json'))).version !==
-				cliVersion
+			manifest.bin?.bluink !== packageExecutable ||
+			manifest.scripts?.postinstall !== 'node install.mjs'
 		)
 			throw new Error('Installed package identity or CLI version is incorrect.')
 		for (const relative of [
-			'bluink',
-			'dist/index.js',
-			'dist/src/native/lifecycle.js',
+			packageExecutable,
+			'install.mjs',
 			'THIRD_PARTY_NOTICES.txt',
 			'LICENSE',
 			'README.md',
 			'release.json',
 			'web/LICENSE',
 			'web/assets/index.html',
-			'runtime/index.cjs',
+			'vendor/workspace-starter.json',
 			'vendor/themes/classic/manifest.json',
 			'vendor/themes/editorial/manifest.json',
 			'vendor/themes/classic/html/article.html',
-			...release.native.map((entry) => `runtime/${entry.file}`),
+			...release.native.map((entry) => entry.path),
 		]) {
 			if (
 				!(
@@ -201,15 +221,61 @@ export async function smokePackage(archive, expectedVersion, resources) {
 			)
 				throw new Error(`Missing packaged file: ${relative}`)
 		}
+		const target = nativeHostTarget()
+		const host = release.native.find((entry) => entry.target === target.rust)
+		if (!host) throw new Error(`The package has no ${target.rust} executable.`)
+		const executable = path.join(packageRoot, packageExecutable)
+		if ((await fileHash(executable)) !== host.sha256)
+			throw new Error(
+				`Installation did not place the ${target.rust} executable at ${packageExecutable}.`,
+			)
+		if (
+			process.platform !== 'win32' &&
+			((await stat(executable)).mode & 0o111) === 0
+		)
+			throw new Error(`Installed ${packageExecutable} is not executable.`)
+		// The global shim: npm's cmd shim on Windows, a symlink elsewhere.
+		const bin = process.platform === 'win32' ? prefix : path.join(prefix, 'bin')
+		const shimEnv = {
+			...env,
+			PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+		}
+		const shim = (args) =>
+			runInstalled(
+				process.platform === 'win32' ? 'cmd.exe' : 'bluink',
+				process.platform === 'win32'
+					? ['/d', '/c', `bluink ${args.join(' ')}`]
+					: args,
+				{ env: shimEnv, capture: true },
+			)
+		const version = await shim(['--version'])
+		if (version.trim() !== `${manifest.name} v${cliVersion}`)
+			throw new Error(
+				`Installed bluink command reports the wrong version: ${version}`,
+			)
+		const buildInfo = JSON.parse(await shim(['build-info']))
+		if (
+			['sourceDigest', 'target', 'version', 'mode', 'publicCommit'].some(
+				(key) => buildInfo[key] !== host[key],
+			)
+		)
+			throw new Error(
+				`Installed bluink reports a different build: ${JSON.stringify(buildInfo)}`,
+			)
+		// Re-running the install step must leave the selected executable intact.
+		await runInstalled(process.execPath, ['install.mjs'], { cwd: packageRoot })
+		if ((await fileHash(executable)) !== host.sha256)
+			throw new Error(
+				'Re-running install.mjs changed the installed executable.',
+			)
 		const installedRequire = createRequire(
 			path.join(packageRoot, 'package.json'),
 		)
+		const installedRoot = async (name) =>
+			path.dirname(installedRequire.resolve(name))
 		for (const dependency of release.dependencies) {
 			const installed = await json(
-				path.join(
-					path.dirname(installedRequire.resolve(dependency.name)),
-					'package.json',
-				),
+				path.join(await installedRoot(dependency.name), 'package.json'),
 			)
 			if (
 				installed.version !== dependency.version ||
@@ -219,91 +285,34 @@ export async function smokePackage(archive, expectedVersion, resources) {
 					`Installed dependency differs from the verified release: ${dependency.name}`,
 				)
 		}
-		if (
-			await stat(
-				path.join(packageRoot, 'dist/src/storage/file-project.js'),
-			).catch(() => null)
+		const typst = path.join(
+			await installedRoot('@bluink/typst'),
+			'assets',
+			target.typst,
 		)
-			throw new Error('The package contains the obsolete Node storage adapter.')
-		const bin = process.platform === 'win32' ? prefix : path.join(prefix, 'bin')
-		const env = {
-			...process.env,
-			PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
-		}
-		const version = await runInstalled(
-			process.platform === 'win32' ? 'cmd.exe' : 'bluink',
-			process.platform === 'win32'
-				? ['/d', '/c', 'bluink --version']
-				: ['--version'],
-			{ env, capture: true },
-		)
-		if (!version.includes(cliVersion))
-			throw new Error(
-				`Installed bluink command reports the wrong version: ${version}`,
-			)
-		const target = targets.find(
-			(value) =>
-				value.platform === process.platform && value.arch === process.arch,
-		)
-		if (!target) throw new Error('Cannot smoke test this host platform.')
-		const { publicationRuntime } = await import(
-			pathToFileURL(path.join(packageRoot, 'dist/src/native/addon.js')).href
-		)
-		const {
-			typstBinary: typst,
-			fontFolder,
-			docxFontFolder,
-		} = publicationRuntime()
-		if (!fontFolder.includes(`${path.sep}fonts${path.sep}assets${path.sep}pdf`))
-			throw new Error(
-				'PDF fonts did not resolve from the installed resource package.',
-			)
-		if (
-			!docxFontFolder.includes(
-				`${path.sep}fonts${path.sep}assets${path.sep}docx`,
-			)
-		)
-			throw new Error(
-				'Word fonts did not resolve from the installed resource package.',
-			)
-		const wordFonts = JSON.parse(
-			await readFile(path.join(docxFontFolder, 'manifest.json'), 'utf8'),
-		)
-		if (wordFonts.schemaVersion !== 1 || !wordFonts.fonts.length)
-			throw new Error('Installed Word font manifest is missing or unsupported.')
 		if (
 			process.platform !== 'win32' &&
 			((await stat(typst)).mode & 0o111) === 0
 		)
 			throw new Error('Packaged Typst is not executable.')
 		await runInstalled(typst, ['--version'])
-		const freshRoot = path.join(temporary, 'fresh-project')
-		// Windows retains loaded DLLs until process exit. Own this addon in a
-		// child so the parent can remove the isolated installation afterwards.
-		await runInstalled(
-			process.execPath,
-			[
-				'--input-type=module',
-				'-e',
-				`
-import { createApplication, shutdownNativeDiagnostics } from ${JSON.stringify(pathToFileURL(path.join(packageRoot, 'dist/src/native/addon.js')).href)};
-const fresh = createApplication({projectRoot: ${JSON.stringify(freshRoot)}, timezone: 'UTC'});
-try {
-  const opened = JSON.parse(await fresh.initialize(false));
-  if (opened.config.format !== 'bluink-project') throw new Error('The packaged native library did not initialize a fresh project.');
-} finally {
-  await fresh.stop();
-  await shutdownNativeDiagnostics();
-}
-`,
-			],
-			{ cwd: temporary },
+		const wordFonts = await json(
+			path.join(
+				await installedRoot('@bluink/fonts'),
+				'assets/docx/manifest.json',
+			),
 		)
+		if (wordFonts.schemaVersion !== 1 || !wordFonts.fonts.length)
+			throw new Error('Installed Word font manifest is missing or unsupported.')
 		const project = path.join(temporary, 'project')
-		await cp(path.join(root, 'backend/test-fixtures/pdf-project'), project, {
-			recursive: true,
-		})
-		const cli = path.join(packageRoot, 'bluink')
+		const cli = (...args) => runInstalled(executable, args)
+		await cli(
+			'import',
+			'--source',
+			path.join(root, 'backend/test-fixtures/pdf-project'),
+			'--destination',
+			project,
+		)
 		const sourcePage = '01a0e2a0-0000-7000-8000-000000000004'
 		const publication = '01a0e7f5-d342-7f23-bd3d-6e27064a16cd'
 		const html = path.join(temporary, 'article.html')
@@ -313,42 +322,39 @@ try {
 		const wordBook = path.join(temporary, 'book.docx')
 		const wordLinked = path.join(temporary, 'linked.docx')
 		const site = path.join(temporary, 'site')
-		await runInstalled(process.execPath, [
-			cli,
-			'export',
+		const exportNote = (format, note, out, ...options) =>
+			cli(
+				'export',
+				format,
+				'--project',
+				project,
+				'--note',
+				note,
+				...options,
+				'--out',
+				out,
+			)
+		const generate = (format, output) =>
+			cli(
+				'publication',
+				'generate',
+				'--project',
+				project,
+				'--id',
+				publication,
+				'--format',
+				format,
+				'--output',
+				output,
+			)
+		await exportNote('docx', sourcePage, word)
+		await generate('docx', wordBook)
+		await exportNote(
 			'docx',
-			'--project',
-			project,
-			'--note',
-			sourcePage,
-			'--out',
-			word,
-		])
-		await runInstalled(process.execPath, [
-			cli,
-			'publication',
-			'generate',
-			'--project',
-			project,
-			'--id',
-			publication,
-			'--format',
-			'docx',
-			'--output',
-			wordBook,
-		])
-		await runInstalled(process.execPath, [
-			cli,
-			'export',
-			'docx',
-			'--project',
-			project,
-			'--note',
 			'01a0e2a0-0000-7000-8000-000000000001',
-			'--include-linked',
-			'--out',
 			wordLinked,
-		])
+			'--include-linked',
+		)
 		for (const file of [word, wordBook, wordLinked]) {
 			const bytes = await readFile(file)
 			if (
@@ -359,54 +365,10 @@ try {
 					'Installed Word export is missing its native document or embedded fonts.',
 				)
 		}
-		await runInstalled(process.execPath, [
-			cli,
-			'export',
-			'html',
-			'--project',
-			project,
-			'--note',
-			sourcePage,
-			'--out',
-			html,
-		])
-		await runInstalled(process.execPath, [
-			cli,
-			'export',
-			'pdf',
-			'--project',
-			project,
-			'--note',
-			sourcePage,
-			'--out',
-			pdf,
-		])
-		await runInstalled(process.execPath, [
-			cli,
-			'publication',
-			'generate',
-			'--project',
-			project,
-			'--id',
-			publication,
-			'--format',
-			'pdf',
-			'--output',
-			book,
-		])
-		await runInstalled(process.execPath, [
-			cli,
-			'publication',
-			'generate',
-			'--project',
-			project,
-			'--id',
-			publication,
-			'--format',
-			'site',
-			'--output',
-			site,
-		])
+		await exportNote('html', sourcePage, html)
+		await exportNote('pdf', sourcePage, pdf)
+		await generate('pdf', book)
+		await generate('site', site)
 		if (!(await readFile(html, 'utf8')).includes('A cited source paragraph.'))
 			throw new Error('Packaged HTML output is missing source text.')
 		for (const file of [pdf, book]) {
@@ -419,7 +381,7 @@ try {
 			)
 		)
 			throw new Error('Packaged site output is missing the root page.')
-		await checkServer(cli, freshRoot)
+		await checkServer(executable, path.join(temporary, 'fresh-project'), env)
 		console.log(
 			`Installed command, server and exports pass on ${process.platform}/${process.arch}.`,
 		)
@@ -428,13 +390,14 @@ try {
 			arch: process.arch,
 			status: 'passed',
 			checks: [
-				'global command',
+				'install step selects the platform executable',
+				'global command version and build identity',
 				'bundled Typst',
-				'fresh project',
 				'note HTML/PDF',
 				'note/linked/Publication DOCX with embedded fonts',
 				'Publication PDF/site',
-				'HTTP UI hosting',
+				'fresh project HTTP UI hosting',
+				'graceful stop on standard input',
 			],
 		}
 	} finally {

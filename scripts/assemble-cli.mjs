@@ -16,9 +16,13 @@ import {
 } from './package-audit.mjs'
 import {
 	json,
+	nativeDirectory as nativeOutputDirectory,
 	npm,
+	packageExecutable,
+	packagedNativePath,
 	root,
 	sha256,
+	targets,
 	verifyNativeArtifacts,
 	writeJson,
 } from './release-utils.mjs'
@@ -27,7 +31,7 @@ import {
 export async function buildPackage({
 	version,
 	metadata,
-	nativeDirectory = path.join(root, 'backend/runtime'),
+	nativeDirectory = nativeOutputDirectory('release'),
 	dependencies,
 	hostOnly = false,
 	preparedDirectory,
@@ -105,40 +109,42 @@ export async function buildPackage({
 		)
 	const directory = destination
 	await rm(directory, { recursive: true, force: true })
-	await mkdir(path.join(directory, 'runtime'), { recursive: true })
+	await mkdir(directory, { recursive: true })
 	await stageFrontend(web, path.join(directory, 'web'))
 	for (const [from, to] of [
-		['backend/bluink', 'bluink'],
+		['scripts/package-install.mjs', 'install.mjs'],
 		['backend/LICENSE', 'LICENSE'],
 		['backend/PACKAGE-README.md', 'README.md'],
-		['backend/vendor', 'vendor'],
+		['backend/resources', 'vendor'],
 	])
 		await cp(path.join(root, from), path.join(directory, to), {
 			recursive: true,
 		})
-	await cp(path.join(buildDirectory, 'dist'), path.join(directory, 'dist'), {
-		recursive: true,
-	})
 	await cp(
 		path.join(buildDirectory, 'THIRD_PARTY_NOTICES.txt'),
 		path.join(directory, 'THIRD_PARTY_NOTICES.txt'),
 	)
-	await cp(
-		path.join(nativeDirectory, 'index.cjs'),
-		path.join(directory, 'runtime/index.cjs'),
+	for (const entry of native) {
+		const target = targets.find((value) => value.rust === entry.target)
+		const file = path.join(directory, packagedNativePath(target, hostOnly))
+		await mkdir(path.dirname(file), { recursive: true })
+		await cp(path.join(nativeDirectory, entry.file), file)
+		await chmod(file, 0o755)
+	}
+	// Re-read the staged bytes so release.json records exactly what is packed.
+	const packaged = await verifyNativeArtifacts(
+		directory,
+		undefined,
+		hostOnly,
+		{ version: productVersion, publicCommit: identity.publicCommit },
+		{ packaged: true },
 	)
-	for (const entry of native)
-		await cp(
-			path.join(nativeDirectory, entry.file),
-			path.join(directory, 'runtime', entry.file),
-		)
 	const manifest = {
 		name: source.name,
 		version: productVersion,
 		description: source.description,
-		type: 'module',
-		main: './dist/index.js',
-		bin: source.bin,
+		bin: { bluink: packageExecutable },
+		scripts: { postinstall: 'node install.mjs' },
 		engines: source.engines,
 		license: source.license,
 		homepage: 'https://bluink.app',
@@ -161,7 +167,6 @@ export async function buildPackage({
 		files: [...source.files, 'release.json'],
 	}
 	await writeJson(path.join(directory, 'package.json'), manifest)
-	await writeJson(path.join(directory, 'dist/package.json'), manifest)
 	await writeJson(
 		path.join(directory, 'npm-shrinkwrap.json'),
 		productionLock(manifest, dependencies),
@@ -187,14 +192,13 @@ export async function buildPackage({
 				version,
 				integrity,
 			})),
-		native,
+		native: packaged,
 	})
-	await chmod(path.join(directory, 'bluink'), 0o755)
 	await auditDirectory(directory, {
 		allowed: cliFileAllowed,
 		required: [
-			'bluink',
-			'dist/index.js',
+			packageExecutable,
+			'install.mjs',
 			'npm-shrinkwrap.json',
 			'THIRD_PARTY_NOTICES.txt',
 		],

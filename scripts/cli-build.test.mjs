@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -10,11 +10,6 @@ import { fileHash, writeJson } from './release-utils.mjs'
 test('prebuilt CLI artifacts bind the exact source, contract and complete output bytes', async () => {
 	const directory = await mkdtemp(path.join(os.tmpdir(), 'bluink-cli-build-'))
 	try {
-		await mkdir(path.join(directory, 'dist'))
-		await writeFile(
-			path.join(directory, 'dist/index.js'),
-			'export const fixture = true\n',
-		)
 		await writeFile(
 			path.join(directory, 'THIRD_PARTY_NOTICES.txt'),
 			'Synthetic licence fixture.\n',
@@ -25,15 +20,12 @@ test('prebuilt CLI artifacts bind the exact source, contract and complete output
 			formatVersion: 1,
 			...identity,
 			contractHash: await contractHash(),
-			toolchain: { node: 'v26.9.0', npm: '12.2.0', rust: 'rustc 1.99.0' },
-			files: Object.fromEntries(
-				await Promise.all(
-					['dist/index.js', 'THIRD_PARTY_NOTICES.txt'].map(async (file) => [
-						file,
-						await fileHash(path.join(directory, file)),
-					]),
+			toolchain: { rust: 'rustc 1.99.0' },
+			files: {
+				'THIRD_PARTY_NOTICES.txt': await fileHash(
+					path.join(directory, 'THIRD_PARTY_NOTICES.txt'),
 				),
-			),
+			},
 		}
 		const manifest = path.join(directory, 'build.json')
 		await writeJson(manifest, report)
@@ -49,13 +41,17 @@ test('prebuilt CLI artifacts bind the exact source, contract and complete output
 				value.contractHash = 'c'.repeat(64)
 			},
 			(value) => {
-				delete value.files['dist/index.js']
+				delete value.files['THIRD_PARTY_NOTICES.txt']
 			},
 			(value) => {
 				value.files['../outside'] = 'd'.repeat(64)
 			},
 			(value) => {
 				value.toolchain = {}
+			},
+			(value) => {
+				// Node no longer builds any distributed bytes.
+				value.toolchain.node = 'v26.9.0'
 			},
 		]) {
 			const modified = structuredClone(report)
@@ -76,7 +72,7 @@ test('prebuilt CLI artifacts bind the exact source, contract and complete output
 			)
 			await writeFile(path.join(directory, file), original)
 		}
-		for (const file of ['dist/debug.js.map', 'dist/package.json']) {
+		for (const file of ['index.js', 'package.json']) {
 			await writeFile(path.join(directory, file), '{}')
 			await assert.rejects(
 				verifyCliBuild(directory, identity),

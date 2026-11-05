@@ -1,0 +1,35 @@
+{
+  "format": "bluink.item",
+  "formatVersion": 20,
+  "id": "01a0e2a0-0000-7000-8000-000000000001",
+  "revision": "01a0e2a7-d131-792d-a0bd-26a49033486d",
+  "createdAt": "2026-09-27T11:37:24.017Z",
+  "modifiedAt": "2026-09-27T11:37:24.017Z",
+  "meta": {
+    "lang": "en-GB",
+    "state": "active",
+    "title": "Exporter fixture book",
+    "type": "page"
+  },
+  "content": {
+    "document": {
+      "content": [
+        {"attrs":{"id":"01a0e2a7-d131-757d-8cdc-b07ace421ea7","level":1},"content":[{"text":"Introduction","type":"text"}],"type":"heading"},
+        {"attrs":{"id":"01a0e2a7-d131-7d35-83d0-ff978a918d72"},"content":[{"text":"Read the ","type":"text"},{"marks":[{"attrs":{"href":"01a0e2a0-0000-7000-8000-000000000002"},"type":"link"}],"text":"chapter","type":"text"},{"text":" and its ","type":"text"},{"marks":[{"attrs":{"href":"#block-01a0e2a0-0000-7000-8000-000000000102"},"type":"link"}],"text":"section","type":"text"},{"text":".","type":"text"}],"type":"paragraph"},
+        {"attrs":{"id":"01a0e2a7-d131-77da-a56d-6b99fc943d7c"},"content":[{"text":"First citation","type":"text"},{"attrs":{"snippetId":"source_one","source":"snippet"},"type":"citation"},{"text":" repeated","type":"text"},{"attrs":{"snippetId":"source_one","source":"snippet"},"type":"citation"}],"type":"paragraph"},
+        {"attrs":{"id":"01a0e2a7-d131-7b0a-baed-cf858af3a697","kind":"warning"},"content":[{"attrs":{"id":"01a0e2a7-d131-729b-a9ce-5433e6ac3047"},"content":[{"text":"Keep the source","type":"text"}],"type":"boxHeading"},{"attrs":{"id":"01a0e2a7-d131-76bc-ae94-a0c8bacf6077"},"content":[{"text":"The source page itself is not a chapter.","type":"text"}],"type":"paragraph"}],"type":"box"},
+        {"attrs":{"id":"01a0e2a7-d131-762a-9af3-32e5b44e2450","kind":"ordered","order":2},"content":[{"attrs":{"id":"01a0e2a7-d131-7068-b7ee-3e82134be511"},"content":[{"attrs":{"id":"01a0e2a7-d131-724e-ac00-572ce8a54fe4"},"content":[{"text":"Second","type":"text"}],"type":"paragraph"}],"type":"listItem"},{"attrs":{"id":"01a0e2a7-d131-73ed-a84b-9cd10f42bb48"},"content":[{"attrs":{"id":"01a0e2a7-d131-7136-91a7-cf01bc2726ca"},"content":[{"text":"Third","type":"text"}],"type":"paragraph"}],"type":"listItem"}],"type":"list"},
+        {"attrs":{"id":"01a0e2a7-d131-7781-9652-f4bda7678185","snippetId":"source_one"},"type":"embed"}
+      ],
+      "type": "doc"
+    }
+  },
+  "analytics": {
+    "analyzerVersion": 1,
+    "current": {
+      "contentHash": "ac9dba6b",
+      "wordCount": 23
+    },
+    "timezone": "Europe/London"
+  }
+}

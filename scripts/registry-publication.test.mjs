@@ -10,6 +10,7 @@ import {
 	provenanceStatement,
 	provenancePolicy,
 	publishRecords,
+	verifyRegistryTag,
 } from './registry-publication.mjs'
 import { run } from './release-utils.mjs'
 
@@ -402,5 +403,29 @@ test('resources bind their own workflow and tag, and their source commit is inde
 	assert.throws(
 		() => provenancePolicy({ name: '@bluink/unknown', version: '26.10.1' }),
 		/Unknown/,
+	)
+})
+
+test('registry verification waits for the expected install tag', async () => {
+	let reads = 0
+	const result = await verifyRegistryTag('@bluink/cli', '26.10.14-alpha', {
+		lookup: async () => ({
+			alpha: ++reads === 1 ? '26.10.3-alpha' : '26.10.14-alpha',
+		}),
+		pause: async () => {},
+		attempts: 2,
+	})
+	assert.deepEqual(result, {
+		name: '@bluink/cli',
+		tag: 'alpha',
+		version: '26.10.14-alpha',
+	})
+	assert.equal(reads, 2)
+	await assert.rejects(
+		verifyRegistryTag('@bluink/cli', '26.10.15', {
+			lookup: async () => ({ latest: '26.10.14-alpha' }),
+			attempts: 1,
+		}),
+		/latest tag does not point/,
 	)
 })

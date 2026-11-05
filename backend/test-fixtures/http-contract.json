@@ -1,8 +1,33 @@
 {
-  "cache_status": {
+  "read_changes": { "method": "POST", "required": [], "owner": "application/changes" },
+  "renew_editor_base": { "method": "POST", "required": ["leaseId", "id", "revision"], "owner": "application/changes" },
+  "merge_item_draft": { "method": "POST", "required": ["id", "baseRevision", "submissionId", "device", "draft"], "owner": "application/merge" },
+  "list_decisions": { "method": "POST", "required": [], "owner": "application/merge" },
+  "preview_decision": { "method": "POST", "required": ["id"], "owner": "application/merge" },
+  "resolve_decision": { "method": "POST", "required": ["id", "expected", "selection", "device"], "owner": "application/merge" },
+  "read_sync_status": { "method": "POST", "required": [], "owner": "application/sync" },
+  "configure_sync": { "method": "POST", "required": [], "owner": "application/sync" },
+  "sync_project": { "method": "POST", "required": [], "owner": "application/sync" },
+  "read_history_download": { "method": "POST", "required": [], "owner": "application/sync" },
+  "download_history_assets": { "method": "POST", "required": [], "owner": "application/sync" },
+  "clone_project": { "method": "POST", "required": ["origin", "destination"], "owner": "application/sync" },
+  "read_sync_auth": { "method": "POST", "required": ["origin"], "owner": "application/sync" },
+  "configure_sync_auth": { "method": "POST", "required": ["origin", "auth"], "owner": "application/sync" },
+  "inspect_sync_host": { "method": "POST", "required": ["origin"], "owner": "application/sync" },
+  "trust_sync_host": { "method": "POST", "required": ["origin", "trust"], "owner": "application/sync" },
+  "generate_sync_key": { "method": "POST", "required": ["origin", "key"], "owner": "application/sync" },
+  "read_history_status": { "method": "POST", "required": [], "owner": "application/history" },
+  "checkpoint_history": { "method": "POST", "required": [], "owner": "application/history" },
+  "read_history": { "method": "POST", "required": [], "owner": "application/history" },
+  "read_history_item": { "method": "POST", "required": ["commitId", "itemId"], "owner": "application/history" },
+  "create_named_version": { "method": "POST", "required": ["requestId", "title"], "owner": "application/history" },
+  "preview_history_restore": { "method": "POST", "required": ["commitId"], "owner": "application/history" },
+  "restore_history": { "method": "POST", "required": ["commitId", "expectedHead", "expectedGeneration"], "owner": "application/history" },
+  "history_client_activity": { "method": "POST", "required": ["clientId", "visible"], "owner": "application/history" },
+  "read_storage_status": {
     "method": "GET",
     "required": [],
-    "owner": "application/index"
+    "owner": "application/storage"
   },
   "create_snippet": {
     "method": "POST",
@@ -163,6 +188,13 @@
     "method": "POST",
     "required": [
       "jobId"
+    ],
+    "owner": "export/jobs"
+  },
+  "read_page_export_issues": {
+    "method": "POST",
+    "required": [
+      "id"
     ],
     "owner": "export/jobs"
   },
@@ -384,13 +416,6 @@
     "required": [
       "id",
       "version"
-    ],
-    "owner": "project/workspaces"
-  },
-  "set_default_workspace": {
-    "method": "POST",
-    "required": [
-      "id"
     ],
     "owner": "project/workspaces"
   }

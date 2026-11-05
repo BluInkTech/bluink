@@ -13,21 +13,21 @@ export const targets = [
 		rust: 'x86_64-unknown-linux-gnu',
 		platform: 'linux',
 		arch: 'x64',
-		artifact: 'bluink_runtime.linux-x64-gnu.node',
+		artifact: 'bluink-linux-x64',
 		typst: 'linux-x64/typst',
 	},
 	{
 		rust: 'x86_64-pc-windows-msvc',
 		platform: 'win32',
 		arch: 'x64',
-		artifact: 'bluink_runtime.win32-x64-msvc.node',
+		artifact: 'bluink-win32-x64.exe',
 		typst: 'windows-x64/typst.exe',
 	},
 	{
 		rust: 'aarch64-apple-darwin',
 		platform: 'darwin',
 		arch: 'arm64',
-		artifact: 'bluink_runtime.darwin-arm64.node',
+		artifact: 'bluink-darwin-arm64',
 		typst: 'macos-arm64/typst',
 	},
 ]
@@ -122,25 +122,27 @@ async function sourceFiles(folder) {
 }
 
 /** Hash the Rust workspace, engine/runtime sources and resolved dependencies. */
-export async function nativeSourceDigest() {
+export async function nativeSourceDigest(workspaceRoot = root) {
 	const files = [
-		...(await sourceFiles(path.join(root, 'backend/runtime/src'))),
-		...(await sourceFiles(path.join(root, 'backend/vendor'))).filter(
-			(file) => path.basename(file) !== 'workspace-starter.json',
-		),
+		...(await sourceFiles(path.join(workspaceRoot, 'backend/src'))),
+		...(await sourceFiles(path.join(workspaceRoot, 'backend/format/src'))),
+		...(
+			await sourceFiles(path.join(workspaceRoot, 'backend/resources'))
+		).filter((file) => path.basename(file) !== 'workspace-starter.json'),
 		...[
 			'rust-toolchain.toml',
 			'fonts/catalogue.json',
 			'backend/Cargo.toml',
+			'backend/format/Cargo.toml',
 			'backend/Cargo.lock',
-			'backend/runtime/build.rs',
+			'backend/build.rs',
 			'scripts/build-native.mjs',
 			'scripts/release-utils.mjs',
-		].map((file) => path.join(root, file)),
+		].map((file) => path.join(workspaceRoot, file)),
 	]
 	const hash = createHash('sha256')
 	for (const file of files.sort()) {
-		hash.update(path.relative(root, file).split(path.sep).join('/'))
+		hash.update(path.relative(workspaceRoot, file).split(path.sep).join('/'))
 		hash.update('\0')
 		hash.update(await readFile(file))
 		hash.update('\0')
@@ -148,16 +150,79 @@ export async function nativeSourceDigest() {
 	return hash.digest('hex')
 }
 
+/** The executable also contains the bare marker strings (the build-info
+ * command strips them), so accept only a marker that encloses a JSON object,
+ * and only one distinct identity. */
 export function nativeBuildInfo(bytes) {
 	const prefix = Buffer.from('BLUINK_NATIVE_BUILD_INFO_V1:')
 	const suffix = Buffer.from(':END_BLUINK_NATIVE_BUILD_INFO')
-	const begin = bytes.indexOf(prefix)
-	const end = bytes.indexOf(suffix, begin + prefix.length)
-	if (begin < 0 || end < 0)
+	const identities = new Set()
+	for (
+		let begin = bytes.indexOf(prefix);
+		begin >= 0;
+		begin = bytes.indexOf(prefix, begin + prefix.length)
+	) {
+		const end = bytes.indexOf(suffix, begin + prefix.length)
+		if (end < 0) break
+		const text = bytes.toString('utf8', begin + prefix.length, end)
+		if (!text.startsWith('{')) continue
+		try {
+			JSON.parse(text)
+			identities.add(text)
+		} catch {
+			// Not an embedded identity.
+		}
+	}
+	if (identities.size > 1)
+		throw new Error('Native artifact has more than one build identity.')
+	if (!identities.size)
 		throw new Error(
 			'Native artifact has no build identity. Rebuild it with npm run build:native.',
 		)
-	return JSON.parse(bytes.toString('utf8', begin + prefix.length, end))
+	return JSON.parse([...identities][0])
+}
+
+export function nativeHostTarget() {
+	const target = targets.find(
+		(value) =>
+			value.platform === process.platform && value.arch === process.arch,
+	)
+	if (!target)
+		throw new Error(
+			`Unsupported native host: ${process.platform}/${process.arch}`,
+		)
+	return target
+}
+
+export function nativeDirectory(mode, workspaceRoot = root) {
+	if (!['development', 'release'].includes(mode))
+		throw new Error(
+			`Unknown native build mode: ${mode}. Choose development or release.`,
+		)
+	return path.join(workspaceRoot, 'backend/dist/native', mode)
+}
+
+/** The verified host executable published by the native build. */
+export function nativeExecutable(mode, workspaceRoot = root) {
+	return path.join(
+		nativeDirectory(mode, workspaceRoot),
+		nativeHostTarget().artifact,
+	)
+}
+
+/** npm's bin entry is the Windows executable, which its cmd shim runs directly.
+ * A host-only package carries just the host executable, so it is the bin entry.
+ * Other platforms ship under runtime/ and install.mjs copies them over the bin.
+ */
+export const packageExecutable = 'bin/bluink.exe'
+export function packagedNativePath(target, hostOnly = false) {
+	return hostOnly || target.platform === 'win32'
+		? packageExecutable
+		: `runtime/${target.artifact}`
+}
+
+export function nativeBuildCommand(mode) {
+	return `npm run build:native:${mode === 'development' ? 'dev' : 'release'}`
 }
 
 export async function verifyNativeArtifacts(
@@ -165,6 +230,7 @@ export async function verifyNativeArtifacts(
 	digest = undefined,
 	hostOnly = false,
 	identity = {},
+	{ packaged = false } = {},
 ) {
 	const expected = digest ?? (await nativeSourceDigest())
 	return Promise.all(
@@ -176,10 +242,13 @@ export async function verifyNativeArtifacts(
 						target.arch === process.arch),
 			)
 			.map(async (target) => {
-				const file = path.join(directory, target.artifact)
+				const location = packaged
+					? packagedNativePath(target, hostOnly)
+					: target.artifact
+				const file = path.join(directory, location)
 				const bytes = await readFile(file).catch(() => {
 					throw new Error(
-						`Missing ${target.artifact}; build or copy this target from the same native sources.`,
+						`Missing ${location}; build or copy ${target.rust} from the same native sources.`,
 					)
 				})
 				const info = nativeBuildInfo(bytes)
@@ -211,6 +280,7 @@ export async function verifyNativeArtifacts(
 				return {
 					...info,
 					file: target.artifact,
+					...(packaged && { path: location }),
 					sha256: sha256(bytes),
 					bytes: (await stat(file)).size,
 				}

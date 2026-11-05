@@ -1,0 +1,16 @@
+[package]
+name = "bluink-format"
+version = "0.0.0"
+edition = "2024"
+license = "MPL-2.0"
+publish = false
+description = "Bluink's portable JSON encoding and item identities, shared by the executable and the demo generator"
+
+[dependencies]
+serde = "1.0"
+serde_json = "1.0"
+sha2 = "0.11"
+uuid = "1.26.1"
+
+[lints]
+workspace = true

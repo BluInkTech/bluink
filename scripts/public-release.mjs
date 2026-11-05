@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2023–2026 BluInk
 
-import { copyFile, mkdir } from 'node:fs/promises'
+import { copyFile, mkdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -23,10 +23,14 @@ import { publicIdentity, versionPattern } from './release-identity.mjs'
 import {
 	publishRecords,
 	verifyRegistryProvenance,
+	verifyRegistryTag,
 } from './registry-publication.mjs'
 import {
 	fileHash,
 	json,
+	nativeDirectory,
+	packageExecutable,
+	packagedNativePath,
 	root,
 	run,
 	targets,
@@ -196,18 +200,16 @@ export async function verifyCliArchive(archive, identity, records) {
 	const inspected = await inspectArchive(archive, {
 		allowed: cliFileAllowed,
 		required: [
-			'bluink',
-			'dist/index.js',
+			'install.mjs',
 			'LICENSE',
 			'README.md',
 			'release.json',
 			'npm-shrinkwrap.json',
 			'THIRD_PARTY_NOTICES.txt',
-			'runtime/index.cjs',
 			'web/assets/index.html',
 			'web/LICENSE',
 			'web/release.json',
-			...targets.map((target) => `runtime/${target.artifact}`),
+			...targets.map((target) => packagedNativePath(target)),
 		],
 		onInspect: async (directory, { manifest, metadata }) => {
 			const fields = new Set([
@@ -240,7 +242,11 @@ export async function verifyCliArchive(archive, identity, records) {
 				metadata?.distribution !== 'all-platforms' ||
 				metadata.publicCommit !== identity.publicCommit ||
 				metadata.publicRepository !== identity.publicRepository ||
-				metadata.contractHash !== (await contractHash())
+				metadata.contractHash !== (await contractHash()) ||
+				JSON.stringify(manifest.bin) !==
+					JSON.stringify({ bluink: packageExecutable }) ||
+				JSON.stringify(manifest.scripts) !==
+					JSON.stringify({ postinstall: 'node install.mjs' })
 			)
 				throw new Error('CLI archive has the wrong public release identity.')
 			const resources = records.filter((entry) => entry.name !== '@bluink/web')
@@ -277,13 +283,20 @@ export async function verifyCliArchive(archive, identity, records) {
 				true,
 			)
 			const native = await verifyNativeArtifacts(
-				path.join(directory, 'runtime'),
+				directory,
 				undefined,
 				false,
 				identity,
+				{ packaged: true },
 			)
 			if (JSON.stringify(native) !== JSON.stringify(metadata.native))
 				throw new Error('Native manifest differs from actual archive bytes.')
+			if (
+				!(await readFile(path.join(directory, 'install.mjs'))).equals(
+					await readFile(path.join(root, 'scripts/package-install.mjs')),
+				)
+			)
+				throw new Error('CLI install step differs from this source.')
 			const lock = await json(path.join(directory, 'npm-shrinkwrap.json'))
 			if (
 				JSON.stringify(lock) !==
@@ -299,7 +312,7 @@ export async function verifyCliArchive(archive, identity, records) {
 async function assemble() {
 	const { input, identity } = await context()
 	const native = await verifyNativeArtifacts(
-		path.join(root, 'backend/runtime'),
+		nativeDirectory('release'),
 		undefined,
 		false,
 		{ ...identity, version: input.version },
@@ -351,7 +364,7 @@ async function assemble() {
 async function nativeReport() {
 	const { input, identity } = await context()
 	const native = await verifyNativeArtifacts(
-		path.join(root, 'backend/runtime'),
+		nativeDirectory('release'),
 		undefined,
 		true,
 		{ version: input.version, publicCommit: identity.publicCommit },
@@ -598,6 +611,10 @@ async function publish() {
 			[...dependencies.filter((entry) => entry.name !== '@bluink/web'), cli],
 			identity,
 		),
+	)
+	console.log(
+		'Verified npm distribution tag:',
+		await verifyRegistryTag(cli.name, cli.version),
 	)
 }
 

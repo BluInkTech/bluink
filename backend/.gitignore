@@ -4,6 +4,6 @@ target/
 .cache/
 .demo*/
 uploads/
-*.node
-*.node.json
+runtime/bluink-*
+runtime/development/
 /web/

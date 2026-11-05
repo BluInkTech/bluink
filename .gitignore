@@ -8,8 +8,7 @@ release/
 .releases/
 backend/target/
 backend/web/
-backend/runtime/*.node
-backend/runtime/*.node.json
+backend/dist/
 fonts/assets/
 fonts/.cache/
 typst/assets/

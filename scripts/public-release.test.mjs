@@ -28,6 +28,8 @@ import {
 } from './public-release.mjs'
 import {
 	nativeSourceDigest,
+	packagedNativePath,
+	root,
 	targets,
 	verifyNativeArtifacts,
 	writeJson,
@@ -241,7 +243,7 @@ test('official archive verification inspects embedded native identities and depe
 	try {
 		const source = path.join(directory, 'input')
 		await mkdir(path.join(source, 'runtime'), { recursive: true })
-		await mkdir(path.join(source, 'dist'))
+		await mkdir(path.join(source, 'bin'))
 		const identity = {
 			version: '26.10.7-alpha',
 			publicCommit: 'a'.repeat(40),
@@ -287,10 +289,12 @@ test('official archive verification inspects embedded native identities and depe
 			dependencies: Object.fromEntries(
 				dependencies.map(({ name, version }) => [name, version]),
 			),
+			bin: { bluink: 'bin/bluink.exe' },
+			scripts: { postinstall: 'node install.mjs' },
 			files: [
-				'bluink',
-				'dist',
+				'bin',
 				'runtime',
+				'install.mjs',
 				'web',
 				'LICENSE',
 				'README.md',
@@ -302,17 +306,14 @@ test('official archive verification inspects embedded native identities and depe
 		const digest = await nativeSourceDigest()
 		for (const target of targets)
 			await writeFile(
-				path.join(source, 'runtime', target.artifact),
+				path.join(source, packagedNativePath(target)),
 				`BLUINK_NATIVE_BUILD_INFO_V1:${JSON.stringify({ sourceDigest: digest, target: target.rust, mode: 'release', version: identity.version, publicCommit: identity.publicCommit })}:END_BLUINK_NATIVE_BUILD_INFO`,
 			)
-		for (const file of [
-			'bluink',
-			'dist/index.js',
-			'runtime/index.cjs',
-			'LICENSE',
-			'README.md',
-			'THIRD_PARTY_NOTICES.txt',
-		])
+		await copyFile(
+			path.join(root, 'scripts/package-install.mjs'),
+			path.join(source, 'install.mjs'),
+		)
+		for (const file of ['LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.txt'])
 			await writeFile(
 				path.join(source, file),
 				'Synthetic package verification fixture.\n',
@@ -336,12 +337,9 @@ test('official archive verification inspects embedded native identities and depe
 				version,
 				integrity,
 			})),
-			native: await verifyNativeArtifacts(
-				path.join(source, 'runtime'),
-				undefined,
-				false,
-				identity,
-			),
+			native: await verifyNativeArtifacts(source, undefined, false, identity, {
+				packaged: true,
+			}),
 		}
 		await writeJson(path.join(source, 'package.json'), manifest)
 		await writeJson(
@@ -355,8 +353,8 @@ test('official archive verification inspects embedded native identities and depe
 			})
 		}
 		const first = await packed()
-		await chmod(path.join(source, 'dist/index.js'), 0o755)
-		await utimes(path.join(source, 'dist/index.js'), new Date(), new Date())
+		await chmod(path.join(source, 'LICENSE'), 0o755)
+		await utimes(path.join(source, 'LICENSE'), new Date(), new Date())
 		assert.equal((await packed()).sha256, first.sha256)
 		assert.equal(
 			(await verifyCliArchive(first.archive, identity, records)).inspection
@@ -375,10 +373,32 @@ test('official archive verification inspects embedded native identities and depe
 			/public release identity/,
 		)
 		metadata.version = identity.version
+		manifest.bin = { bluink: 'bluink' }
+		await writeJson(path.join(source, 'package.json'), manifest)
+		await assert.rejects(
+			verifyCliArchive((await packed()).archive, identity, records),
+			/public release identity/,
+		)
+		manifest.bin = { bluink: 'bin/bluink.exe' }
+		await writeJson(path.join(source, 'package.json'), manifest)
+		const windows = metadata.native[1].path
+		metadata.native[1].path = 'runtime/bluink-win32-x64.exe'
+		await assert.rejects(
+			verifyCliArchive((await packed()).archive, identity, records),
+			/Native manifest/,
+		)
+		metadata.native[1].path = windows
+		const linux = metadata.native[0].sha256
 		metadata.native[0].sha256 = 'f'.repeat(64)
 		await assert.rejects(
 			verifyCliArchive((await packed()).archive, identity, records),
 			/Native manifest/,
+		)
+		metadata.native[0].sha256 = linux
+		await appendFile(path.join(source, 'install.mjs'), '// altered')
+		await assert.rejects(
+			verifyCliArchive((await packed()).archive, identity, records),
+			/install step differs/,
 		)
 	} finally {
 		await rm(directory, { recursive: true, force: true })

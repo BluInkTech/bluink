@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2023–2026 BluInk
 
-import { cp, mkdir, readFile, rm } from 'node:fs/promises'
+import { mkdir, readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { auditDirectory } from './package-audit.mjs'
 import { publicIdentity } from './release-identity.mjs'
 import {
 	fileHash,
 	json,
-	npm,
 	root,
 	run,
 	sha256,
@@ -34,25 +33,16 @@ export async function contractHash() {
 }
 
 const buildFileAllowed = (file) =>
-	/^(?:build\.json|THIRD_PARTY_NOTICES\.txt|dist\/(?:src\/)?(?:native\/)?[\w-]+\.js)$/.test(
-		file,
-	)
+	/^(?:build\.json|THIRD_PARTY_NOTICES\.txt)$/.test(file)
 
-/** Build once on a verified native runner; assembly consumes only these bytes. */
+/** Prepare once on a verified native runner; assembly consumes only these bytes. */
 export async function prepareCliBuild(directory, identity) {
-	await rm(path.join(root, 'backend/dist'), { recursive: true, force: true })
-	await npm(['--workspace', 'backend', 'run', 'build'])
 	await rm(directory, { recursive: true, force: true })
 	await mkdir(directory, { recursive: true })
-	await cp(path.join(root, 'backend/dist'), path.join(directory, 'dist'), {
-		recursive: true,
-	})
-	// TypeScript copies the imported source manifest; assembly writes the public one.
-	await rm(path.join(directory, 'dist/package.json'), { force: true })
 	await rustNotices(path.join(directory, 'THIRD_PARTY_NOTICES.txt'))
 	const files = await auditDirectory(directory, {
 		allowed: buildFileAllowed,
-		required: ['dist/index.js', 'THIRD_PARTY_NOTICES.txt'],
+		required: ['THIRD_PARTY_NOTICES.txt'],
 	})
 	await writeJson(path.join(directory, 'build.json'), {
 		format: 'bluink.cli-build',
@@ -61,8 +51,6 @@ export async function prepareCliBuild(directory, identity) {
 		publicCommit: identity.publicCommit,
 		contractHash: await contractHash(),
 		toolchain: {
-			node: process.version,
-			npm: (await npm(['--version'], { capture: true })).trim(),
 			rust: (await run('rustc', ['--version'], { capture: true })).trim(),
 		},
 		files: Object.fromEntries(
@@ -80,7 +68,7 @@ export async function prepareCliBuild(directory, identity) {
 export async function verifyCliBuild(directory, identity) {
 	const files = await auditDirectory(directory, {
 		allowed: buildFileAllowed,
-		required: ['build.json', 'dist/index.js', 'THIRD_PARTY_NOTICES.txt'],
+		required: ['build.json', 'THIRD_PARTY_NOTICES.txt'],
 	})
 	const report = await json(path.join(directory, 'build.json'))
 	const actual = files.filter((file) => file !== 'build.json')
@@ -90,8 +78,7 @@ export async function verifyCliBuild(directory, identity) {
 		report.version !== identity.version ||
 		report.publicCommit !== identity.publicCommit ||
 		report.contractHash !== (await contractHash()) ||
-		!report.toolchain ||
-		['node', 'npm', 'rust'].some((key) => !report.toolchain[key]) ||
+		JSON.stringify(Object.keys(report.toolchain ?? {})) !== '["rust"]' ||
 		Object.keys(report).some(
 			(key) =>
 				![

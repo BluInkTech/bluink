@@ -1,0 +1,31 @@
+{
+  "format": "bluink.item",
+  "formatVersion": 20,
+  "id": "01a0e2a0-0000-7000-8000-000000000004",
+  "revision": "01a0e2a7-d11b-790f-98e6-caa4d9b6ac40",
+  "createdAt": "2026-09-27T11:37:23.995Z",
+  "modifiedAt": "2026-09-27T11:37:23.995Z",
+  "meta": {
+    "lang": "en-GB",
+    "state": "active",
+    "title": "Source passage",
+    "type": "page"
+  },
+  "content": {
+    "document": {
+      "content": [
+        {"attrs":{"id":"01a0e2a7-d11a-74f0-a943-6cfbe2219cd5","labels":["source_one"]},"content":[{"text":"A cited source paragraph.","type":"text"}],"type":"paragraph"},
+        {"attrs":{"id":"01a0e2a7-d11a-7087-9237-9b3a501f1dfb"},"content":[{"text":"This private remainder should not enter the book.","type":"text"}],"type":"paragraph"}
+      ],
+      "type": "doc"
+    }
+  },
+  "analytics": {
+    "analyzerVersion": 1,
+    "current": {
+      "contentHash": "a61368a8",
+      "wordCount": 12
+    },
+    "timezone": "Europe/London"
+  }
+}

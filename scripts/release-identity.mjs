@@ -63,10 +63,7 @@ export function publicIdentity(version, metadata = {}, official = false) {
 		)
 	if (metadata.toolchain) {
 		for (const [key, value] of Object.entries(metadata.toolchain))
-			if (
-				!['node', 'npm', 'rust'].includes(key) ||
-				!/^[\w.()+ -]{1,100}$/.test(value)
-			)
+			if (key !== 'rust' || !/^[\w.()+ -]{1,100}$/.test(value))
 				throw new Error(`Invalid public toolchain identity: ${key}`)
 	}
 	return { ...metadata, channel }

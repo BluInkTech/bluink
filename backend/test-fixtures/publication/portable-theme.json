@@ -22,7 +22,12 @@
     "link": { "ref": "link" },
     "accent": { "ref": "blue" },
     "surface": "#f0f3f8",
-    "paper": "#ffffff"
+    "paper": "#ffffff",
+    "note": "#0b5cad",
+    "tip": "#1a7f37",
+    "important": "#6f42c1",
+    "warning": "#8a5a00",
+    "caution": "#b42318"
   },
   "styles": {
     "body": {
@@ -49,18 +54,14 @@
     "footnote": { "fontSize": "0.8rem" },
     "embed": {},
     "rule": { "borderWidth": "0.5pt", "spaceBefore": "1rem", "spaceAfter": "1rem" },
+    "attribution": { "fontSize": "0.9rem", "alignment": "end" },
     "box": { "background": "#f0f3f8", "borderWidth": "0.5pt", "padding": "1rem" },
     "boxHeading": { "fontWeight": "bold", "keepWithNext": true },
-    "boxInfo": {},
-    "boxAbstract": {},
     "boxNote": {},
     "boxTip": {},
-    "boxSuccess": {},
     "boxImportant": {},
     "boxWarning": {},
-    "boxError": {},
-    "boxQuestion": {},
-    "boxExample": {}
+    "boxCaution": {}
   },
   "page": {
     "width": "210mm",
@@ -73,6 +74,8 @@
     "headerDistance": "12mm",
     "footerDistance": "12mm",
     "chapterStart": "next-page",
+    "referencesAt": "chapter",
+    "referencesHeading": "References",
     "header": { "left": [{ "kind": "documentTitle" }], "center": [], "right": [{ "kind": "chapterTitle" }], "showOnFirstPage": false },
     "footer": { "left": [], "center": [{ "kind": "pageNumber" }, { "kind": "text", "text": " / " }, { "kind": "pageCount" }], "right": [], "showOnFirstPage": false },
     "measureCharacters": 72

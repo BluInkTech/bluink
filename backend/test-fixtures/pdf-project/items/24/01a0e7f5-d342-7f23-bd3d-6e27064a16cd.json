@@ -1,0 +1,61 @@
+{
+  "format": "bluink.item",
+  "formatVersion": 20,
+  "id": "01a0e7f5-d342-7f23-bd3d-6e27064a16cd",
+  "revision": "01a0e7f5-d344-7594-aff6-ddff2981d924",
+  "createdAt": "2026-09-28T12:20:42.436Z",
+  "modifiedAt": "2026-09-28T12:20:42.436Z",
+  "meta": {
+    "description": "Portable PDF and site export fixture",
+    "state": "active",
+    "title": "Exporter fixture book",
+    "type": "publication"
+  },
+  "content": {
+    "kind": "publication",
+    "outline": [
+      {
+        "children": [
+          {
+            "children": [],
+            "kind": "page",
+            "pageId": "01a0e2a0-0000-7000-8000-000000000003"
+          }
+        ],
+        "kind": "page",
+        "pageId": "01a0e2a0-0000-7000-8000-000000000002"
+      }
+    ],
+    "rootPageId": "01a0e2a0-0000-7000-8000-000000000001",
+    "selectedOutput": "pdf",
+    "selectionRules": [],
+    "targets": {
+      "docx": {
+        "outsideLinks": "error"
+      },
+      "epub": {
+        "outsideLinks": "error"
+      },
+      "html": {
+        "outsideLinks": "error"
+      },
+      "pdf": {
+        "outsideLinks": "error",
+        "profile": "accessible"
+      },
+      "site": {
+        "layout": "documentation",
+        "outsideLinks": "error"
+      }
+    },
+    "themeId": "classic"
+  },
+  "analytics": {
+    "analyzerVersion": 1,
+    "current": {
+      "contentHash": "811c9dc5",
+      "wordCount": 0
+    },
+    "timezone": "Europe/London"
+  }
+}

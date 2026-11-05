@@ -45,6 +45,26 @@
     "accent": {
       "type": "color",
       "value": "#174aaf"
+    },
+    "note": {
+      "type": "color",
+      "value": "#0b5cad"
+    },
+    "tip": {
+      "type": "color",
+      "value": "#1a7f37"
+    },
+    "important": {
+      "type": "color",
+      "value": "#6f42c1"
+    },
+    "warning": {
+      "type": "color",
+      "value": "#8a5a00"
+    },
+    "caution": {
+      "type": "color",
+      "value": "#b42318"
     }
   },
   "root": {
@@ -64,7 +84,22 @@
       "ref": "accent"
     },
     "surface": "#f2f4f8",
-    "paper": "#ffffff"
+    "paper": "#ffffff",
+    "note": {
+      "ref": "note"
+    },
+    "tip": {
+      "ref": "tip"
+    },
+    "important": {
+      "ref": "important"
+    },
+    "warning": {
+      "ref": "warning"
+    },
+    "caution": {
+      "ref": "caution"
+    }
   },
   "styles": {
     "body": {
@@ -158,9 +193,21 @@
     },
     "quote": {
       "italic": true,
-      "indent": "1.5rem",
-      "borderWidth": "1pt",
-      "padding": "0.75rem"
+      "fontSize": "1.05rem",
+      "spaceBefore": "1rem",
+      "spaceAfter": "1rem",
+      "borderWidth": "2pt",
+      "borderSides": "start",
+      "borderColor": {
+        "ref": "accent"
+      },
+      "padding": "0.6rem"
+    },
+    "attribution": {
+      "italic": false,
+      "fontSize": "0.9rem",
+      "color": "#555b66",
+      "alignment": "end"
     },
     "code": {
       "fontFamily": {
@@ -207,24 +254,56 @@
       "spaceAfter": "1rem"
     },
     "box": {
-      "background": "#f2f4f8",
-      "borderWidth": "0.5pt",
-      "padding": "1rem"
+      "borderWidth": "0.75pt",
+      "borderColor": "#c9ced8",
+      "padding": "1rem",
+      "spaceBefore": "1rem",
+      "spaceAfter": "1rem"
     },
     "boxHeading": {
       "fontWeight": "bold",
       "keepWithNext": true
     },
-    "boxInfo": {},
-    "boxAbstract": {},
-    "boxNote": {},
-    "boxTip": {},
-    "boxSuccess": {},
-    "boxImportant": {},
-    "boxWarning": {},
-    "boxError": {},
-    "boxQuestion": {},
-    "boxExample": {}
+    "boxNote": {
+      "background": "#e3effb",
+      "borderWidth": "3pt",
+      "borderSides": "start",
+      "borderColor": {
+        "ref": "note"
+      }
+    },
+    "boxTip": {
+      "background": "#e1f5e6",
+      "borderWidth": "3pt",
+      "borderSides": "start",
+      "borderColor": {
+        "ref": "tip"
+      }
+    },
+    "boxImportant": {
+      "background": "#efe7fb",
+      "borderWidth": "3pt",
+      "borderSides": "start",
+      "borderColor": {
+        "ref": "important"
+      }
+    },
+    "boxWarning": {
+      "background": "#fbf1d9",
+      "borderWidth": "3pt",
+      "borderSides": "start",
+      "borderColor": {
+        "ref": "warning"
+      }
+    },
+    "boxCaution": {
+      "background": "#fbe6e4",
+      "borderWidth": "3pt",
+      "borderSides": "start",
+      "borderColor": {
+        "ref": "caution"
+      }
+    }
   },
   "page": {
     "width": "210mm",
@@ -237,6 +316,8 @@
     "headerDistance": "12mm",
     "footerDistance": "12mm",
     "chapterStart": "next-page",
+    "referencesAt": "chapter",
+    "referencesHeading": "References",
     "header": {
       "left": [
         {

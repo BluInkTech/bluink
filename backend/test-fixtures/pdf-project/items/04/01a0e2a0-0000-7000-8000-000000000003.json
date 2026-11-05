@@ -1,0 +1,32 @@
+{
+  "format": "bluink.item",
+  "formatVersion": 20,
+  "id": "01a0e2a0-0000-7000-8000-000000000003",
+  "revision": "01a0e2a7-d122-76a2-b7e5-57c57acc3203",
+  "createdAt": "2026-09-27T11:37:24.002Z",
+  "modifiedAt": "2026-09-27T11:37:24.002Z",
+  "meta": {
+    "lang": "fr-CA",
+    "state": "active",
+    "title": "A deeper section",
+    "type": "page"
+  },
+  "content": {
+    "document": {
+      "content": [
+        {"attrs":{"id":"01a0e2a7-d122-784d-b5e8-aac136ce5539","level":1},"content":[{"text":"A nested heading","type":"text"}],"type":"heading"},
+        {"attrs":{"id":"01a0e2a7-d122-7a3c-b71a-31beac59113d"},"content":[{"text":"Nested chapter text.","type":"text"}],"type":"paragraph"},
+        {"attrs":{"id":"01a0e2a7-d122-77fc-8511-f0f48f89edbb","language":"javascript"},"content":[{"text":"const answer = 42;","type":"text"}],"type":"code_block"}
+      ],
+      "type": "doc"
+    }
+  },
+  "analytics": {
+    "analyzerVersion": 1,
+    "current": {
+      "contentHash": "3ba23471",
+      "wordCount": 9
+    },
+    "timezone": "Europe/London"
+  }
+}

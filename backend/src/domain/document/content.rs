@@ -1,0 +1,160 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023–2026 BluInk
+
+use crate::domain::document::validation::validate_document;
+use crate::domain::project::identity::is_item_id;
+use serde_json::{Map, Value};
+use std::collections::HashSet;
+
+const ADDRESSABLE_BLOCKS: &[&str] = &[
+    "paragraph",
+    "heading",
+    "code_block",
+    "horizontal_rule",
+    "boxAttribution",
+    "list",
+    "listItem",
+    "image",
+    "box",
+    "boxHeading",
+    "figure",
+    "table",
+    "table_row",
+    "embed",
+];
+
+pub(crate) fn is_addressable_block(kind: &str) -> bool {
+    ADDRESSABLE_BLOCKS.contains(&kind)
+}
+
+/// Prepare a page's canonical content for writing. Existing unique block UUIDs
+/// survive edits; copied or missing identities receive fresh `UUIDv7` values.
+pub(crate) fn prepare_page_content(
+    mut content: Value,
+    block_ids: &mut dyn Iterator<Item = String>,
+) -> Result<Value, String> {
+    if let Some(document) = content.get_mut("document") {
+        normalize_block_ids(document, &mut HashSet::new(), 0, block_ids)?;
+    }
+    let document = super::document_root(&content);
+    validate_document(document).map_err(|error| error.to_string())?;
+    Ok(content)
+}
+
+fn normalize_block_ids(
+    value: &mut Value,
+    seen: &mut HashSet<String>,
+    depth: usize,
+    ids: &mut dyn Iterator<Item = String>,
+) -> Result<(), String> {
+    if depth > 256 {
+        return Err("Document nesting is too deep".to_owned());
+    }
+    if let Some(values) = value.as_array_mut() {
+        for value in values {
+            normalize_block_ids(value, seen, depth, ids)?;
+        }
+        return Ok(());
+    }
+    let Some(node) = value.as_object_mut() else {
+        return Ok(());
+    };
+    if node
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| ADDRESSABLE_BLOCKS.contains(&kind))
+    {
+        let attrs = node
+            .entry("attrs")
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !attrs.is_object() {
+            *attrs = Value::Object(Map::new());
+        }
+        let attrs = attrs
+            .as_object_mut()
+            .ok_or("Block attributes must be an object")?;
+        let current = attrs.get("id").and_then(Value::as_str);
+        let id = match current {
+            Some(id) if is_item_id(id) && seen.insert(id.to_ascii_lowercase()) => id.to_owned(),
+            _ => loop {
+                let id = ids.next().ok_or("Missing supplied block identity")?;
+                if seen.insert(id.clone()) {
+                    break id;
+                }
+            },
+        };
+        attrs.insert("id".to_owned(), Value::String(id));
+    }
+    if let Some(children) = node.get_mut("content") {
+        normalize_block_ids(children, seen, depth + 1, ids)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{is_addressable_block, prepare_page_content};
+    use serde_json::Value;
+    /// An upper bound for fresh block identities, computed without recursion or I/O.
+    pub(crate) fn identity_slots(value: &Value) -> usize {
+        let mut pending = vec![value];
+        let mut count = 0;
+        while let Some(value) = pending.pop() {
+            match value {
+                Value::Object(node) => {
+                    count += usize::from(
+                        node.get("type")
+                            .and_then(Value::as_str)
+                            .is_some_and(is_addressable_block),
+                    );
+                    if let Some(content) = node.get("content") {
+                        pending.push(content);
+                    }
+                    if let Some(document) = node.get("document") {
+                        pending.push(document);
+                    }
+                }
+                Value::Array(values) => pending.extend(values),
+                _ => {}
+            }
+        }
+        count
+    }
+
+    fn prepare(content: serde_json::Value) -> Result<serde_json::Value, String> {
+        let mut ids =
+            (0..identity_slots(&content)).map(|i| format!("01a0e2a0-0000-7000-8000-{i:012x}"));
+        prepare_page_content(content, &mut ids)
+    }
+
+    #[test]
+    fn keeps_unique_ids_and_replaces_copied_nested_ids() {
+        let copied = "01a0e2a0-0000-7000-8000-000000000002";
+        let content = json!({"document": {
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "attrs": {"id": copied}},
+                {"type": "box", "attrs": {"kind": "quote"}, "content": [
+                    {"type": "paragraph", "attrs": {"id": copied}}
+                ]}
+            ]
+        }});
+        let result = prepare(content).unwrap();
+        let result = &result["document"];
+        assert_eq!(result["content"][0]["attrs"]["id"], copied);
+        let replacement = result["content"][1]["content"][0]["attrs"]["id"]
+            .as_str()
+            .unwrap();
+        assert_ne!(replacement, copied);
+        assert_eq!(&replacement[14..15], "7");
+        assert!(result["content"][1]["attrs"]["id"].is_string());
+    }
+
+    #[test]
+    fn rejects_invalid_document_after_assigning_ids() {
+        let content = json!({"document": {"type": "doc", "content": [{"type": "heading", "attrs": {"level": 9}}]}});
+        assert!(prepare(content).unwrap_err().contains("Heading level"));
+    }
+}

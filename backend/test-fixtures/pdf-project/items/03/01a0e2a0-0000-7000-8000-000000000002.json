@@ -1,0 +1,34 @@
+{
+  "format": "bluink.item",
+  "formatVersion": 20,
+  "id": "01a0e2a0-0000-7000-8000-000000000002",
+  "revision": "01a0e2a7-d12c-781d-9218-e9c23a34f2ed",
+  "createdAt": "2026-09-27T11:37:24.006Z",
+  "modifiedAt": "2026-09-27T11:37:24.012Z",
+  "meta": {
+    "lang": "fr-CA",
+    "state": "active",
+    "title": "Chapter one",
+    "type": "page"
+  },
+  "content": {
+    "document": {
+      "content": [
+        {"attrs":{"id":"01a0e2a0-0000-7000-8000-000000000102","level":1},"content":[{"text":"Chapter introduction","type":"text"}],"type":"heading"},
+        {"attrs":{"id":"01a0e2a7-d12c-7640-9e66-56fb9bef8493"},"content":[{"text":"Bonjour le monde.","type":"text"}],"type":"paragraph"},
+        {"attrs":{"alt":"A blue circle inside a pale rectangle","height":64,"id":"01a0e2a7-d12c-7e02-b73f-e06fce5fe9d8","src":"/assets/01a0e2a0-0000-7000-8000-000000000002/diagram.svg","width":128},"type":"image"},
+        {"attrs":{"columnWidthsPercent":[50,50],"id":"01a0e2a7-d12c-76c4-b7b3-afbbe912e746"},"content":[{"attrs":{"id":"01a0e2a7-d12c-7fc0-800f-958b0ea0d1b5"},"content":[{"attrs":{"id":"01a0e2a7-d12c-7e36-aae8-ef2651c8afaa"},"content":[{"attrs":{"id":"01a0e2a7-d12c-7e63-856a-a41cd16f99c4"},"content":[{"text":"Name","type":"text"}],"type":"paragraph"}],"type":"table_header"},{"attrs":{"id":"01a0e2a7-d12c-7e0b-9ea3-f7bc6a6f7b42"},"content":[{"attrs":{"id":"01a0e2a7-d12c-7fde-8e3f-bb5934a96d78"},"content":[{"text":"Value","type":"text"}],"type":"paragraph"}],"type":"table_header"}],"type":"table_row"},{"attrs":{"id":"01a0e2a7-d12c-7827-895e-d2eaa559684c"},"content":[{"attrs":{"id":"01a0e2a7-d12c-73c1-a690-8930d5999f80"},"content":[{"attrs":{"id":"01a0e2a7-d12c-7fd5-af8d-b00f9726fde1"},"content":[{"text":"Answer","type":"text"}],"type":"paragraph"}],"type":"table_cell"},{"attrs":{"id":"01a0e2a7-d12c-7674-bad7-9028c2fbe8cf"},"content":[{"attrs":{"id":"01a0e2a7-d12c-7663-bdcf-c27e54b9e20a"},"content":[{"text":"42","type":"text"}],"type":"paragraph"}],"type":"table_cell"}],"type":"table_row"}],"type":"table"},
+        {"attrs":{"id":"01a0e2a7-d12c-7997-ac91-11baf1f47009"},"content":[{"text":"A note","type":"text"},{"attrs":{"paragraph":{"content":[{"text":"Footnote detail.","type":"text"}],"type":"paragraph"}},"type":"footnote"}],"type":"paragraph"}
+      ],
+      "type": "doc"
+    }
+  },
+  "analytics": {
+    "analyzerVersion": 1,
+    "current": {
+      "contentHash": "e8639abf",
+      "wordCount": 13
+    },
+    "timezone": "Europe/London"
+  }
+}

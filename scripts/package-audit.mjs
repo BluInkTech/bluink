@@ -6,10 +6,11 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 
 const forbiddenPath =
-	/(?:^|\/)(?:\.git|\.env(?:\.[^/]*)?|\.demo|\.cache|node_modules|demo-data-generator|screenshots|recordings)(?:\/|$)|\.(?:map|tsbuildinfo|tgz|parquet)$/i
+	/(?:^|\/)(?:\.git|history\.git|project\.sqlite3(?:-wal|-shm)?|\.env(?:\.[^/]*)?|\.demo(?:-[^/]+)?|\.cache|node_modules|demo-data-generator|screenshots|recordings)(?:\/|$)|\.(?:map|tsbuildinfo|tgz|parquet)$/i
 const privateText =
 	/(?:\/home\/[^/\s"']+\/(?:github|projects)|\/mnt\/[a-z]\/Users\/|[A-Z]:[\\/](?:Users|github)[\\/]|codex\x2dclipboard\x2d|BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY|(?:npm|ghp|github_pat)_[A-Za-z0-9]{30,})/
 const sourceMap = /(?:[#@]\s*sourceMappingURL\s*=|["']sourcesContent["']\s*:)/
+const nativeExecutable = /^(?:bin\/bluink\.exe|runtime\/bluink-[\w.-]+)$/
 
 export async function filesIn(directory, prefix = '') {
 	const files = []
@@ -54,7 +55,16 @@ export async function auditDirectory(
 		)
 			throw new Error(`Source or duplicated font in Web package: ${file}`)
 		const bytes = await readFile(path.join(directory, file))
-		const text = bytes.toString('utf8')
+		let text = bytes.toString('utf8')
+		// The embedded SSH key parser compares whole lines with its PEM
+		// markers, which the compiler stores back to back or in fragments. Key
+		// material always starts on the line after a marker, so only a marker
+		// followed by a line break still counts as an embedded key.
+		if (nativeExecutable.test(file))
+			text = text.replaceAll(
+				/-----\x42EGIN (?:OPENSSH |RSA |ENCRYPTED |EC )?PRIVATE KEY-----(?![\r\n])/g,
+				'\0',
+			)
 		const upstream = trustedUpstream[file]
 		if (
 			upstream &&
@@ -87,6 +97,6 @@ export const webFileAllowed = (file) =>
 	)
 export const cliFileAllowed = (file) =>
 	(file.startsWith('web/') && webFileAllowed(file.slice(4))) ||
-	/^(?:bluink|package\.json|npm-shrinkwrap\.json|LICENSE|README\.md|THIRD_PARTY_NOTICES\.txt|release\.json|dist\/(?:package\.json|(?:src\/)?(?:native\/)?[\w-]+\.js)|runtime\/(?:index\.cjs|bluink_runtime\.(?:linux-x64-gnu|win32-x64-msvc|darwin-arm64)\.node)|vendor\/(?:(?:theme-preview|workspace-starter)\.json|workspace-setups\/[\w-]+\.json|themes\/(?:classic|editorial)\/(?:manifest\.json|html\/article\.html|site\/(?:page|listing)\.html)))$/.test(
+	/^(?:bin\/bluink\.exe|install\.mjs|package\.json|npm-shrinkwrap\.json|LICENSE|README\.md|THIRD_PARTY_NOTICES\.txt|release\.json|runtime\/bluink-(?:linux-x64|darwin-arm64)|vendor\/(?:(?:sample-pages|workspace-starter)\.json|workspace-setups\/[\w-]+\.json|themes\/(?:classic|editorial)\/(?:manifest\.json|html\/article\.html|site\/(?:page|listing)\.html)))$/.test(
 		file,
 	)

@@ -1,0 +1,25 @@
+{
+  "format": "bluink.item",
+  "formatVersion": 20,
+  "id": "4f4f2275-a477-8949-8953-3d3f340d5570",
+  "revision": "01a0e2a7-d11a-74f0-a943-6cfbe2219cd5",
+  "createdAt": "2026-09-27T11:37:23.995Z",
+  "modifiedAt": "2026-09-27T11:37:23.995Z",
+  "meta": {
+    "state": "active",
+    "title": "source_one",
+    "type": "snippet"
+  },
+  "content": {
+    "key": "source_one",
+    "paragraph": {"content":[{"text":"A cited source paragraph.","type":"text"}],"type":"paragraph"}
+  },
+  "analytics": {
+    "analyzerVersion": 1,
+    "current": {
+      "contentHash": "ea17d7b317fe8be7",
+      "wordCount": 4
+    },
+    "timezone": "UTC"
+  }
+}

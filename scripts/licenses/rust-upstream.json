@@ -1,44 +1,4 @@
 {
-	"napi@3.12.6": {
-		"license": "MIT",
-		"files": [
-			{
-				"file": "rust/3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215.txt",
-				"url": "https://raw.githubusercontent.com/napi-rs/napi-rs/e2f21c67da882a0221e3c6fc59170d4e6c367c68/LICENSE",
-				"sha256": "3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215"
-			}
-		]
-	},
-	"napi-sys@3.3.1": {
-		"license": "MIT",
-		"files": [
-			{
-				"file": "rust/3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215.txt",
-				"url": "https://raw.githubusercontent.com/napi-rs/napi-rs/31c27a1676a7c4b317f4e144e0a9cb94e8354143/LICENSE",
-				"sha256": "3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215"
-			}
-		]
-	},
-	"napi-derive@3.6.7": {
-		"license": "MIT",
-		"files": [
-			{
-				"file": "rust/3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215.txt",
-				"url": "https://raw.githubusercontent.com/napi-rs/napi-rs/e2f21c67da882a0221e3c6fc59170d4e6c367c68/LICENSE",
-				"sha256": "3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215"
-			}
-		]
-	},
-	"napi-derive-backend@6.1.3": {
-		"license": "MIT",
-		"files": [
-			{
-				"file": "rust/3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215.txt",
-				"url": "https://raw.githubusercontent.com/napi-rs/napi-rs/31c27a1676a7c4b317f4e144e0a9cb94e8354143/LICENSE",
-				"sha256": "3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215"
-			}
-		]
-	},
 	"winapi-i686-pc-windows-gnu@0.4.0": {
 		"license": "MIT",
 		"files": [
@@ -161,6 +121,96 @@
 				"file": "rust/acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a.txt",
 				"url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE",
 				"sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a"
+			}
+		]
+	},
+	"russh@0.65.1": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt",
+				"url": "https://raw.githubusercontent.com/warp-tech/russh/b33092aad1e51c66258a12e8b83fc473a68d9d34/LICENSE.txt",
+				"sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+			}
+		]
+	},
+	"pageant@0.2.5": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt",
+				"url": "https://raw.githubusercontent.com/warp-tech/russh/183a22e8f8f490fa09b6eb7bd044ef99d8c4414f/LICENSE.txt",
+				"sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+			}
+		]
+	},
+	"russh-cryptovec@0.62.0": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt",
+				"url": "https://raw.githubusercontent.com/warp-tech/russh/907c732562c5732aad6c140dba958eafddc41ba0/LICENSE.txt",
+				"sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+			}
+		]
+	},
+	"russh-util@0.52.0": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt",
+				"url": "https://raw.githubusercontent.com/warp-tech/russh/3d09c20c52a542ffa327723d3a44cb1edd9b0ca4/LICENSE-2.0.txt",
+				"sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+			}
+		]
+	},
+	"delegate@0.13.5": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/be7ee8aa49dc586023669a0c600a0536fce6a9f61264a53a67cdd842564ed899.txt",
+				"url": "https://raw.githubusercontent.com/kobzol/rust-delegate/b129d4cbf4cc499eff7743365dcb0fe5d8d2e820/LICENSE-MIT",
+				"sha256": "be7ee8aa49dc586023669a0c600a0536fce6a9f61264a53a67cdd842564ed899"
+			}
+		]
+	},
+	"jni@0.22.4": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/fea1d5bf3dd71605ce5d7d2ff695c1837e914c77195e523a86b5391716477960.txt",
+				"url": "https://raw.githubusercontent.com/jni-rs/jni-rs/5ae9458a4ec44c5318f37ddc7569c1d4ae8a69e7/LICENSE-MIT",
+				"sha256": "fea1d5bf3dd71605ce5d7d2ff695c1837e914c77195e523a86b5391716477960"
+			}
+		]
+	},
+	"jni-macros@0.22.4": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/fea1d5bf3dd71605ce5d7d2ff695c1837e914c77195e523a86b5391716477960.txt",
+				"url": "https://raw.githubusercontent.com/jni-rs/jni-rs/33045a124105c939d1e2cbdcb5a39e5d868ffa03/LICENSE-MIT",
+				"sha256": "fea1d5bf3dd71605ce5d7d2ff695c1837e914c77195e523a86b5391716477960"
+			}
+		]
+	},
+	"jni-sys-macros@0.4.1": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/1d85bd754b04ceec93e98e890edd1fa3c6a22e81bcb32135806beeccefa51cd1.txt",
+				"url": "https://raw.githubusercontent.com/jni-rs/jni-sys/64d77b7a5f119d7b55b4e2c169a4668067ff59e6/LICENSE-MIT",
+				"sha256": "1d85bd754b04ceec93e98e890edd1fa3c6a22e81bcb32135806beeccefa51cd1"
+			}
+		]
+	},
+	"rustls-platform-verifier-android@0.2.0": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/1c7cf76689c837a68ed8d704994e52a0f2940c087958f860d17f3186afbdcc0c.txt",
+				"url": "https://raw.githubusercontent.com/rustls/rustls-platform-verifier/252e25161a91af476cbea620e29d277592d27ec7/LICENSE-MIT",
+				"sha256": "1c7cf76689c837a68ed8d704994e52a0f2940c087958f860d17f3186afbdcc0c"
 			}
 		]
 	}

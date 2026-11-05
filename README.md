@@ -8,7 +8,7 @@ For product information, documentation and support, visit [bluink.app](https://b
 
 ## Build
 
-Use Node.js 25 or newer and the Rust toolchain pinned in `rust-toolchain.toml`.
+Use Node.js 26 or newer and the Rust toolchain pinned in `rust-toolchain.toml`.
 Build on a supported host: Linux x64, Windows x64 or macOS arm64.
 
 ```sh

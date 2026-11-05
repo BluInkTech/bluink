@@ -1,0 +1,99 @@
+{
+  "format": "bluink.item",
+  "formatVersion": 20,
+  "id": "00000000-0000-7000-8000-000000000101",
+  "revision": "00000000-0000-7000-8000-000000000121",
+  "createdAt": "2026-09-01T12:00:00.000Z",
+  "modifiedAt": "2026-09-01T12:00:00.000Z",
+  "meta": {
+    "state": "active",
+    "title": "All notes",
+    "type": "workspace"
+  },
+  "content": {
+    "query": {
+      "clauses": [
+        {
+          "polarity": "required",
+          "predicate": {
+            "field": "type",
+            "kind": "field",
+            "operator": "match",
+            "value": "page"
+          }
+        },
+        {
+          "polarity": "required",
+          "predicate": {
+            "field": "state",
+            "kind": "field",
+            "operator": "match",
+            "value": "active"
+          }
+        }
+      ],
+      "sort": [],
+      "version": 1
+    },
+    "widgets": [
+      {
+        "config": {
+          "kind": "continue_writing",
+          "noteId": null
+        },
+        "home": {
+          "span": 12
+        },
+        "id": "00000000-0000-7000-8000-000000000111"
+      },
+      {
+        "config": {
+          "count": 6,
+          "kind": "recent_notes",
+          "presentation": "cards"
+        },
+        "home": {
+          "span": 12
+        },
+        "id": "00000000-0000-7000-8000-000000000112"
+      },
+      {
+        "config": {
+          "kind": "workspace_shortcuts",
+          "workspaceIds": []
+        },
+        "home": {
+          "span": 12
+        },
+        "id": "00000000-0000-7000-8000-000000000113"
+      },
+      {
+        "config": {
+          "kind": "layout",
+          "mode": "cards",
+          "query": {
+            "clauses": [],
+            "sort": [],
+            "version": 1
+          }
+        },
+        "home": {
+          "height": "tall",
+          "hidden": true,
+          "span": 12
+        },
+        "id": "00000000-0000-7000-8000-000000000131",
+        "title": "Cards",
+        "topBar": true
+      }
+    ]
+  },
+  "analytics": {
+    "analyzerVersion": 1,
+    "current": {
+      "contentHash": "811c9dc5",
+      "wordCount": 0
+    },
+    "timezone": "Europe/London"
+  }
+}

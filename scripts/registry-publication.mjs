@@ -33,6 +33,31 @@ export async function registryRecord(name, version) {
 	return response.json()
 }
 
+export async function registryTags(name) {
+	const response = await fetch(
+		`https://registry.npmjs.org/-/package/${encodeURIComponent(name)}/dist-tags`,
+		{ signal: AbortSignal.timeout(30_000), cache: 'no-store' },
+	)
+	if (!response.ok)
+		throw new Error(`Registry dist-tag lookup failed: HTTP ${response.status}`)
+	return response.json()
+}
+
+/** Publishing is complete only when the expected install channel resolves. */
+export async function verifyRegistryTag(
+	name,
+	version,
+	{ lookup = registryTags, pause = registryPause, attempts = 121 } = {},
+) {
+	const tag = /-(alpha|beta|rc)$/.exec(version)?.[1] ?? 'latest'
+	for (let attempt = 0; attempt < attempts; attempt++) {
+		const tags = await lookup(name)
+		if (tags[tag] === version) return { name, tag, version }
+		if (attempt < attempts - 1) await pause()
+	}
+	throw new Error(`Registry ${tag} tag does not point to ${name}@${version}.`)
+}
+
 function matching(record, existing) {
 	if (
 		existing &&
