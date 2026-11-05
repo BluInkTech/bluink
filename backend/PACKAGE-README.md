@@ -3,12 +3,15 @@
 Install and run Bluink with Node.js 26 or newer:
 
 ```sh
-npm install --global @bluink/cli@alpha
+npm install --global @bluink/cli@alpha --allow-scripts=@bluink/cli
 bluink --help
 bluink server --project ./my-writing
 ```
 
 The package supports Windows x64, Linux x64 with glibc, and macOS arm64.
+The scoped script permission lets npm 12 run Bluink's installer, which selects
+and verifies the bundled native executable for your platform. It does not allow
+other packages' install scripts or change your global npm policy.
 The compiled interface is bundled in this package. Its exact npm dependencies
 provide fonts and the PDF engine.
 Installation requires network access; ordinary offline use needs no resource

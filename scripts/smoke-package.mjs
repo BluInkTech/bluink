@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
 import {
 	fileHash,
@@ -159,10 +159,12 @@ export async function smokePackage(archive, expectedVersion, resources) {
 			(await json(path.join(root, '.resource-packages/dependencies.json'))).map(
 				(entry) => entry.archive,
 			)
-		// Install scripts stay enabled: install.mjs selects the executable.
+		// npm matches local installers by file identity, not the manifest's name.
+		// Trust only this verified CLI archive; registry installs use @bluink/cli.
 		await npm([
 			'install',
 			'--global',
+			`--allow-scripts=${pathToFileURL(path.resolve(archive)).href}`,
 			'--prefix',
 			prefix,
 			'--no-audit',
