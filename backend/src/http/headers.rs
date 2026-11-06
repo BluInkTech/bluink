@@ -48,16 +48,14 @@ pub(super) async fn security(request: Request, next: Next) -> Response {
             "content-security-policy",
             // Harper starts its packaged WebAssembly in a local blob worker.
             // Worker permission stays separate from the document's JS policy.
-            "default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self' 'wasm-unsafe-eval';script-src-attr 'none';worker-src 'self' blob:;style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests",
+            // The loopback listener is plain HTTP, so no HTTPS upgrade: WebKit
+            // upgrades even localhost subresources, leaving a blank page.
+            "default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self' 'wasm-unsafe-eval';script-src-attr 'none';worker-src 'self' blob:;style-src 'self' https: 'unsafe-inline'",
         ),
         ("cross-origin-opener-policy", "same-origin"),
         ("cross-origin-resource-policy", "same-origin"),
         ("origin-agent-cluster", "?1"),
         ("referrer-policy", "no-referrer"),
-        (
-            "strict-transport-security",
-            "max-age=15552000; includeSubDomains",
-        ),
         ("x-content-type-options", "nosniff"),
         ("x-dns-prefetch-control", "off"),
         ("x-download-options", "noopen"),

@@ -19,6 +19,15 @@ fn packaged_analysis_workers_are_allowed_without_broadening_document_scripts() {
 }
 
 #[test]
+fn the_plain_http_listener_never_asks_for_https() {
+    let fixture = Fixture::new(false);
+    let (_, headers, _) = fixture.request("GET", "/", "");
+    let policy = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+    assert!(!policy.contains("upgrade-insecure-requests"));
+    assert!(!headers.contains_key(header::STRICT_TRANSPORT_SECURITY));
+}
+
+#[test]
 fn every_rpc_preserves_methods_and_required_fields_through_the_production_router() {
     let fixture = Fixture::new(true);
     let contract: Value =
