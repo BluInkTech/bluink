@@ -99,7 +99,7 @@ jobs:
       - run: npm run format && git diff --exit-code
       - run: npm run lint && npm run typecheck && npm test
       - run: cargo fmt --manifest-path backend/Cargo.toml --all --check
-      - run: cargo clippy --manifest-path backend/Cargo.toml --all-targets --locked -- -D warnings
+      - run: cargo clippy --manifest-path backend/Cargo.toml --workspace --all-targets --locked -- -D warnings
       - run: node scripts/public-release.mjs native-report
       - name: Prepare licence notices once
         if: matrix.target == 'x86_64-unknown-linux-gnu'
@@ -115,8 +115,7 @@ jobs:
         with:
           name: native-${{ matrix.target }}
           path: |
-            backend/dist/native/release/bluink-*
-            !backend/dist/native/release/bluink-*.json
+            backend/dist/native/release/bluink-*.node
             verification/*.json
           if-no-files-found: error
           compression-level: 0
@@ -241,12 +240,13 @@ jobs:
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: |
+            package-out/bluink-[0-9]*.tgz
             package-out/bluink-cli-*.tgz
             package-out/manifest.json
             package-out/verification.json
       - name: Verify attested workflow identity
         run: |
-          for artifact in package-out/bluink-cli-*.tgz package-out/manifest.json package-out/verification.json; do
+          for artifact in package-out/bluink-[0-9]*.tgz package-out/bluink-cli-*.tgz package-out/manifest.json package-out/verification.json; do
             gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/public-release.yml" --source-ref "$GITHUB_REF" --source-digest "$GITHUB_SHA" --deny-self-hosted-runners
           done
       - run: node scripts/public-release.mjs publish
@@ -279,15 +279,17 @@ jobs:
         run: test "$(npm --version)" = '12.2.0'
       - name: Promote current alpha only while latest is a prerelease
         run: |
-          alpha="$(npm view @bluink/cli dist-tags.alpha)"
-          latest="$(npm view @bluink/cli dist-tags.latest)"
+          alpha="$(npm view bluink dist-tags.alpha)"
+          latest="$(npm view bluink dist-tags.latest)"
           [[ "$alpha" == *-alpha ]] || { echo 'alpha tag does not point to an alpha release'; exit 1; }
           [[ "$GITHUB_REF_NAME" == "v-latest-$alpha" ]] || { echo 'promotion tag differs from the current alpha'; exit 1; }
           [[ "$latest" == *-alpha || "$latest" == *-beta || "$latest" == *-rc ]] || { echo 'latest points to a stable release'; exit 1; }
-          npm dist-tag add "@bluink/cli@$alpha" latest
-          for attempt in {1..12}; do
-            if [[ "$(npm view @bluink/cli dist-tags.latest --prefer-online)" == "$alpha" ]]; then exit 0; fi
-            sleep 5
+          # Platform packages first, so latest never pins a missing addon.
+          for package in @bluink/cli-win32-x64 @bluink/cli-darwin-arm64 @bluink/cli-linux-x64-gnu bluink; do
+            npm dist-tag add "$package@$alpha" latest
+            for attempt in {1..13}; do
+              if [[ "$(npm view "$package" dist-tags.latest --prefer-online)" == "$alpha" ]]; then break; fi
+              if [[ "$attempt" == 13 ]]; then echo "latest tag did not propagate for $package" >&2; exit 1; fi
+              sleep 5
+            done
           done
-          echo 'latest tag did not propagate to npm' >&2
-          exit 1

@@ -213,20 +213,9 @@ pub(crate) fn capture(
         params![id, head, generation, now_ms],
     )?;
     transaction.execute("INSERT INTO capture_item(capture_id,path,generation,operation,source_kind,item_id,revision_uuid,
-        header_json,body_id,memberships_json,record_json,object_oid)
-        SELECT ?1,d.path,d.generation,d.operation,d.source_kind,d.item_id,d.revision_uuid,
-        i.header_json,i.body_id,
-        CASE WHEN i.id IS NOT NULL THEN (
-          SELECT json_group_object(membership,json(values_json)) FROM (
-            SELECT CASE r.kind WHEN 'tag' THEN 'tags' ELSE 'pins' END AS membership,
-              json_group_array(CASE r.kind WHEN 'tag' THEN e.named_key ELSE e.uuid END
-                ORDER BY CASE r.kind WHEN 'tag' THEN e.named_key ELSE e.uuid END) AS values_json
-            FROM relation r JOIN entity e ON e.id=r.target_id
-            WHERE r.source_id=i.id AND r.kind IN ('tag','pin') GROUP BY r.kind
-          )
-        ) ELSE NULL END,
-        p.canonical_json,a.oid
-        FROM dirty_path d LEFT JOIN item i ON i.id=d.item_id
+        record_json,object_oid)
+        SELECT ?1,d.path,d.generation,d.operation,d.source_kind,d.item_id,d.revision_uuid,p.canonical_json,a.oid
+        FROM dirty_path d
         LEFT JOIN project_record p ON p.path=d.path AND d.source_kind='record' AND d.operation='upsert'
         LEFT JOIN asset_path a ON a.path=d.path AND d.source_kind='asset' AND d.operation='upsert'",[id])?;
     transaction.execute("INSERT INTO revision_pin(owner_kind,owner_id,item_id,revision_uuid)
@@ -254,18 +243,17 @@ pub(crate) fn captured_source(
     path: &str,
 ) -> Result<CapturedSource> {
     let row = transaction.query_row(
-        "SELECT operation,source_kind,header_json,body_id,memberships_json,record_json,object_oid
-        FROM capture_item WHERE capture_id=?1 AND path=?2",
+        "SELECT c.operation,c.source_kind,e.uuid,c.revision_uuid,c.record_json,c.object_oid
+        FROM capture_item c LEFT JOIN entity e ON e.id=c.item_id WHERE c.capture_id=?1 AND c.path=?2",
         params![capture, path],
         |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<String>>(6)?,
             ))
         },
     )?;
@@ -273,21 +261,20 @@ pub(crate) fn captured_source(
         return Ok(CapturedSource::Deleted);
     }
     match row.1.as_str() {
-        "item" => Ok(CapturedSource::Json(item::assemble(
-            transaction,
-            serde_json::from_str(&row.2.ok_or_else(|| invalid("Capture header missing."))?)?,
-            row.3.ok_or_else(|| invalid("Capture body missing."))?,
-            &serde_json::from_str(
-                &row.4
-                    .ok_or_else(|| invalid("Capture memberships missing."))?,
-            )?,
-            true,
-        )?)),
+        // The capture's revision pin keeps this revision readable, current or superseded.
+        "item" => {
+            let (Some(uuid), Some(revision)) = (row.2, row.3) else {
+                return Err(invalid("Capture revision missing."));
+            };
+            item::read_revision(transaction, &uuid, &revision)?
+                .map(CapturedSource::Json)
+                .ok_or_else(|| invalid("Captured revision is no longer retained."))
+        }
         "record" => Ok(CapturedSource::Json(serde_json::from_str(
-            &row.5.ok_or_else(|| invalid("Capture record missing."))?,
+            &row.4.ok_or_else(|| invalid("Capture record missing."))?,
         )?)),
         "asset" => {
-            let oid = row.6.ok_or_else(|| invalid("Capture object missing."))?;
+            let oid = row.5.ok_or_else(|| invalid("Capture object missing."))?;
             let size: i64 =
                 transaction.query_row("SELECT size FROM asset WHERE oid=?1", [&oid], |row| {
                     row.get(0)

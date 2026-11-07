@@ -262,7 +262,7 @@ fn help_version_and_argument_errors_need_no_project_or_resources() {
     }
     let version = run(root, home, &["--version"]);
     assert!(
-        regex::Regex::new(r"^@bluink/cli v\S+\r?\n$")
+        regex::Regex::new(r"^bluink v\S+\r?\n$")
             .unwrap()
             .is_match(&version.stdout)
     );

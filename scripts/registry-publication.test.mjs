@@ -19,7 +19,7 @@ const identity = {
 	publicCommit: 'a'.repeat(40),
 }
 const records = ['fonts', 'typst', 'cli'].map((kind) => ({
-	name: `@bluink/${kind}`,
+	name: kind === 'cli' ? 'bluink' : `@bluink/${kind}`,
 	version: '26.10.7-alpha',
 	integrity: 'sha512-Ynl0ZXM=',
 	archive: `${kind}.tgz`,
@@ -404,6 +404,39 @@ test('resources bind their own workflow and tag, and their source commit is inde
 		() => provenancePolicy({ name: '@bluink/unknown', version: '26.10.1' }),
 		/Unknown/,
 	)
+	// The former single CLI package is no longer released.
+	assert.throws(
+		() => provenancePolicy({ name: '@bluink/cli', version: '26.10.1' }),
+		/Unknown/,
+	)
+})
+
+test('platform packages bind the CLI release workflow, tag and source commit', () => {
+	for (const name of [
+		'@bluink/cli-win32-x64',
+		'@bluink/cli-darwin-arm64',
+		'@bluink/cli-linux-x64-gnu',
+	]) {
+		const record = { ...records[2], name }
+		assert.deepEqual(provenancePolicy(record), {
+			workflow: '.github/workflows/public-release.yml',
+			ref: `refs/tags/v${record.version}`,
+		})
+		const { report } = reportFor(record)
+		assert.equal(
+			provenanceStatement(report, record, identity).commit,
+			identity.publicCommit,
+		)
+		const fixture = reportFor(record)
+		fixture.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit =
+			'b'.repeat(40)
+		fixture.report.verified[0].attestationBundles[0].bundle.dsseEnvelope.payload =
+			Buffer.from(JSON.stringify(fixture.statement)).toString('base64')
+		assert.throws(
+			() => provenanceStatement(fixture.report, record, identity),
+			/wrong workflow/,
+		)
+	}
 })
 
 test('registry verification waits for the expected install tag', async () => {

@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const root = path.resolve(fileURLToPath(new URL('../', import.meta.url)))
-export const packageName = '@bluink/cli'
+export const packageName = 'bluink'
 export const registry = 'https://registry.npmjs.org/'
 export const targets = [
 	{
@@ -14,6 +14,8 @@ export const targets = [
 		platform: 'linux',
 		arch: 'x64',
 		artifact: 'bluink-linux-x64',
+		addon: 'bluink-linux-x64-gnu.node',
+		addonPackage: '@bluink/cli-linux-x64-gnu',
 		typst: 'linux-x64/typst',
 	},
 	{
@@ -21,6 +23,8 @@ export const targets = [
 		platform: 'win32',
 		arch: 'x64',
 		artifact: 'bluink-win32-x64.exe',
+		addon: 'bluink-win32-x64.node',
+		addonPackage: '@bluink/cli-win32-x64',
 		typst: 'windows-x64/typst.exe',
 	},
 	{
@@ -28,6 +32,8 @@ export const targets = [
 		platform: 'darwin',
 		arch: 'arm64',
 		artifact: 'bluink-darwin-arm64',
+		addon: 'bluink-darwin-arm64.node',
+		addonPackage: '@bluink/cli-darwin-arm64',
 		typst: 'macos-arm64/typst',
 	},
 ]
@@ -126,6 +132,7 @@ export async function nativeSourceDigest(workspaceRoot = root) {
 	const files = [
 		...(await sourceFiles(path.join(workspaceRoot, 'backend/src'))),
 		...(await sourceFiles(path.join(workspaceRoot, 'backend/format/src'))),
+		...(await sourceFiles(path.join(workspaceRoot, 'backend/addon/src'))),
 		...(
 			await sourceFiles(path.join(workspaceRoot, 'backend/resources'))
 		).filter((file) => path.basename(file) !== 'workspace-starter.json'),
@@ -134,6 +141,8 @@ export async function nativeSourceDigest(workspaceRoot = root) {
 			'fonts/catalogue.json',
 			'backend/Cargo.toml',
 			'backend/format/Cargo.toml',
+			'backend/addon/Cargo.toml',
+			'backend/addon/build.rs',
 			'backend/Cargo.lock',
 			'backend/build.rs',
 			'scripts/build-native.mjs',
@@ -210,27 +219,24 @@ export function nativeExecutable(mode, workspaceRoot = root) {
 	)
 }
 
-/** npm's bin entry is the Windows executable, which its cmd shim runs directly.
- * A host-only package carries just the host executable, so it is the bin entry.
- * Other platforms ship under runtime/ and install.mjs copies them over the bin.
- */
-export const packageExecutable = 'bin/bluink.exe'
-export function packagedNativePath(target, hostOnly = false) {
-	return hostOnly || target.platform === 'win32'
-		? packageExecutable
-		: `runtime/${target.artifact}`
-}
+/** npm runs the launcher with Node on every platform; it loads the addon from
+ * the platform package npm installed as an optional dependency. */
+export const packageLauncher = 'bin/bluink.mjs'
+/** The addon's path inside each platform package. */
+export const platformAddon = 'bluink.node'
 
 export function nativeBuildCommand(mode) {
 	return `npm run build:native:${mode === 'development' ? 'dev' : 'release'}`
 }
 
+/** Verify each released platform's addon. `locate` maps a target to its file;
+ * by default the build output directory's `bluink-<platform>.node`. */
 export async function verifyNativeArtifacts(
 	directory,
 	digest = undefined,
 	hostOnly = false,
 	identity = {},
-	{ packaged = false } = {},
+	{ locate = (target) => path.join(directory, target.addon) } = {},
 ) {
 	const expected = digest ?? (await nativeSourceDigest())
 	return Promise.all(
@@ -242,19 +248,16 @@ export async function verifyNativeArtifacts(
 						target.arch === process.arch),
 			)
 			.map(async (target) => {
-				const location = packaged
-					? packagedNativePath(target, hostOnly)
-					: target.artifact
-				const file = path.join(directory, location)
+				const file = locate(target)
 				const bytes = await readFile(file).catch(() => {
 					throw new Error(
-						`Missing ${location}; build or copy ${target.rust} from the same native sources.`,
+						`Missing ${path.relative(directory, file) || file}; build or copy ${target.rust} from the same native sources.`,
 					)
 				})
 				const info = nativeBuildInfo(bytes)
 				if (info.mode !== 'release')
 					throw new Error(
-						`Native artifact is not a release build: ${target.artifact}. Run npm run build:native:release.`,
+						`Native artifact is not a release build: ${target.addon}. Run npm run build:native:release.`,
 					)
 				if (
 					Object.keys(info).some(
@@ -270,17 +273,15 @@ export async function verifyNativeArtifacts(
 					(identity.version && info.version !== identity.version) ||
 					(identity.publicCommit && info.publicCommit !== identity.publicCommit)
 				)
-					throw new Error(
-						`Native release identity mismatch: ${target.artifact}`,
-					)
+					throw new Error(`Native release identity mismatch: ${target.addon}`)
 				if (info.sourceDigest !== expected || info.target !== target.rust)
 					throw new Error(
-						`Stale or mismatched ${target.artifact}. Rebuild ${target.rust} from the current native sources.`,
+						`Stale or mismatched ${target.addon}. Rebuild ${target.rust} from the current native sources.`,
 					)
 				return {
 					...info,
-					file: target.artifact,
-					...(packaged && { path: location }),
+					file: target.addon,
+					package: target.addonPackage,
 					sha256: sha256(bytes),
 					bytes: (await stat(file)).size,
 				}

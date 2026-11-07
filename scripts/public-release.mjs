@@ -19,6 +19,10 @@ import {
 	verifyArchive,
 } from './package-artifacts.mjs'
 import { cliFileAllowed, webFileAllowed } from './package-audit.mjs'
+import {
+	releaseNativeEntry,
+	verifyPlatformArchive,
+} from './platform-package.mjs'
 import { publicIdentity, versionPattern } from './release-identity.mjs'
 import {
 	publishRecords,
@@ -29,8 +33,9 @@ import {
 	fileHash,
 	json,
 	nativeDirectory,
-	packageExecutable,
-	packagedNativePath,
+	nativeHostTarget,
+	packageLauncher,
+	packageName,
 	root,
 	run,
 	targets,
@@ -196,11 +201,25 @@ async function dependencies(input) {
 	return records
 }
 
-export async function verifyCliArchive(archive, identity, records) {
+/** Verify the main package against the frozen inputs and the packed platform
+ * packages it pins. `platforms` are archive records for every release target. */
+export async function verifyCliArchive(archive, identity, records, platforms) {
+	const native = []
+	for (const target of targets) {
+		const record = platforms.find((entry) => entry.name === target.addonPackage)
+		if (!record)
+			throw new Error(`Missing platform package: ${target.addonPackage}`)
+		native.push({
+			record,
+			addon: await verifyPlatformArchive(record, target, identity),
+		})
+	}
+	if (platforms.length !== targets.length)
+		throw new Error('Unexpected platform package in the release.')
 	const inspected = await inspectArchive(archive, {
 		allowed: cliFileAllowed,
 		required: [
-			'install.mjs',
+			packageLauncher,
 			'LICENSE',
 			'README.md',
 			'release.json',
@@ -209,7 +228,6 @@ export async function verifyCliArchive(archive, identity, records) {
 			'web/assets/index.html',
 			'web/LICENSE',
 			'web/release.json',
-			...targets.map((target) => packagedNativePath(target)),
 		],
 		onInspect: async (directory, { manifest, metadata }) => {
 			const fields = new Set([
@@ -234,7 +252,7 @@ export async function verifyCliArchive(archive, identity, records) {
 			)
 				throw new Error('Unexpected CLI release metadata.')
 			if (
-				manifest.name !== '@bluink/cli' ||
+				manifest.name !== packageName ||
 				manifest.version !== identity.version ||
 				metadata.name !== manifest.name ||
 				metadata.version !== manifest.version ||
@@ -244,9 +262,8 @@ export async function verifyCliArchive(archive, identity, records) {
 				metadata.publicRepository !== identity.publicRepository ||
 				metadata.contractHash !== (await contractHash()) ||
 				JSON.stringify(manifest.bin) !==
-					JSON.stringify({ bluink: packageExecutable }) ||
-				JSON.stringify(manifest.scripts) !==
-					JSON.stringify({ postinstall: 'node install.mjs' })
+					JSON.stringify({ bluink: packageLauncher }) ||
+				manifest.scripts !== undefined
 			)
 				throw new Error('CLI archive has the wrong public release identity.')
 			const resources = records.filter((entry) => entry.name !== '@bluink/web')
@@ -282,28 +299,37 @@ export async function verifyCliArchive(archive, identity, records) {
 				),
 				true,
 			)
-			const native = await verifyNativeArtifacts(
-				directory,
-				undefined,
-				false,
-				identity,
-				{ packaged: true },
-			)
-			if (JSON.stringify(native) !== JSON.stringify(metadata.native))
-				throw new Error('Native manifest differs from actual archive bytes.')
 			if (
-				!(await readFile(path.join(directory, 'install.mjs'))).equals(
-					await readFile(path.join(root, 'scripts/package-install.mjs')),
+				JSON.stringify(manifest.optionalDependencies) !==
+				JSON.stringify(
+					Object.fromEntries(
+						native.map(({ record }) => [record.name, record.version]),
+					),
 				)
 			)
-				throw new Error('CLI install step differs from this source.')
+				throw new Error(
+					'CLI platform packages differ from the release targets.',
+				)
+			if (
+				JSON.stringify(metadata.native) !==
+				JSON.stringify(
+					native.map(({ record, addon }) => releaseNativeEntry(record, addon)),
+				)
+			)
+				throw new Error('Native manifest differs from the platform packages.')
+			if (
+				!(await readFile(path.join(directory, packageLauncher))).equals(
+					await readFile(path.join(root, 'scripts/package-launcher.mjs')),
+				)
+			)
+				throw new Error('CLI launcher differs from this source.')
 			const lock = await json(path.join(directory, 'npm-shrinkwrap.json'))
 			if (
 				JSON.stringify(lock) !==
-				JSON.stringify(productionLock(manifest, records))
+				JSON.stringify(productionLock(manifest, [...records, ...platforms]))
 			)
 				throw new Error('CLI production dependency lock changed.')
-			return native
+			return native.map(({ addon }) => addon)
 		},
 	})
 	return inspected
@@ -328,7 +354,7 @@ async function assemble() {
 	)
 	const metadata = { ...identity }
 	delete metadata.version
-	const directory = await buildPackage({
+	const { directory, platforms } = await buildPackage({
 		version: input.version,
 		metadata,
 		dependencies: records,
@@ -342,8 +368,9 @@ async function assemble() {
 		cli.archive,
 		{ ...identity, version: input.version },
 		records,
+		platforms,
 	)
-	for (const record of records)
+	for (const record of [...platforms, ...records])
 		await copyFile(record.archive, path.join(output, record.filename))
 	const summary = (record) => ({
 		name: record.name,
@@ -357,7 +384,11 @@ async function assemble() {
 		formatVersion: 1,
 		...identity,
 		version: input.version,
-		artifacts: [summary(cli), ...records.map(summary)],
+		artifacts: [
+			summary(cli),
+			...platforms.map(summary),
+			...records.map(summary),
+		],
 	})
 }
 
@@ -416,7 +447,7 @@ async function bundle() {
 		manifest.version !== input.version ||
 		manifest.publicCommit !== identity.publicCommit ||
 		manifest.publicRepository !== identity.publicRepository ||
-		manifest.artifacts?.length !== 4 ||
+		manifest.artifacts?.length !== 4 + targets.length ||
 		Object.keys(manifest).some(
 			(key) =>
 				![
@@ -447,11 +478,21 @@ async function bundle() {
 			throw new Error(`Prepared archive changed: ${entry.name}`)
 		records.push({ ...entry, archive })
 	}
-	const cli = records.find((entry) => entry.name === '@bluink/cli')
-	if (!cli || new Set(records.map((entry) => entry.name)).size !== 4)
+	const cli = records.find((entry) => entry.name === packageName)
+	const platformNames = targets.map((target) => target.addonPackage)
+	const platforms = records.filter((entry) =>
+		platformNames.includes(entry.name),
+	)
+	if (
+		!cli ||
+		platforms.length !== targets.length ||
+		new Set(records.map((entry) => entry.name)).size !== 4 + targets.length
+	)
 		throw new Error('Incomplete prepared archive set.')
 	const dependencies = []
-	for (const record of records.filter((entry) => entry !== cli)) {
+	for (const record of records.filter(
+		(entry) => entry !== cli && !platforms.includes(entry),
+	)) {
 		frozenMatch(
 			record,
 			record.name === '@bluink/web'
@@ -483,26 +524,30 @@ async function bundle() {
 		cli.archive,
 		{ ...identity, version: input.version },
 		dependencies,
+		platforms,
 	)
 	return {
 		input,
 		identity,
 		manifest,
 		cli,
+		platforms,
 		dependencies,
 		nativeArtifacts: inspected.inspection,
 	}
 }
 
 async function smoke() {
-	const { input, identity, cli, dependencies } = await bundle()
-	const report = await smokePackage(
-		cli.archive,
-		input.version,
-		dependencies
+	const { input, identity, cli, platforms, dependencies } = await bundle()
+	const host = platforms.find(
+		(entry) => entry.name === nativeHostTarget().addonPackage,
+	)
+	const report = await smokePackage(cli.archive, input.version, [
+		host.archive,
+		...dependencies
 			.filter((entry) => entry.name !== '@bluink/web')
 			.map((entry) => entry.archive),
-	)
+	])
 	await mkdir(path.join(root, 'smoke-results'), { recursive: true })
 	await writeJson(
 		path.join(
@@ -597,25 +642,31 @@ async function verifiedBundle() {
 
 async function publish() {
 	await context(true)
-	const { identity, cli, dependencies } = await verifiedBundle()
+	const { identity, cli, platforms, dependencies } = await verifiedBundle()
 	await verifyRegistryProvenance(
 		dependencies.filter((entry) => entry.name !== '@bluink/web'),
 		identity,
 	)
-	await publishRecords([cli], {
+	// Platform packages first: the main package's shrinkwrap pins them.
+	await publishRecords([...platforms, cli], {
 		verifyExisting: (records) => verifyRegistryProvenance(records, identity),
 	})
 	await writeJson(
 		path.join(root, 'package-out/registry-verification.json'),
 		await verifyRegistryProvenance(
-			[...dependencies.filter((entry) => entry.name !== '@bluink/web'), cli],
+			[
+				...dependencies.filter((entry) => entry.name !== '@bluink/web'),
+				...platforms,
+				cli,
+			],
 			identity,
 		),
 	)
-	console.log(
-		'Verified npm distribution tag:',
-		await verifyRegistryTag(cli.name, cli.version),
-	)
+	for (const record of [...platforms, cli])
+		console.log(
+			'Verified npm distribution tag:',
+			await verifyRegistryTag(record.name, record.version),
+		)
 }
 
 if (

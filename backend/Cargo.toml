@@ -8,7 +8,11 @@ build = "build.rs"
 
 [workspace]
 resolver = "3"
-members = ["format"]
+members = ["addon", "format"]
+
+[lib]
+name = "bluink"
+path = "src/lib.rs"
 
 [[bin]]
 name = "bluink"

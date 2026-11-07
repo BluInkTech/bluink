@@ -12,9 +12,10 @@ mod resources;
 mod server;
 pub(crate) mod session;
 
+use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::Notify;
 
@@ -126,7 +127,32 @@ fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
         .build()
 }
 
-pub(crate) fn run() -> ExitCode {
+const SUCCESS: u8 = 0;
+const FAILURE: u8 = 1;
+
+/// How a host process such as Node starts Bluink in-process.
+pub struct Launch {
+    /// Command-line arguments, without the program name.
+    pub arguments: Vec<String>,
+    /// The installed `bluink` package. Inside a host the executable path
+    /// names the host, so the loader supplies the package it was loaded from.
+    pub package_root: Option<PathBuf>,
+}
+
+/// Who owns process signals: Bluink itself, or the host that loaded it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Signals {
+    Process,
+    Host,
+}
+
+/// The running embedded instance, for [`request_shutdown`]. A request that
+/// arrives before it starts is kept in `EARLY_SHUTDOWN` and applied on start.
+static EMBEDDED: Mutex<Option<Arc<Lifecycle>>> = Mutex::new(None);
+static EARLY_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// The executable: arguments from the process, signals handled by Bluink.
+pub fn run() -> ExitCode {
     let Some(arguments) = std::env::args_os()
         .skip(1)
         .map(std::ffi::OsString::into_string)
@@ -136,7 +162,32 @@ pub(crate) fn run() -> ExitCode {
         output::error("Arguments must be valid Unicode.");
         return ExitCode::FAILURE;
     };
-    let invocation = match cli::parse(&arguments) {
+    ExitCode::from(start(&arguments, Signals::Process))
+}
+
+/// Run inside a host process that owns signals and forwards a stop through
+/// [`request_shutdown`]. Blocks until Bluink finishes; returns the exit code.
+#[must_use]
+pub fn run_embedded(launch: Launch) -> u8 {
+    if let Some(root) = launch.package_root {
+        resources::use_package_root(root);
+    }
+    start(&launch.arguments, Signals::Host)
+}
+
+/// Ask the embedded instance to stop gracefully, exactly as Ctrl+C would.
+pub fn request_shutdown() {
+    let running = EMBEDDED.lock().ok().and_then(|instance| instance.clone());
+    match running {
+        Some(lifecycle) => {
+            lifecycle.request(true);
+        }
+        None => EARLY_SHUTDOWN.store(true, Ordering::Release),
+    }
+}
+
+fn start(arguments: &[String], signals: Signals) -> u8 {
+    let invocation = match cli::parse(arguments) {
         Ok(invocation) => invocation,
         Err(message) => {
             output::error(&message);
@@ -144,25 +195,25 @@ pub(crate) fn run() -> ExitCode {
                 output::line("");
                 cli::overall_help(&resources::version());
             }
-            return ExitCode::FAILURE;
+            return FAILURE;
         }
     };
     let (command, values, positionals) = match invocation {
         cli::Invocation::Version => {
-            output::line(&format!("@bluink/cli v{}", resources::version()));
-            return ExitCode::SUCCESS;
+            output::line(&format!("bluink v{}", resources::version()));
+            return SUCCESS;
         }
         cli::Invocation::Help(None) => {
             cli::overall_help(&resources::version());
-            return ExitCode::SUCCESS;
+            return SUCCESS;
         }
         cli::Invocation::Missing => {
             cli::overall_help(&resources::version());
-            return ExitCode::FAILURE;
+            return FAILURE;
         }
         cli::Invocation::Help(Some(command)) => {
             cli::command_help(command, &resources::version());
-            return ExitCode::SUCCESS;
+            return SUCCESS;
         }
         cli::Invocation::Run {
             command,
@@ -172,7 +223,7 @@ pub(crate) fn run() -> ExitCode {
     };
     if command.name == "build-info" {
         output::line(resources::build_identity());
-        return ExitCode::SUCCESS;
+        return SUCCESS;
     }
     if let Err(error) = crate::diagnostics::configure_native_diagnostics() {
         output::notice(&format!("Native diagnostics are unavailable: {error}"));
@@ -185,11 +236,21 @@ pub(crate) fn run() -> ExitCode {
         Ok(runtime) => runtime,
         Err(error) => {
             output::error(&format!("Cannot start Bluink's runtime: {error}"));
-            return ExitCode::FAILURE;
+            return FAILURE;
         }
     };
     let lifecycle = Arc::new(Lifecycle::default());
-    watch_signals(&runtime, &lifecycle);
+    match signals {
+        Signals::Process => watch_signals(&runtime, &lifecycle),
+        Signals::Host => {
+            if let Ok(mut instance) = EMBEDDED.lock() {
+                *instance = Some(Arc::clone(&lifecycle));
+            }
+            if EARLY_SHUTDOWN.swap(false, Ordering::AcqRel) {
+                lifecycle.request(true);
+            }
+        }
+    }
     let outcome = if command.name == "server" {
         server::run(&runtime, &lifecycle, &values)
     } else {
@@ -198,7 +259,12 @@ pub(crate) fn run() -> ExitCode {
     let drained = crate::diagnostics::shutdown_native_diagnostics();
     let finished = outcome.finish(&runtime);
     drop(runtime);
-    let mut code = ExitCode::SUCCESS;
+    if signals == Signals::Host
+        && let Ok(mut instance) = EMBEDDED.lock()
+    {
+        *instance = None;
+    }
+    let mut code = SUCCESS;
     if let Some(error) = finished.error {
         let interrupted = lifecycle.stopping()
             && matches!(
@@ -207,12 +273,12 @@ pub(crate) fn run() -> ExitCode {
             );
         if !interrupted {
             output::error(&format!("{error:#}"));
-            code = ExitCode::FAILURE;
+            code = FAILURE;
         }
     }
     if finished.cleanup_failed || drained.is_err() {
         output::notice("Backend cleanup failed");
-        code = ExitCode::FAILURE;
+        code = FAILURE;
     }
     code
 }

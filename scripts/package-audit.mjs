@@ -10,7 +10,7 @@ const forbiddenPath =
 const privateText =
 	/(?:\/home\/[^/\s"']+\/(?:github|projects)|\/mnt\/[a-z]\/Users\/|[A-Z]:[\\/](?:Users|github)[\\/]|codex\x2dclipboard\x2d|BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY|(?:npm|ghp|github_pat)_[A-Za-z0-9]{30,})/
 const sourceMap = /(?:[#@]\s*sourceMappingURL\s*=|["']sourcesContent["']\s*:)/
-const nativeExecutable = /^(?:bin\/bluink\.exe|runtime\/bluink-[\w.-]+)$/
+const nativeAddon = /^bluink\.node$/
 
 export async function filesIn(directory, prefix = '') {
 	const files = []
@@ -60,7 +60,7 @@ export async function auditDirectory(
 		// markers, which the compiler stores back to back or in fragments. Key
 		// material always starts on the line after a marker, so only a marker
 		// followed by a line break still counts as an embedded key.
-		if (nativeExecutable.test(file))
+		if (nativeAddon.test(file))
 			text = text.replaceAll(
 				/-----\x42EGIN (?:OPENSSH |RSA |ENCRYPTED |EC )?PRIVATE KEY-----(?![\r\n])/g,
 				'\0',
@@ -97,6 +97,11 @@ export const webFileAllowed = (file) =>
 	)
 export const cliFileAllowed = (file) =>
 	(file.startsWith('web/') && webFileAllowed(file.slice(4))) ||
-	/^(?:bin\/bluink\.exe|install\.mjs|package\.json|npm-shrinkwrap\.json|LICENSE|README\.md|THIRD_PARTY_NOTICES\.txt|release\.json|runtime\/bluink-(?:linux-x64|darwin-arm64)|vendor\/(?:(?:sample-pages|workspace-starter)\.json|workspace-setups\/[\w-]+\.json|themes\/(?:classic|editorial)\/(?:manifest\.json|html\/article\.html|site\/(?:page|listing)\.html)))$/.test(
+	/^(?:bin\/bluink\.mjs|package\.json|npm-shrinkwrap\.json|LICENSE|README\.md|THIRD_PARTY_NOTICES\.txt|release\.json|vendor\/(?:(?:sample-pages|workspace-starter)\.json|workspace-setups\/[\w-]+\.json|themes\/(?:classic|editorial)\/(?:manifest\.json|html\/article\.html|site\/(?:page|listing)\.html)))$/.test(
+		file,
+	)
+/** One platform's addon package: the addon, its manifest and notices. */
+export const platformFileAllowed = (file) =>
+	/^(?:package\.json|bluink\.node|LICENSE|README\.md|THIRD_PARTY_NOTICES\.txt)$/.test(
 		file,
 	)

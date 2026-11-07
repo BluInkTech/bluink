@@ -29,11 +29,8 @@ export async function writeCliArchive(directory, files, archive) {
 				throw new Error('CLI archive header limit exceeded.')
 			header.write(`${text.padStart(width - 1, '0')}\0`, offset, width)
 		}
-		octal(
-			file === 'bin/bluink.exe' || file.startsWith('runtime/') ? 0o755 : 0o644,
-			100,
-			8,
-		)
+		// npm marks the bin launcher executable when it links it.
+		octal(0o644, 100, 8)
 		octal(0, 108, 8)
 		octal(0, 116, 8)
 		octal(bytes.length, 124, 12)

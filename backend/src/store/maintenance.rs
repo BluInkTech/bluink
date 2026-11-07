@@ -206,8 +206,7 @@ const ORPHAN_BODIES: PruneTarget = PruneTarget {
     table: "body",
     keys: &["id"],
     predicate: "NOT EXISTS(SELECT 1 FROM item i WHERE i.body_id=body.id)
-        AND NOT EXISTS(SELECT 1 FROM revision r WHERE r.body_id=body.id)
-        AND NOT EXISTS(SELECT 1 FROM capture_item c WHERE c.body_id=body.id)",
+        AND NOT EXISTS(SELECT 1 FROM revision r WHERE r.body_id=body.id)",
 };
 
 fn candidates(

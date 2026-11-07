@@ -213,5 +213,45 @@
 				"sha256": "1c7cf76689c837a68ed8d704994e52a0f2940c087958f860d17f3186afbdcc0c"
 			}
 		]
+	},
+	"napi@3.12.6": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215.txt",
+				"url": "https://raw.githubusercontent.com/napi-rs/napi-rs/e2f21c67da882a0221e3c6fc59170d4e6c367c68/LICENSE",
+				"sha256": "3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215"
+			}
+		]
+	},
+	"napi-sys@3.3.1": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215.txt",
+				"url": "https://raw.githubusercontent.com/napi-rs/napi-rs/31c27a1676a7c4b317f4e144e0a9cb94e8354143/LICENSE",
+				"sha256": "3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215"
+			}
+		]
+	},
+	"napi-derive@3.6.7": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215.txt",
+				"url": "https://raw.githubusercontent.com/napi-rs/napi-rs/e2f21c67da882a0221e3c6fc59170d4e6c367c68/LICENSE",
+				"sha256": "3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215"
+			}
+		]
+	},
+	"napi-derive-backend@6.1.3": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215.txt",
+				"url": "https://raw.githubusercontent.com/napi-rs/napi-rs/31c27a1676a7c4b317f4e144e0a9cb94e8354143/LICENSE",
+				"sha256": "3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215"
+			}
+		]
 	}
 }

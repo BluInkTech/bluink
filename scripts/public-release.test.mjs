@@ -17,6 +17,10 @@ import path from 'node:path'
 import { contractHash } from './cli-build.mjs'
 import { frontendInput, stageFrontend } from './frontend-asset.mjs'
 import { packDirectory, productionLock } from './package-artifacts.mjs'
+import {
+	buildPlatformPackage,
+	releaseNativeEntry,
+} from './platform-package.mjs'
 import { cliFileAllowed } from './package-audit.mjs'
 import { readPreparedResources, resourceSummary } from './resource-packages.mjs'
 import {
@@ -27,8 +31,8 @@ import {
 	verifyCliArchive,
 } from './public-release.mjs'
 import {
+	fileHash as verifyDigest,
 	nativeSourceDigest,
-	packagedNativePath,
 	root,
 	targets,
 	verifyNativeArtifacts,
@@ -236,16 +240,16 @@ test('public release context binds version, repository, tag and protected OIDC p
 	)
 })
 
-test('official archive verification inspects embedded native identities and dependency metadata', async () => {
+test('official archive verification inspects platform addons and dependency metadata', async () => {
 	const directory = await mkdtemp(
 		path.join(os.tmpdir(), 'bluink-public-archive-'),
 	)
 	try {
 		const source = path.join(directory, 'input')
-		await mkdir(path.join(source, 'runtime'), { recursive: true })
-		await mkdir(path.join(source, 'bin'))
+		await mkdir(path.join(source, 'bin'), { recursive: true })
 		const identity = {
 			version: '26.10.7-alpha',
+			channel: 'alpha',
 			publicCommit: 'a'.repeat(40),
 			publicRepository: 'https://github.com/example/cli',
 		}
@@ -253,9 +257,7 @@ test('official archive verification inspects embedded native identities and depe
 			name: `@bluink/${kind}`,
 			version: identity.version,
 			integrity: 'sha512-Ynl0ZXM=',
-			manifest: {
-				license: kind === 'web' ? 'SEE LICENSE IN LICENSE' : 'MPL-2.0',
-			},
+			manifest: { license: 'MPL-2.0' },
 		}))
 		const webSource = path.join(directory, 'frontend')
 		await mkdir(path.join(webSource, 'assets'), { recursive: true })
@@ -281,20 +283,51 @@ test('official archive verification inspects embedded native identities and depe
 		)
 		await stageFrontend(web, path.join(source, 'web'))
 		const records = [...dependencies, web]
+		// One platform package per release target, each with a release addon.
+		const digest = await nativeSourceDigest()
+		const nativeDirectory = path.join(directory, 'native')
+		await mkdir(nativeDirectory)
+		const notices = path.join(directory, 'notices.txt')
+		await writeFile(notices, 'Synthetic notices.\n')
+		const addon = (target, overrides = {}) =>
+			`BLUINK_NATIVE_BUILD_INFO_V1:${JSON.stringify({ sourceDigest: digest, target: target.rust, mode: 'release', version: identity.version, publicCommit: identity.publicCommit, ...overrides })}:END_BLUINK_NATIVE_BUILD_INFO`
+		for (const target of targets)
+			await writeFile(path.join(nativeDirectory, target.addon), addon(target))
+		const native = await verifyNativeArtifacts(
+			nativeDirectory,
+			undefined,
+			false,
+			identity,
+		)
+		const platforms = []
+		for (const entry of native) {
+			const target = targets.find((value) => value.rust === entry.target)
+			platforms.push({
+				...(await buildPlatformPackage(target, entry, {
+					nativeDirectory,
+					version: identity.version,
+					license: 'MPL-2.0',
+					identity,
+					notices,
+					destination: path.join(directory, 'platforms'),
+				})),
+				native: entry,
+			})
+		}
 		const manifest = {
-			name: '@bluink/cli',
+			name: 'bluink',
 			version: identity.version,
 			license: 'MPL-2.0',
 			repository: { url: `${identity.publicRepository}.git` },
 			dependencies: Object.fromEntries(
 				dependencies.map(({ name, version }) => [name, version]),
 			),
-			bin: { bluink: 'bin/bluink.exe' },
-			scripts: { postinstall: 'node install.mjs' },
+			optionalDependencies: Object.fromEntries(
+				platforms.map(({ name, version }) => [name, version]),
+			),
+			bin: { bluink: 'bin/bluink.mjs' },
 			files: [
 				'bin',
-				'runtime',
-				'install.mjs',
 				'web',
 				'LICENSE',
 				'README.md',
@@ -303,15 +336,9 @@ test('official archive verification inspects embedded native identities and depe
 				'THIRD_PARTY_NOTICES.txt',
 			],
 		}
-		const digest = await nativeSourceDigest()
-		for (const target of targets)
-			await writeFile(
-				path.join(source, packagedNativePath(target)),
-				`BLUINK_NATIVE_BUILD_INFO_V1:${JSON.stringify({ sourceDigest: digest, target: target.rust, mode: 'release', version: identity.version, publicCommit: identity.publicCommit })}:END_BLUINK_NATIVE_BUILD_INFO`,
-			)
 		await copyFile(
-			path.join(root, 'scripts/package-install.mjs'),
-			path.join(source, 'install.mjs'),
+			path.join(root, 'scripts/package-launcher.mjs'),
+			path.join(source, 'bin/bluink.mjs'),
 		)
 		for (const file of ['LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.txt'])
 			await writeFile(
@@ -321,7 +348,6 @@ test('official archive verification inspects embedded native identities and depe
 		const metadata = {
 			format: 'bluink.release',
 			formatVersion: 1,
-			channel: 'alpha',
 			...identity,
 			name: manifest.name,
 			distribution: 'all-platforms',
@@ -337,69 +363,95 @@ test('official archive verification inspects embedded native identities and depe
 				version,
 				integrity,
 			})),
-			native: await verifyNativeArtifacts(source, undefined, false, identity, {
-				packaged: true,
-			}),
+			native: platforms.map((entry) => releaseNativeEntry(entry, entry.native)),
 		}
-		await writeJson(path.join(source, 'package.json'), manifest)
-		await writeJson(
-			path.join(source, 'npm-shrinkwrap.json'),
-			productionLock(manifest, dependencies),
-		)
+		const writeManifest = async () => {
+			await writeJson(path.join(source, 'package.json'), manifest)
+			await writeJson(
+				path.join(source, 'npm-shrinkwrap.json'),
+				productionLock(manifest, [...dependencies, ...platforms]),
+			)
+		}
+		await writeManifest()
 		const packed = async () => {
 			await writeJson(path.join(source, 'release.json'), metadata)
 			return packDirectory(source, path.join(directory, 'output'), {
 				allowed: cliFileAllowed,
 			})
 		}
+		const verify = async (platformRecords = platforms) =>
+			verifyCliArchive(
+				(await packed()).archive,
+				identity,
+				records,
+				platformRecords,
+			)
 		const first = await packed()
 		await chmod(path.join(source, 'LICENSE'), 0o755)
 		await utimes(path.join(source, 'LICENSE'), new Date(), new Date())
 		assert.equal((await packed()).sha256, first.sha256)
 		assert.equal(
-			(await verifyCliArchive(first.archive, identity, records)).inspection
-				.length,
+			(await verifyCliArchive(first.archive, identity, records, platforms))
+				.inspection.length,
 			3,
 		)
-		metadata.dependencies[0].integrity = 'sha512-Y2hhbmdlZA=='
-		await assert.rejects(
-			verifyCliArchive((await packed()).archive, identity, records),
-			/dependency identity/,
+		const lock = await readFile(
+			path.join(source, 'npm-shrinkwrap.json'),
+			'utf8',
 		)
+		const pinned =
+			JSON.parse(lock).packages['node_modules/@bluink/cli-win32-x64']
+		assert.deepEqual(
+			[pinned.optional, pinned.os, pinned.cpu],
+			[true, ['win32'], ['x64']],
+		)
+		metadata.dependencies[0].integrity = 'sha512-Y2hhbmdlZA=='
+		await assert.rejects(verify(), /dependency identity/)
 		metadata.dependencies[0].integrity = dependencies[0].integrity
 		metadata.version = '26.10.8-alpha'
-		await assert.rejects(
-			verifyCliArchive((await packed()).archive, identity, records),
-			/public release identity/,
-		)
+		await assert.rejects(verify(), /public release identity/)
 		metadata.version = identity.version
-		manifest.bin = { bluink: 'bluink' }
-		await writeJson(path.join(source, 'package.json'), manifest)
-		await assert.rejects(
-			verifyCliArchive((await packed()).archive, identity, records),
-			/public release identity/,
-		)
 		manifest.bin = { bluink: 'bin/bluink.exe' }
-		await writeJson(path.join(source, 'package.json'), manifest)
-		const windows = metadata.native[1].path
-		metadata.native[1].path = 'runtime/bluink-win32-x64.exe'
-		await assert.rejects(
-			verifyCliArchive((await packed()).archive, identity, records),
-			/Native manifest/,
+		await writeManifest()
+		await assert.rejects(verify(), /public release identity/)
+		manifest.bin = { bluink: 'bin/bluink.mjs' }
+		manifest.scripts = { postinstall: 'node install.mjs' }
+		await writeManifest()
+		await assert.rejects(verify(), /public release identity/)
+		delete manifest.scripts
+		await writeManifest()
+		const sha = metadata.native[0].addon.sha256
+		metadata.native[0].addon.sha256 = 'f'.repeat(64)
+		await assert.rejects(verify(), /Native manifest/)
+		metadata.native[0].addon.sha256 = sha
+		await assert.rejects(verify(platforms.slice(1)), /Missing platform package/)
+		// A platform package whose addon is a development build is refused.
+		const linux = targets[0]
+		await writeFile(
+			path.join(nativeDirectory, linux.addon),
+			addon(linux, { mode: 'development' }),
 		)
-		metadata.native[1].path = windows
-		const linux = metadata.native[0].sha256
-		metadata.native[0].sha256 = 'f'.repeat(64)
-		await assert.rejects(
-			verifyCliArchive((await packed()).archive, identity, records),
-			/Native manifest/,
+		const development = await buildPlatformPackage(
+			linux,
+			{
+				...native[0],
+				sha256: await verifyDigest(path.join(nativeDirectory, linux.addon)),
+			},
+			{
+				nativeDirectory,
+				version: identity.version,
+				license: 'MPL-2.0',
+				identity,
+				notices,
+				destination: path.join(directory, 'development'),
+			},
 		)
-		metadata.native[0].sha256 = linux
-		await appendFile(path.join(source, 'install.mjs'), '// altered')
 		await assert.rejects(
-			verifyCliArchive((await packed()).archive, identity, records),
-			/install step differs/,
+			verify([development, ...platforms.slice(1)]),
+			/wrong release identity/,
 		)
+		await appendFile(path.join(source, 'bin/bluink.mjs'), '// altered')
+		await assert.rejects(verify(), /launcher differs/)
 	} finally {
 		await rm(directory, { recursive: true, force: true })
 	}

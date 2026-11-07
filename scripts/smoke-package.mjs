@@ -2,16 +2,19 @@ import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import {
 	fileHash,
 	json,
 	nativeHostTarget,
 	npm,
-	packageExecutable,
+	packageLauncher,
+	packageName,
+	platformAddon,
 	root,
 	run,
+	targets,
 } from './release-utils.mjs'
 
 /** HTTP media types may carry parameters such as a charset. */
@@ -89,10 +92,10 @@ async function checkInterface(origin) {
 
 /** Start a plain server on a fresh project, check it, then stop it through
  * standard input as a supervisor would. Windows cannot signal the child. */
-async function checkServer(executable, project, env) {
+async function checkServer(launcher, project, env) {
 	const child = spawn(
-		executable,
-		['server', '--no-tui', '--port', '0', '--project', project],
+		process.execPath,
+		[launcher, 'server', '--no-tui', '--port', '0', '--project', project],
 		{ cwd: path.dirname(project), env, stdio: ['pipe', 'pipe', 'pipe'] },
 	)
 	let output = ''
@@ -139,8 +142,8 @@ async function checkServer(executable, project, env) {
 		throw new Error('The packaged server did not create a fresh project.')
 }
 
-/** Exercise an npm-installed archive, including its install step and the
- * actual global command shim. */
+/** Exercise an npm-installed archive through the actual global command shim.
+ * `resources` are the dependency archives and this machine's platform package. */
 export async function smokePackage(archive, expectedVersion, resources) {
 	const temporary = await mkdtemp(
 		path.join(os.tmpdir(), 'bluink-package-smoke-'),
@@ -159,28 +162,28 @@ export async function smokePackage(archive, expectedVersion, resources) {
 			(await json(path.join(root, '.resource-packages/dependencies.json'))).map(
 				(entry) => entry.archive,
 			)
-		// npm matches local installers by file identity, not the manifest's name.
-		// Trust only this verified CLI archive; registry installs use @bluink/cli.
+		// No package has an install script, so npm's default script policy applies
+		// unchanged. The shrinkwrap pins every dependency's integrity, and the
+		// archives installed alongside satisfy those pins offline.
 		await npm([
 			'install',
 			'--global',
-			`--allow-scripts=${pathToFileURL(path.resolve(archive)).href}`,
 			'--prefix',
 			prefix,
 			'--no-audit',
 			'--no-fund',
 			'--offline',
-			...resourceArchives.filter(
-				(file) => !path.basename(file).startsWith('bluink-web-'),
-			),
+			// Absolute paths: npm reads a relative `dir/file.tgz` as a GitHub repository.
+			...resourceArchives
+				.filter((file) => !path.basename(file).startsWith('bluink-web-'))
+				.map((file) => path.resolve(file)),
 			path.resolve(archive),
 		])
 		const packageRoot = path.join(
 			prefix,
 			...(process.platform === 'win32' ? [] : ['lib']),
 			'node_modules',
-			'@bluink',
-			'cli',
+			packageName,
 		)
 		const manifest = await json(path.join(packageRoot, 'package.json'))
 		const cliVersion = expectedVersion ?? manifest.version
@@ -195,15 +198,14 @@ export async function smokePackage(archive, expectedVersion, resources) {
 				'CLI frontend must be bundled at the matching version, without an npm Web dependency.',
 			)
 		if (
-			manifest.name !== '@bluink/cli' ||
+			manifest.name !== packageName ||
 			manifest.version !== cliVersion ||
-			manifest.bin?.bluink !== packageExecutable ||
-			manifest.scripts?.postinstall !== 'node install.mjs'
+			manifest.bin?.bluink !== packageLauncher ||
+			manifest.scripts !== undefined
 		)
 			throw new Error('Installed package identity or CLI version is incorrect.')
 		for (const relative of [
-			packageExecutable,
-			'install.mjs',
+			packageLauncher,
 			'THIRD_PARTY_NOTICES.txt',
 			'LICENSE',
 			'README.md',
@@ -214,7 +216,6 @@ export async function smokePackage(archive, expectedVersion, resources) {
 			'vendor/themes/classic/manifest.json',
 			'vendor/themes/editorial/manifest.json',
 			'vendor/themes/classic/html/article.html',
-			...release.native.map((entry) => entry.path),
 		]) {
 			if (
 				!(
@@ -224,18 +225,46 @@ export async function smokePackage(archive, expectedVersion, resources) {
 				throw new Error(`Missing packaged file: ${relative}`)
 		}
 		const target = nativeHostTarget()
-		const host = release.native.find((entry) => entry.target === target.rust)
-		if (!host) throw new Error(`The package has no ${target.rust} executable.`)
-		const executable = path.join(packageRoot, packageExecutable)
-		if ((await fileHash(executable)) !== host.sha256)
-			throw new Error(
-				`Installation did not place the ${target.rust} executable at ${packageExecutable}.`,
-			)
-		if (
-			process.platform !== 'win32' &&
-			((await stat(executable)).mode & 0o111) === 0
+		const host = release.native.find(
+			(entry) => entry.addon.target === target.rust,
 		)
-			throw new Error(`Installed ${packageExecutable} is not executable.`)
+		if (!host || host.name !== target.addonPackage)
+			throw new Error(`The package has no ${target.rust} platform package.`)
+		const installedRequire = createRequire(
+			path.join(packageRoot, 'package.json'),
+		)
+		const installedRoot = async (name) =>
+			path.dirname(installedRequire.resolve(name))
+		// npm installs only this machine's platform package, at the pinned version.
+		const platformRoot = path.dirname(
+			installedRequire.resolve(`${target.addonPackage}/package.json`),
+		)
+		const platform = await json(path.join(platformRoot, 'package.json'))
+		if (
+			platform.version !== host.version ||
+			manifest.optionalDependencies?.[target.addonPackage] !== host.version ||
+			(await fileHash(path.join(platformRoot, platformAddon))) !==
+				host.addon.sha256
+		)
+			throw new Error(
+				`Installation did not place the verified ${target.rust} addon.`,
+			)
+		for (const other of targets.filter((entry) => entry !== target))
+			if (
+				(() => {
+					try {
+						return installedRequire.resolve(
+							`${other.addonPackage}/package.json`,
+						)
+					} catch {
+						return undefined
+					}
+				})()
+			)
+				throw new Error(
+					`npm installed another platform's package: ${other.addonPackage}`,
+				)
+		const launcher = path.join(packageRoot, packageLauncher)
 		// The global shim: npm's cmd shim on Windows, a symlink elsewhere.
 		const bin = process.platform === 'win32' ? prefix : path.join(prefix, 'bin')
 		const shimEnv = {
@@ -256,25 +285,19 @@ export async function smokePackage(archive, expectedVersion, resources) {
 				`Installed bluink command reports the wrong version: ${version}`,
 			)
 		const buildInfo = JSON.parse(await shim(['build-info']))
+		const expected = {
+			...host.addon,
+			version: cliVersion,
+			publicCommit: release.publicCommit,
+		}
 		if (
 			['sourceDigest', 'target', 'version', 'mode', 'publicCommit'].some(
-				(key) => buildInfo[key] !== host[key],
+				(key) => buildInfo[key] !== expected[key],
 			)
 		)
 			throw new Error(
 				`Installed bluink reports a different build: ${JSON.stringify(buildInfo)}`,
 			)
-		// Re-running the install step must leave the selected executable intact.
-		await runInstalled(process.execPath, ['install.mjs'], { cwd: packageRoot })
-		if ((await fileHash(executable)) !== host.sha256)
-			throw new Error(
-				'Re-running install.mjs changed the installed executable.',
-			)
-		const installedRequire = createRequire(
-			path.join(packageRoot, 'package.json'),
-		)
-		const installedRoot = async (name) =>
-			path.dirname(installedRequire.resolve(name))
 		for (const dependency of release.dependencies) {
 			const installed = await json(
 				path.join(await installedRoot(dependency.name), 'package.json'),
@@ -307,7 +330,7 @@ export async function smokePackage(archive, expectedVersion, resources) {
 		if (wordFonts.schemaVersion !== 1 || !wordFonts.fonts.length)
 			throw new Error('Installed Word font manifest is missing or unsupported.')
 		const project = path.join(temporary, 'project')
-		const cli = (...args) => runInstalled(executable, args)
+		const cli = (...args) => runInstalled(process.execPath, [launcher, ...args])
 		await cli(
 			'import',
 			'--source',
@@ -383,7 +406,7 @@ export async function smokePackage(archive, expectedVersion, resources) {
 			)
 		)
 			throw new Error('Packaged site output is missing the root page.')
-		await checkServer(executable, path.join(temporary, 'fresh-project'), env)
+		await checkServer(launcher, path.join(temporary, 'fresh-project'), env)
 		console.log(
 			`Installed command, server and exports pass on ${process.platform}/${process.arch}.`,
 		)
@@ -392,7 +415,8 @@ export async function smokePackage(archive, expectedVersion, resources) {
 			arch: process.arch,
 			status: 'passed',
 			checks: [
-				'install step selects the platform executable',
+				'npm installs only the matching platform addon package',
+				'no install scripts',
 				'global command version and build identity',
 				'bundled Typst',
 				'note HTML/PDF',
@@ -411,6 +435,13 @@ if (
 	process.argv[1] &&
 	path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
-	if (!process.argv[2]) throw new Error('Pass the packaged Bluink .tgz file.')
-	await smokePackage(process.argv[2])
+	const [archive, ...platforms] = process.argv.slice(2)
+	if (!archive || !platforms.length)
+		throw new Error(
+			"Pass the packaged bluink .tgz file and this platform's @bluink/cli-* .tgz file.",
+		)
+	const resources = (
+		await json(path.join(root, '.resource-packages/dependencies.json'))
+	).map((entry) => entry.archive)
+	await smokePackage(archive, undefined, [...platforms, ...resources])
 }

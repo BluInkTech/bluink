@@ -50,21 +50,18 @@ CREATE TABLE capture_item (
     generation INTEGER NOT NULL,
     operation TEXT NOT NULL CHECK (operation IN ('upsert', 'delete')),
     source_kind TEXT NOT NULL CHECK (source_kind IN ('item', 'record', 'asset')),
+    -- An item is read back through its pinned exact revision. Project records
+    -- keep no retained revisions, so their small JSON is frozen here.
     item_id INTEGER REFERENCES entity(id),
     revision_uuid TEXT,
-    header_json TEXT CHECK (header_json IS NULL OR json_valid(header_json)),
-    body_id INTEGER REFERENCES body(id),
-    memberships_json TEXT CHECK (memberships_json IS NULL OR json_valid(memberships_json)),
     record_json TEXT CHECK (record_json IS NULL OR json_valid(record_json)),
     object_oid TEXT REFERENCES asset(oid),
     PRIMARY KEY (capture_id, path),
     CHECK (operation = 'delete' OR
-       (source_kind = 'item' AND item_id IS NOT NULL AND revision_uuid IS NOT NULL
-        AND header_json IS NOT NULL AND body_id IS NOT NULL AND memberships_json IS NOT NULL) OR
+       (source_kind = 'item' AND item_id IS NOT NULL AND revision_uuid IS NOT NULL) OR
        (source_kind = 'record' AND record_json IS NOT NULL) OR
        (source_kind = 'asset' AND object_oid IS NOT NULL))
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX capture_item_by_body ON capture_item(body_id) WHERE body_id IS NOT NULL;
 CREATE INDEX capture_item_by_item ON capture_item(item_id);
 CREATE INDEX capture_item_by_object ON capture_item(object_oid);
 

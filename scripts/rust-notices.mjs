@@ -43,7 +43,7 @@ export async function dependencyLicenseTexts(pkg) {
 	)
 }
 
-/** Preserve licence texts for the locked normal dependency graph on all targets. */
+/** Preserve licence texts for the shipped addon's locked normal dependency graph on all targets. */
 export async function rustNotices(destination) {
 	const metadata = JSON.parse(
 		await run(
@@ -101,7 +101,13 @@ export async function rustNotices(destination) {
 			if (dependency.dep_kinds.some((kind) => kind.kind === null))
 				await visit(dependency.pkg)
 	}
-	await visit(metadata.resolve.root)
+	// Releases ship the addon, which links the bluink library and napi.
+	const addon = metadata.packages.find(
+		(entry) => entry.name === 'bluink-addon' && !entry.source,
+	)
+	if (!addon)
+		throw new Error('The bluink-addon crate is missing from the workspace.')
+	await visit(addon.id)
 	await writeFile(
 		destination,
 		notices

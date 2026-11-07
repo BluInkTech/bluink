@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2023–2026 BluInk
 
-import { chmod, cp, mkdir, readFile, rm } from 'node:fs/promises'
+import { cp, mkdir, readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { contractHash, prepareCliBuild, verifyCliBuild } from './cli-build.mjs'
 import { stageFrontend } from './frontend-asset.mjs'
 import { productionLock, verifyArchive } from './package-artifacts.mjs'
+import {
+	buildPlatformPackage,
+	releaseNativeEntry,
+} from './platform-package.mjs'
 import { publicIdentity } from './release-identity.mjs'
 import { resourceFileAllowed } from './resource-packages.mjs'
 import {
@@ -18,8 +22,7 @@ import {
 	json,
 	nativeDirectory as nativeOutputDirectory,
 	npm,
-	packageExecutable,
-	packagedNativePath,
+	packageLauncher,
 	root,
 	sha256,
 	targets,
@@ -27,7 +30,10 @@ import {
 	writeJson,
 } from './release-utils.mjs'
 
-/** Public assembly consumes fixed archives; it never compiles frontend source. */
+/** Public assembly consumes fixed archives; it never compiles frontend source.
+ * Each platform's addon becomes its own package, packed under `platforms` before
+ * the main package pins it as an optional dependency. Returns the staged main
+ * package directory and the packed platform archives. */
 export async function buildPackage({
 	version,
 	metadata,
@@ -36,6 +42,7 @@ export async function buildPackage({
 	hostOnly = false,
 	preparedDirectory,
 	destination = path.join(root, 'release'),
+	platforms: platformDestination = `${destination}-platforms`,
 } = {}) {
 	if (!dependencies?.length)
 		throw new Error(
@@ -112,7 +119,7 @@ export async function buildPackage({
 	await mkdir(directory, { recursive: true })
 	await stageFrontend(web, path.join(directory, 'web'))
 	for (const [from, to] of [
-		['scripts/package-install.mjs', 'install.mjs'],
+		['scripts/package-launcher.mjs', packageLauncher],
 		['backend/LICENSE', 'LICENSE'],
 		['backend/PACKAGE-README.md', 'README.md'],
 		['backend/resources', 'vendor'],
@@ -124,27 +131,26 @@ export async function buildPackage({
 		path.join(buildDirectory, 'THIRD_PARTY_NOTICES.txt'),
 		path.join(directory, 'THIRD_PARTY_NOTICES.txt'),
 	)
+	await rm(platformDestination, { recursive: true, force: true })
+	await mkdir(platformDestination, { recursive: true })
+	const platforms = []
 	for (const entry of native) {
 		const target = targets.find((value) => value.rust === entry.target)
-		const file = path.join(directory, packagedNativePath(target, hostOnly))
-		await mkdir(path.dirname(file), { recursive: true })
-		await cp(path.join(nativeDirectory, entry.file), file)
-		await chmod(file, 0o755)
+		const archive = await buildPlatformPackage(target, entry, {
+			nativeDirectory,
+			version: productVersion,
+			license: source.license,
+			identity,
+			notices: path.join(buildDirectory, 'THIRD_PARTY_NOTICES.txt'),
+			destination: platformDestination,
+		})
+		platforms.push({ ...archive, native: entry })
 	}
-	// Re-read the staged bytes so release.json records exactly what is packed.
-	const packaged = await verifyNativeArtifacts(
-		directory,
-		undefined,
-		hostOnly,
-		{ version: productVersion, publicCommit: identity.publicCommit },
-		{ packaged: true },
-	)
 	const manifest = {
 		name: source.name,
 		version: productVersion,
 		description: source.description,
-		bin: { bluink: packageExecutable },
-		scripts: { postinstall: 'node install.mjs' },
+		bin: { bluink: packageLauncher },
 		engines: source.engines,
 		license: source.license,
 		homepage: 'https://bluink.app',
@@ -160,6 +166,9 @@ export async function buildPackage({
 				.filter((entry) => entry.name !== '@bluink/web')
 				.map((entry) => [entry.name, entry.version]),
 		),
+		optionalDependencies: Object.fromEntries(
+			platforms.map((entry) => [entry.name, entry.version]),
+		),
 		publishConfig: {
 			access: 'public',
 			tag: identity.channel === 'stable' ? 'latest' : identity.channel,
@@ -169,7 +178,7 @@ export async function buildPackage({
 	await writeJson(path.join(directory, 'package.json'), manifest)
 	await writeJson(
 		path.join(directory, 'npm-shrinkwrap.json'),
-		productionLock(manifest, dependencies),
+		productionLock(manifest, [...dependencies, ...platforms]),
 	)
 	await writeJson(path.join(directory, 'release.json'), {
 		format: 'bluink.release',
@@ -192,19 +201,20 @@ export async function buildPackage({
 				version,
 				integrity,
 			})),
-		native: packaged,
+		native: platforms.map((entry) => releaseNativeEntry(entry, entry.native)),
 	})
 	await auditDirectory(directory, {
 		allowed: cliFileAllowed,
 		required: [
-			packageExecutable,
-			'install.mjs',
+			packageLauncher,
 			'npm-shrinkwrap.json',
 			'THIRD_PARTY_NOTICES.txt',
 		],
 	})
-	console.log(`Staged ${manifest.name}@${manifest.version}.`)
-	return directory
+	console.log(
+		`Staged ${manifest.name}@${manifest.version} and ${platforms.map((entry) => entry.name).join(', ')}.`,
+	)
+	return { directory, platforms }
 }
 
 if (

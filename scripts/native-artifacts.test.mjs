@@ -7,7 +7,7 @@ import test from 'node:test'
 import {
 	nativeBuildInfo,
 	nativeSourceDigest,
-	packagedNativePath,
+	platformAddon,
 	targets,
 	verifyNativeArtifacts,
 } from './release-utils.mjs'
@@ -21,6 +21,9 @@ test('shared Rust format changes invalidate native artifacts while UI starters d
 		for (const file of [
 			'backend/src/main.rs',
 			'backend/format/src/canonical_json.rs',
+			'backend/addon/src/lib.rs',
+			'backend/addon/Cargo.toml',
+			'backend/addon/build.rs',
 			'backend/resources/workspace-starter.json',
 			'rust-toolchain.toml',
 			'fonts/catalogue.json',
@@ -45,7 +48,13 @@ test('shared Rust format changes invalidate native artifacts while UI starters d
 			path.join(directory, 'backend/format/src/canonical_json.rs'),
 			'new encoding',
 		)
-		assert.notEqual(await nativeSourceDigest(directory), before)
+		const encoding = await nativeSourceDigest(directory)
+		assert.notEqual(encoding, before)
+		await writeFile(
+			path.join(directory, 'backend/addon/src/lib.rs'),
+			'new loader',
+		)
+		assert.notEqual(await nativeSourceDigest(directory), encoding)
 	} finally {
 		await rm(directory, { recursive: true, force: true })
 	}
@@ -89,10 +98,7 @@ test('native verification checks every target, release version and public commit
 			/Missing/,
 		)
 		for (const target of targets)
-			await writeFile(
-				path.join(directory, target.artifact),
-				marker(target.rust),
-			)
+			await writeFile(path.join(directory, target.addon), marker(target.rust))
 		assert.equal(
 			(await verifyNativeArtifacts(directory, 'current', false, identity))
 				.length,
@@ -101,7 +107,7 @@ test('native verification checks every target, release version and public commit
 		const target = targets[2]
 		for (const mode of ['development', undefined, 'unknown']) {
 			await writeFile(
-				path.join(directory, target.artifact),
+				path.join(directory, target.addon),
 				marker(target.rust, { mode }),
 			)
 			await assert.rejects(
@@ -115,7 +121,7 @@ test('native verification checks every target, release version and public commit
 			{ gitCommit: 'private' },
 		]) {
 			await writeFile(
-				path.join(directory, target.artifact),
+				path.join(directory, target.addon),
 				marker(target.rust, overrides),
 			)
 			await assert.rejects(
@@ -124,14 +130,14 @@ test('native verification checks every target, release version and public commit
 			)
 		}
 		await writeFile(
-			path.join(directory, target.artifact),
+			path.join(directory, target.addon),
 			marker(target.rust, { sourceDigest: 'stale' }),
 		)
 		await assert.rejects(
 			verifyNativeArtifacts(directory, 'current', false, identity),
 			/Stale or mismatched/,
 		)
-		await writeFile(path.join(directory, target.artifact), 'unidentified')
+		await writeFile(path.join(directory, target.addon), 'unidentified')
 		await assert.rejects(
 			verifyNativeArtifacts(directory, 'current', false, identity),
 			/no build identity/,
@@ -141,14 +147,14 @@ test('native verification checks every target, release version and public commit
 	}
 })
 
-test('packaged verification reads npm bin and runtime paths and records them', async () => {
+test('native verification reads each released addon and names its platform package', async () => {
 	const directory = await mkdtemp(path.join(os.tmpdir(), 'bluink-packaged-'))
 	const identity = { version: '26.10.1-alpha', publicCommit: 'a'.repeat(40) }
 	const marker = (target) =>
 		`BLUINK_NATIVE_BUILD_INFO_V1:${JSON.stringify({ sourceDigest: 'current', target, mode: 'release', ...identity })}:END_BLUINK_NATIVE_BUILD_INFO`
 	try {
 		for (const target of targets) {
-			const file = path.join(directory, packagedNativePath(target))
+			const file = path.join(directory, target.platform, platformAddon)
 			await mkdir(path.dirname(file), { recursive: true })
 			await writeFile(file, marker(target.rust))
 		}
@@ -157,31 +163,27 @@ test('packaged verification reads npm bin and runtime paths and records them', a
 			'current',
 			false,
 			identity,
-			{ packaged: true },
+			{
+				locate: (target) =>
+					path.join(directory, target.platform, platformAddon),
+			},
 		)
 		assert.deepEqual(
-			native.map((entry) => [entry.file, entry.path]),
+			native.map((entry) => [entry.file, entry.package]),
 			[
-				['bluink-linux-x64', 'runtime/bluink-linux-x64'],
-				['bluink-win32-x64.exe', 'bin/bluink.exe'],
-				['bluink-darwin-arm64', 'runtime/bluink-darwin-arm64'],
+				['bluink-linux-x64-gnu.node', '@bluink/cli-linux-x64-gnu'],
+				['bluink-win32-x64.node', '@bluink/cli-win32-x64'],
+				['bluink-darwin-arm64.node', '@bluink/cli-darwin-arm64'],
 			],
 		)
-		// The Windows executable is only ever at the bin path in a package.
+		// Leave only the Linux build output missing so parallel reads can report
+		// a single failure regardless of which finishes first.
+		for (const target of targets.slice(1))
+			await writeFile(path.join(directory, target.addon), marker(target.rust))
 		await assert.rejects(
-			verifyNativeArtifacts(
-				path.join(directory, 'runtime'),
-				'current',
-				false,
-				identity,
-			),
-			/Missing bluink-win32-x64\.exe/,
+			verifyNativeArtifacts(directory, 'current', false, identity),
+			/Missing bluink-linux-x64-gnu\.node/,
 		)
-		const host = targets.find(
-			(value) =>
-				value.platform === process.platform && value.arch === process.arch,
-		)
-		assert.equal(packagedNativePath(host, true), 'bin/bluink.exe')
 	} finally {
 		await rm(directory, { recursive: true, force: true })
 	}

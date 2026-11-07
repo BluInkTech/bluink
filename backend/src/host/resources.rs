@@ -7,6 +7,7 @@
 //! `node_modules` folders exactly as Node would resolve them.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
@@ -40,11 +41,22 @@ fn resource_directory(root: &Path) -> PathBuf {
     })
 }
 
-/// The package root: `BLUINK_PACKAGE_ROOT`, or the nearest ancestor of the
-/// executable holding `package.json` and the workspace starter.
+/// Set once by a host that loaded Bluink, whose own executable is not Bluink's.
+static LOADED_FROM: OnceLock<PathBuf> = OnceLock::new();
+
+pub(super) fn use_package_root(root: PathBuf) {
+    let _ = LOADED_FROM.set(root);
+}
+
+/// The package root: `BLUINK_PACKAGE_ROOT`, the package a host loaded Bluink
+/// from, or the nearest ancestor of the executable holding `package.json` and
+/// the workspace starter.
 pub(super) fn package_root() -> Result<PathBuf, String> {
     if let Some(root) = std::env::var_os("BLUINK_PACKAGE_ROOT") {
         return Ok(PathBuf::from(root));
+    }
+    if let Some(root) = LOADED_FROM.get() {
+        return Ok(root.clone());
     }
     let executable = std::env::current_exe()
         .and_then(std::fs::canonicalize)
@@ -250,7 +262,7 @@ mod tests {
         let package = root.path().join("node_modules/@bluink/fonts");
         std::fs::create_dir_all(&package).unwrap();
         std::fs::write(package.join("package.json"), r#"{"version":"1.2.3"}"#).unwrap();
-        let nested = root.path().join("node_modules/@bluink/cli");
+        let nested = root.path().join("node_modules/bluink");
         std::fs::create_dir_all(&nested).unwrap();
         assert_eq!(
             node_package(&nested, "@bluink/fonts"),

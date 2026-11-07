@@ -125,11 +125,10 @@ export async function buildNative(
 	]
 		.filter(Boolean)
 		.join('\u001f')
-	const args = [
+	const cargo = (selection) => [
 		'build',
 		'--locked',
-		'--bin',
-		'bluink',
+		...selection,
 		'--profile',
 		mode,
 		'--manifest-path',
@@ -137,12 +136,28 @@ export async function buildNative(
 		'--target',
 		target.rust,
 	]
+	// The executable for development and tests; the addon Node loads in packages.
+	const builds = [
+		['--bin', 'bluink'],
+		['--package', 'bluink-addon', '--lib'],
+	]
 	const compiledFile = (targetRoot) =>
 		path.join(
 			targetRoot,
 			target.rust,
 			mode,
 			target.platform === 'win32' ? 'bluink.exe' : 'bluink',
+		)
+	const compiledAddon = (targetRoot) =>
+		path.join(
+			targetRoot,
+			target.rust,
+			mode,
+			{
+				win32: 'bluink_addon.dll',
+				darwin: 'libbluink_addon.dylib',
+				linux: 'libbluink_addon.so',
+			}[target.platform],
 		)
 	if (mode === 'release' && process.platform === 'win32') {
 		// Registry C sources are absolute in libgit2's __FILE__.
@@ -153,52 +168,71 @@ export async function buildNative(
 		]
 			.filter(Boolean)
 			.join(' ')
-		await withWindowsBuildDrive(targetDirectory, (drive) =>
-			command(args, {
-				env: { ...env, CARGO_TARGET_DIR: drive },
-				cwd: workspaceRoot,
-			}),
-		)
-	} else await command(args, { env, cwd: workspaceRoot })
+		await withWindowsBuildDrive(targetDirectory, async (drive) => {
+			for (const selection of builds)
+				await command(cargo(selection), {
+					env: { ...env, CARGO_TARGET_DIR: drive },
+					cwd: workspaceRoot,
+				})
+		})
+	} else
+		for (const selection of builds)
+			await command(cargo(selection), { env, cwd: workspaceRoot })
 	if (sourceDigest !== (await nativeSourceDigest(workspaceRoot)))
 		throw new Error(
 			'Native sources changed while compiling. Run the build again.',
 		)
-	const artifact = path.join(directory, target.artifact)
-	const bytes = await readFile(compiledFile(targetDirectory))
-	const compiled = nativeBuildInfo(bytes)
-	if (
-		compiled.sourceDigest !== sourceDigest ||
-		compiled.target !== target.rust ||
-		compiled.mode !== mode ||
-		compiled.version !== version ||
-		compiled.publicCommit !== publicCommit
-	)
-		throw new Error(
-			'The compiler did not produce the requested native build identity.',
+	const outputs = [
+		[target.artifact, compiledFile(targetDirectory), 'executable'],
+		[target.addon, compiledAddon(targetDirectory), 'addon'],
+	].map(([name, compiledPath, kind]) => ({
+		name,
+		compiledPath,
+		kind,
+		artifact: path.join(directory, name),
+	}))
+	let compiled
+	for (const output of outputs) {
+		output.bytes = await readFile(output.compiledPath)
+		output.identity = nativeBuildInfo(output.bytes)
+		if (
+			output.identity.sourceDigest !== sourceDigest ||
+			output.identity.target !== target.rust ||
+			output.identity.mode !== mode ||
+			output.identity.version !== version ||
+			output.identity.publicCommit !== publicCommit
 		)
-	await mkdir(path.dirname(artifact), { recursive: true })
+			throw new Error(
+				`The compiler did not produce the requested native build identity for the ${output.kind}.`,
+			)
+		compiled ??= output.identity
+	}
+	await mkdir(directory, { recursive: true })
 	// Publish the exact bytes whose embedded identity we just verified. Same-volume
 	// rename keeps the previous artifact intact if compilation/validation fails.
-	const publication = await mkdtemp(path.join(directory, '.native-publish-'))
-	try {
-		const candidate = path.join(publication, target.artifact)
-		await writeFile(candidate, bytes, { mode: 0o755 })
-		await rename(candidate, artifact)
-	} catch (error) {
-		throw new Error(
-			`Could not publish the verified executable at ${artifact}. Stop any Bluink process using it and retry ${nativeBuildCommand(mode)}. Compilation output remains at ${compiledFile(targetDirectory)}. ${error.message}`,
-			{ cause: error },
-		)
-	} finally {
-		await rm(publication, { recursive: true, force: true })
+	for (const output of outputs) {
+		const publication = await mkdtemp(path.join(directory, '.native-publish-'))
+		try {
+			const candidate = path.join(publication, output.name)
+			await writeFile(candidate, output.bytes, { mode: 0o755 })
+			await rename(candidate, output.artifact)
+		} catch (error) {
+			throw new Error(
+				`Could not publish the verified ${output.kind} at ${output.artifact}. Stop any Bluink process using it and retry ${nativeBuildCommand(mode)}. Compilation output remains at ${output.compiledPath}. ${error.message}`,
+				{ cause: error },
+			)
+		} finally {
+			await rm(publication, { recursive: true, force: true })
+		}
+		await writeJson(`${output.artifact}.json`, output.identity)
 	}
-	await writeJson(`${artifact}.json`, compiled)
+	const artifact = outputs[0].artifact
+	const addon = outputs[1].artifact
 	const elapsedSeconds = (performance.now() - started) / 1000
 	console.log(
-		`Built ${target.artifact} (${mode}) from ${sourceDigest.slice(0, 12)} in ${elapsedSeconds.toFixed(2)}s`,
+		`Built ${target.artifact} and ${target.addon} (${mode}) from ${compiled.sourceDigest.slice(0, 12)} in ${elapsedSeconds.toFixed(2)}s`,
 	)
-	return { artifact, mode, elapsedSeconds }
+	return { artifact, addon, mode, elapsedSeconds }
 }
 
 if (

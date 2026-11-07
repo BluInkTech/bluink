@@ -4,21 +4,31 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { npm, run, writeJson } from './release-utils.mjs'
+import { npm, packageName, run, targets, writeJson } from './release-utils.mjs'
 import { versionPattern } from './release-identity.mjs'
 
 const registryPause = () => new Promise((resolve) => setTimeout(resolve, 5000))
 
+/** The CLI release publishes the main package and every platform package. */
+const cliPackages = new Set([
+	packageName,
+	...targets.map((target) => target.addonPackage),
+])
+
 export function provenancePolicy(record) {
-	if (
-		!['@bluink/cli', '@bluink/fonts', '@bluink/typst'].includes(record.name) ||
-		!versionPattern.test(record.version)
-	)
+	if (!versionPattern.test(record.version))
+		throw new Error('Unknown package provenance policy.')
+	if (cliPackages.has(record.name))
+		return {
+			workflow: '.github/workflows/public-release.yml',
+			ref: `refs/tags/v${record.version}`,
+		}
+	if (!['@bluink/fonts', '@bluink/typst'].includes(record.name))
 		throw new Error('Unknown package provenance policy.')
 	const kind = record.name.split('/')[1]
 	return {
-		workflow: `.github/workflows/${kind === 'cli' ? 'public' : kind}-release.yml`,
-		ref: `refs/tags/${kind === 'cli' ? '' : `${kind}/`}v${record.version}`,
+		workflow: `.github/workflows/${kind}-release.yml`,
+		ref: `refs/tags/${kind}/v${record.version}`,
 	}
 }
 
@@ -259,7 +269,7 @@ export function provenanceStatement(report, record, identity) {
 		workflow?.path !== policy.workflow ||
 		workflow?.ref !== policy.ref ||
 		!/^[a-f0-9]{40}$/.test(dependency?.digest?.gitCommit) ||
-		((record.name === '@bluink/cli' || identity.packageName === record.name) &&
+		((cliPackages.has(record.name) || identity.packageName === record.name) &&
 			dependency.digest.gitCommit !== identity.publicCommit)
 	)
 		throw new Error(

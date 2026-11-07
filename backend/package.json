@@ -1,14 +1,12 @@
 {
-	"name": "@bluink/cli",
-	"version": "26.11.7-alpha",
+	"name": "bluink",
+	"version": "26.11.10-alpha",
 	"description": "Structured writing & self-publishing application",
 	"private": true,
 	"type": "module",
 	"license": "MPL-2.0",
 	"files": [
 		"bin",
-		"runtime",
-		"install.mjs",
 		"vendor",
 		"web",
 		"LICENSE",

@@ -7,7 +7,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { auditDirectory } from './package-audit.mjs'
 import { writeCliArchive } from './cli-archive.mjs'
-import { json, npm, sha256, tar } from './release-utils.mjs'
+import { json, npm, packageName, sha256, tar } from './release-utils.mjs'
 
 /** Validate the supplied bytes rather than trusting a dependency record. */
 export async function verifyArchive(record, options) {
@@ -77,10 +77,10 @@ export async function packDirectory(directory, destination, options) {
 	const files = await auditDirectory(directory, options)
 	await mkdir(destination, { recursive: true })
 	const manifest = await json(path.join(directory, 'package.json'))
-	if (manifest.name === '@bluink/cli') {
+	if (manifest.name === packageName) {
 		if (!files.includes('npm-shrinkwrap.json'))
 			throw new Error('CLI archives require a production dependency lock.')
-		const filename = `bluink-cli-${manifest.version}.tgz`
+		const filename = `${packageName}-${manifest.version}.tgz`
 		const archive = path.join(destination, filename)
 		await writeCliArchive(directory, files, archive)
 		const inspected = await inspectArchive(archive, options)
@@ -133,17 +133,24 @@ export async function packDirectory(directory, destination, options) {
 	}
 }
 
-/** Resource packages currently have no further production dependencies. */
+/** Resource and platform packages have no further production dependencies.
+ * Platform packages are optional and carry their `os`, `cpu` and `libc`, so npm
+ * installs only the one matching the machine. */
 export function productionLock(manifest, dependencies) {
+	const optional = manifest.optionalDependencies ?? {}
 	const packages = {
 		'': {
 			name: manifest.name,
 			version: manifest.version,
 			license: manifest.license,
 			dependencies: manifest.dependencies,
+			...(Object.keys(optional).length && { optionalDependencies: optional }),
 		},
 	}
-	for (const [name, version] of Object.entries(manifest.dependencies)) {
+	for (const [name, version] of [
+		...Object.entries(manifest.dependencies),
+		...Object.entries(optional),
+	]) {
 		const dependency = dependencies.find((entry) => entry.name === name)
 		if (!dependency || dependency.version !== version)
 			throw new Error(`Missing exact dependency archive: ${name}@${version}`)
@@ -159,6 +166,14 @@ export function productionLock(manifest, dependencies) {
 			resolved: `https://registry.npmjs.org/${name}/-/${name.split('/').at(-1)}-${version}.tgz`,
 			integrity: dependency.integrity,
 			license: dependency.manifest.license,
+			...(name in optional && {
+				optional: true,
+				...Object.fromEntries(
+					['os', 'cpu', 'libc']
+						.filter((key) => dependency.manifest[key])
+						.map((key) => [key, dependency.manifest[key]]),
+				),
+			}),
 		}
 	}
 	return {

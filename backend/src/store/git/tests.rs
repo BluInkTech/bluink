@@ -77,6 +77,9 @@ fn captures_pin_exact_headers_bodies_and_memberships_without_reading_prose() {
             )
         })
         .unwrap();
+    // The capture's revision pin, not a copied header, keeps the superseded revision
+    // and its body readable after its draft-recovery window has long expired.
+    crate::store::maintenance::prune(&store, i64::MAX).unwrap();
     store
         .read(|tx| {
             let paths = git::captured_paths(tx, &capture.id)?;

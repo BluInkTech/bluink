@@ -1,0 +1,22 @@
+[package]
+name = "bluink-addon"
+version = "0.0.0"
+edition = "2024"
+license = "MPL-2.0"
+publish = false
+description = "Loads Bluink into Node.js as a native addon; the logic stays in the bluink library"
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bluink = { path = ".." }
+napi = { version = "3.12.6", default-features = false, features = ["napi4"] }
+napi-derive = "3.6.7"
+
+[build-dependencies]
+napi-build = "2.4.3"
+
+[lints]
+workspace = true
