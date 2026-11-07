@@ -531,10 +531,6 @@ fn interrupted_http_download_releases_its_artifact_before_application_stop_finis
 
 #[cfg(unix)]
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "Keep each end-to-end scenario together so setup, failure checks and cleanup remain visible."
-)]
 fn shutdown_stops_the_renderer_child_and_cancels_queued_pdf_work() {
     use std::os::unix::fs::PermissionsExt;
     let project = TestProject::new("export-active-child");

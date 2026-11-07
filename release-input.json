@@ -1,7 +1,7 @@
 {
   "format": "bluink.release-input",
   "formatVersion": 1,
-  "version": "26.11.15-alpha",
+  "version": "26.11.16-alpha",
   "publicRepository": "https://github.com/BluInkTech/bluink",
   "frontend": {
     "name": "@bluink/web",
