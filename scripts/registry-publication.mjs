@@ -150,6 +150,13 @@ export async function installRegistryPackages(
 				[
 					'install',
 					'--ignore-scripts',
+					// The signature audit reads installed files. Place every addon
+					// on disk even when its OS or CPU differs from the audit runner.
+					...(records.some(
+						({ name }) => name !== packageName && cliPackages.has(name),
+					)
+						? ['--force']
+						: []),
 					'--no-audit',
 					'--no-fund',
 					'--prefer-online',
