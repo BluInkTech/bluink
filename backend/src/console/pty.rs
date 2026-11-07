@@ -483,7 +483,7 @@ fn terminal_child() {
         let application = ApplicationHandle::new(ApplicationOptions {
             workspace_template_path: concat!(env!("CARGO_MANIFEST_DIR"), "/resources/workspace-starter.json").into(),
             project_root: std::env::var("BLUINK_CONSOLE_TEST_PROJECT").unwrap(),
-            user_data_dir: Some(std::path::PathBuf::from(std::env::var("BLUINK_CONSOLE_TEST_PROJECT").unwrap()).join(".cache/test-user").to_string_lossy().into_owned()), timezone: Some("UTC".to_owned()), public_dir: None, web_font_folder: None, pdf_font_folder: None, docx_font_folder: None, typst_binary: None,
+            user_data_dir: Some(std::path::PathBuf::from(std::env::var("BLUINK_CONSOLE_TEST_PROJECT").unwrap()).join(".cache/test-user").to_string_lossy().into_owned()), timezone: Some("UTC".to_owned()), public_dir: None, web_font_folder: None, pdf_font_folder: None, docx_font_folder: None, pdf_renderer: None,
         }).unwrap();
         console.attach_application(&application).unwrap();
         console.update_rss(Some(184 * 1_048_576));

@@ -33,6 +33,7 @@ test('shared Rust format changes invalidate native artifacts while UI starters d
 			'backend/build.rs',
 			'scripts/build-native.mjs',
 			'scripts/release-utils.mjs',
+			'scripts/release-identity.mjs',
 		]) {
 			const destination = path.join(directory, file)
 			await mkdir(path.dirname(destination), { recursive: true })

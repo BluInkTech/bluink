@@ -22,8 +22,10 @@ env:
 jobs:
   resources:
     if: github.event.repository.private == false && !startsWith(github.ref, 'refs/tags/v-latest-')
-    name: Verify published Fonts, Typst and Web
+    name: Verify published Fonts and Web
     runs-on: ubuntu-22.04
+    outputs:
+      reuse-native: ${{ steps.selection.outputs.reuse-native }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -46,7 +48,10 @@ jobs:
           tar -xzf "$RUNNER_TEMP/bluink-gh.tgz" --strip-components=1 -C "$RUNNER_TEMP/bluink-gh"
           echo "$RUNNER_TEMP/bluink-gh/bin" >> "$GITHUB_PATH"
       - name: Download and verify published resources once
-        run: node scripts/public-release.mjs resources
+        id: selection
+        run: |
+          node scripts/public-release.mjs resources
+          echo "reuse-native=$(node -p 'Boolean(require("./release-input.json").native)')" >> "$GITHUB_OUTPUT"
         timeout-minutes: 10
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -59,7 +64,7 @@ jobs:
           compression-level: 0
 
   native:
-    if: github.event.repository.private == false
+    if: github.event.repository.private == false && needs.resources.outputs.reuse-native != 'true'
     needs: resources
     name: Build and verify ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -128,6 +133,7 @@ jobs:
 
   assemble:
     needs: [resources, native]
+    if: ${{ !cancelled() && needs.resources.result == 'success' && (needs.native.result == 'success' || (needs.native.result == 'skipped' && needs.resources.outputs.reuse-native == 'true')) }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -146,10 +152,12 @@ jobs:
           name: shared-resources
           path: .resource-packages
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.native.result == 'success'
         with:
           name: cli-build
           path: .cli-build
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.native.result == 'success'
         with:
           pattern: native-*
           merge-multiple: true
@@ -198,7 +206,7 @@ jobs:
 
   publish:
     needs: [native, assemble, smoke]
-    if: github.event_name == 'push' && github.event.repository.private == false && vars.BLUINK_PUBLISH_ENABLED == 'true'
+    if: ${{ !cancelled() && needs.assemble.result == 'success' && needs.smoke.result == 'success' && github.event_name == 'push' && github.event.repository.private == false && vars.BLUINK_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-22.04
     environment: npm
     permissions:
@@ -226,6 +234,7 @@ jobs:
           name: prepared-packages
           path: package-out
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.native.result == 'success'
         with:
           pattern: native-*
           merge-multiple: true
@@ -283,19 +292,23 @@ jobs:
         run: npm install --global npm@12.2.0 --ignore-scripts --no-audit --no-fund
       - name: Verify npm version
         run: test "$(npm --version)" = '12.2.0'
-      - name: Promote current alpha only while latest is a prerelease
+      - name: Promote the current product candidate
         run: |
           alpha="$(npm view bluink dist-tags.alpha)"
+          next="$(npm view bluink dist-tags.next)"
           latest="$(npm view bluink dist-tags.latest)"
-          [[ "$alpha" == *-alpha ]] || { echo 'alpha tag does not point to an alpha release'; exit 1; }
-          [[ "$GITHUB_REF_NAME" == "v-latest-$alpha" ]] || { echo 'promotion tag differs from the current alpha'; exit 1; }
-          [[ -z "$latest" || "$latest" == 0.0.0-stage || "$latest" == *-alpha || "$latest" == *-beta || "$latest" == *-rc ]] || { echo 'latest points to a stable release'; exit 1; }
-          # Platform packages first, so latest never pins a missing addon.
-          for package in @bluink/cli-win32-x64 @bluink/cli-darwin-arm64 @bluink/cli-linux-x64-gnu bluink; do
-            npm dist-tag add "$package@$alpha" latest
-            for attempt in {1..13}; do
-              if [[ "$(npm view "$package" dist-tags.latest --prefer-online)" == "$alpha" ]]; then break; fi
-              if [[ "$attempt" == 13 ]]; then echo "latest tag did not propagate for $package" >&2; exit 1; fi
-              sleep 5
-            done
+          candidate="${GITHUB_REF_NAME#v-latest-}"
+          if [[ "$candidate" == "$next" && "$next" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Promoting stable candidate $next"
+          elif [[ "$candidate" == "$alpha" && "$alpha" == *-alpha ]]; then
+            [[ -z "$latest" || "$latest" == 0.0.0-stage || "$latest" == *-alpha || "$latest" == *-beta || "$latest" == *-rc ]] || { echo 'latest points to a stable release'; exit 1; }
+          else
+            echo 'Promotion requires the current next or alpha version' >&2
+            exit 1
+          fi
+          npm dist-tag add "bluink@$candidate" latest
+          for attempt in {1..13}; do
+            if [[ "$(npm view bluink dist-tags.latest --prefer-online)" == "$candidate" ]]; then break; fi
+            if [[ "$attempt" == 13 ]]; then echo 'latest tag did not propagate' >&2; exit 1; fi
+            sleep 5
           done

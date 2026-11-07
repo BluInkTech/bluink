@@ -109,7 +109,7 @@ impl Application {
             web_fonts: self.options.web_font_folder.as_deref(),
             pdf_fonts: self.options.pdf_font_folder.as_deref(),
             docx_fonts: self.options.docx_font_folder.as_deref(),
-            typst: self.options.typst_binary.as_deref(),
+            renderer: self.options.pdf_renderer.as_ref(),
             cancelled: None,
         }
     }

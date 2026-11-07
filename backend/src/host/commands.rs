@@ -104,7 +104,7 @@ fn application_options(
         web_font_folder: font("web")?,
         pdf_font_folder: font("pdf")?,
         docx_font_folder: font("docx")?,
-        typst_binary: publishing.then(|| resources.typst_binary()).transpose()?,
+        pdf_renderer: publishing.then(resources::pdf_renderer).transpose()?,
     })
 }
 

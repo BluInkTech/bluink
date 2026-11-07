@@ -131,21 +131,6 @@ mod tests {
         reason = "Keep each end-to-end scenario together so setup, failure checks and cleanup remain visible."
     )]
     fn renders_standalone_page_with_links_passages_assets_and_accessible_profile() {
-        let binary = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-            "linux-x64/typst"
-        } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-            "windows-x64/typst.exe"
-        } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-            "macos-arm64/typst"
-        } else {
-            return;
-        };
-        let typst = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../typst/assets")
-            .join(binary);
-        if !typst.is_file() {
-            return;
-        }
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("project");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
@@ -235,7 +220,6 @@ mod tests {
             bundle,
             plan.profile,
             &root.join("article.pdf"),
-            &typst,
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../fonts/assets/pdf"),
         )
         .unwrap();
@@ -258,7 +242,6 @@ mod tests {
             accessible_bundle,
             accessible.profile,
             &root.join("accessible.pdf"),
-            &typst,
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../fonts/assets/pdf"),
         )
         .unwrap();

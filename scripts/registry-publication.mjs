@@ -15,20 +15,19 @@ const cliPackages = new Set([
 	...targets.map((target) => target.addonPackage),
 ])
 
-export function provenancePolicy(record) {
+export function provenancePolicy(record, releaseVersion = record.version) {
 	if (!versionPattern.test(record.version))
 		throw new Error('Unknown package provenance policy.')
 	if (cliPackages.has(record.name))
 		return {
 			workflow: '.github/workflows/public-release.yml',
-			ref: `refs/tags/v${record.version}`,
+			ref: `refs/tags/v${releaseVersion}`,
 		}
-	if (!['@bluink/fonts', '@bluink/typst'].includes(record.name))
+	if (record.name !== '@bluink/fonts')
 		throw new Error('Unknown package provenance policy.')
-	const kind = record.name.split('/')[1]
 	return {
-		workflow: `.github/workflows/${kind}-release.yml`,
-		ref: `refs/tags/${kind}/v${record.version}`,
+		workflow: '.github/workflows/fonts-release.yml',
+		ref: `refs/tags/fonts/v${record.version}`,
 	}
 }
 
@@ -57,15 +56,23 @@ export async function registryTags(name) {
 export async function verifyRegistryTag(
 	name,
 	version,
-	{ lookup = registryTags, pause = registryPause, attempts = 121 } = {},
+	{
+		tag = versionTag(version),
+		lookup = registryTags,
+		pause = registryPause,
+		attempts = 121,
+	} = {},
 ) {
-	const tag = /-(alpha|beta|rc)$/.exec(version)?.[1] ?? 'latest'
 	for (let attempt = 0; attempt < attempts; attempt++) {
 		const tags = await lookup(name)
 		if (tags[tag] === version) return { name, tag, version }
 		if (attempt < attempts - 1) await pause()
 	}
 	throw new Error(`Registry ${tag} tag does not point to ${name}@${version}.`)
+}
+
+function versionTag(version) {
+	return /-(alpha|beta|rc)$/.exec(version)?.[1] ?? 'latest'
 }
 
 function matching(record, existing) {
@@ -85,6 +92,7 @@ export async function publishRecords(
 	records,
 	{
 		lookup = registryRecord,
+		tagFor = (record) => versionTag(record.version),
 		upload = (record) =>
 			npm([
 				'publish',
@@ -92,7 +100,7 @@ export async function publishRecords(
 				'--access',
 				'public',
 				'--tag',
-				/-(alpha|beta|rc)$/.exec(record.version)?.[1] ?? 'latest',
+				tagFor(record),
 				'--provenance',
 				'--ignore-scripts',
 			]),
@@ -235,7 +243,14 @@ export async function auditRegistrySignatures(
 
 /** Apply identity policy only to bundles already verified by npm audit. */
 export function provenanceStatement(report, record, identity) {
-	const policy = provenancePolicy(record)
+	const origin =
+		record.name !== packageName && cliPackages.has(record.name)
+			? identity.nativeOrigin
+			: undefined
+	const policy = provenancePolicy(
+		record,
+		origin?.releaseVersion ?? identity.version,
+	)
 	if (
 		!Array.isArray(report.invalid) ||
 		report.invalid.length ||
@@ -277,7 +292,8 @@ export function provenanceStatement(report, record, identity) {
 		workflow?.ref !== policy.ref ||
 		!/^[a-f0-9]{40}$/.test(dependency?.digest?.gitCommit) ||
 		((cliPackages.has(record.name) || identity.packageName === record.name) &&
-			dependency.digest.gitCommit !== identity.publicCommit)
+			dependency.digest.gitCommit !==
+				(origin?.publicCommit ?? identity.publicCommit))
 	)
 		throw new Error(
 			`Registry provenance has the wrong workflow, source or subject: ${record.name}`,

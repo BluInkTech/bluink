@@ -57,10 +57,8 @@ async function main() {
 		)
 		return 1
 	}
-	const packageRoot = path.resolve(
-		path.dirname(fileURLToPath(import.meta.url)),
-		'..',
-	)
+	const launcher = fileURLToPath(import.meta.url)
+	const packageRoot = path.resolve(path.dirname(launcher), '..')
 	let addon
 	try {
 		addon = loadAddon(createRequire(import.meta.url))
@@ -72,7 +70,8 @@ async function main() {
 	const signals = ['SIGINT', 'SIGTERM', 'SIGHUP']
 	if (process.platform === 'win32') signals.push('SIGBREAK')
 	for (const signal of signals) process.on(signal, () => addon.shutdown())
-	return addon.run({ argv: process.argv.slice(2), packageRoot })
+	// A PDF renderer child runs this launcher again, so Node loads its addon too.
+	return addon.run({ argv: process.argv.slice(2), packageRoot, launcher })
 }
 
 if (import.meta.main) process.exitCode = await main()

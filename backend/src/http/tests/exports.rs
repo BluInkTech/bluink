@@ -26,19 +26,7 @@ pub(super) fn fixture() -> Fixture {
                 .to_string_lossy()
                 .into_owned(),
         );
-        let binary = if cfg!(target_os = "windows") {
-            "windows-x64/typst.exe"
-        } else if cfg!(target_os = "macos") {
-            "macos-arm64/typst"
-        } else {
-            "linux-x64/typst"
-        };
-        options.typst_binary = Some(
-            root.join("typst/assets")
-                .join(binary)
-                .to_string_lossy()
-                .into_owned(),
-        );
+        options.pdf_renderer = Some(crate::export_jobs::pdf::Renderer::InProcess);
     })
 }
 

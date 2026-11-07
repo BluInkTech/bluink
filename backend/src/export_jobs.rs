@@ -77,7 +77,7 @@ pub(crate) struct Resources<'a> {
     pub(crate) web_fonts: Option<&'a str>,
     pub(crate) pdf_fonts: Option<&'a str>,
     pub(crate) docx_fonts: Option<&'a str>,
-    pub(crate) typst: Option<&'a str>,
+    pub(crate) renderer: Option<&'a crate::export_jobs::pdf::Renderer>,
     /// A queued export's cancellation, checked while Typst runs.
     pub(crate) cancelled: Option<&'a dyn Fn() -> bool>,
 }
@@ -89,6 +89,11 @@ const fn never() -> bool {
 impl Resources<'_> {
     fn cancelled(&self) -> &dyn Fn() -> bool {
         self.cancelled.unwrap_or(&never)
+    }
+
+    fn renderer(&self) -> Result<&crate::export_jobs::pdf::Renderer> {
+        self.renderer
+            .ok_or_else(|| internal_message("The PDF renderer is unavailable."))
     }
 }
 
@@ -302,7 +307,7 @@ pub(crate) fn render_publication(
                 bundle,
                 plan.targets.pdf.profile,
                 output,
-                resource(resources.typst, "Typst")?,
+                resources.renderer()?,
                 resource(resources.pdf_fonts, "PDF fonts")?,
                 resources.cancelled(),
             )
@@ -370,7 +375,7 @@ fn render_site_pdf(
         bundle,
         plan.targets.pdf.profile,
         pdf,
-        resource(resources.typst, "Typst")?,
+        resources.renderer()?,
         resource(resources.pdf_fonts, "PDF fonts")?,
         resources.cancelled(),
     )
@@ -419,7 +424,7 @@ pub(crate) fn render_note_pdf(
         bundle,
         plan.profile,
         output,
-        resource(resources.typst, "Typst")?,
+        resources.renderer()?,
         resource(resources.pdf_fonts, "PDF fonts")?,
         resources.cancelled(),
     )

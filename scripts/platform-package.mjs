@@ -37,10 +37,7 @@ export function platformManifest(target, { version, license, identity = {} }) {
 		}),
 		publishConfig: {
 			access: 'public',
-			tag:
-				identity.channel === 'stable'
-					? 'latest'
-					: (identity.channel ?? 'alpha'),
+			tag: 'latest',
 		},
 	}
 }
@@ -115,6 +112,7 @@ export function releaseNativeEntry(record, native) {
 		sha256: record.sha256,
 		addon: {
 			target: native.target,
+			...(native.publicCommit && { publicCommit: native.publicCommit }),
 			sourceDigest: native.sourceDigest,
 			mode: native.mode,
 			sha256: native.sha256,
@@ -158,14 +156,20 @@ export async function verifyPlatformArchive(record, target, identity) {
 				throw new Error(
 					`Platform addon has the wrong release identity: ${record.name}`,
 				)
-			return {
+			const addon = {
 				...info,
 				file: target.addon,
 				package: target.addonPackage,
 				sha256: sha256(bytes),
 				bytes: bytes.length,
 			}
+			return {
+				addon,
+				notices: await readFile(
+					path.join(directory, 'THIRD_PARTY_NOTICES.txt'),
+				),
+			}
 		},
 	})
-	return { manifest: inspected.manifest, addon: inspected.inspection }
+	return { manifest: inspected.manifest, ...inspected.inspection }
 }

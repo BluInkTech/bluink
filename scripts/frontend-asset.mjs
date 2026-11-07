@@ -20,47 +20,42 @@ export const frontendAudit = {
 	],
 }
 
-/** The frontend is a fixed build input, never an npm runtime dependency. */
-export function frontendInput(record, repository) {
-	publicIdentity(record.version, { publicRepository: repository })
+/** Portable identity of the exact published Web dependency. */
+export function frontendInput(record) {
+	publicIdentity(record.version)
 	return {
 		name: '@bluink/web',
 		version: record.version,
 		integrity: record.integrity,
 		sha256: record.sha256,
-		url: `${repository}/releases/download/web/v${record.version}/bluink-web-${record.version}.tgz`,
 	}
 }
 
-export function validateFrontend(input, version, repository) {
+export function validateFrontend(input) {
 	if (
 		input?.name !== '@bluink/web' ||
 		!versionPattern.test(input.version) ||
-		input.version !== version ||
 		!/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(input.integrity) ||
 		!/^[a-f0-9]{64}$/.test(input.sha256) ||
 		JSON.stringify(Object.keys(input).sort()) !==
-			JSON.stringify(['integrity', 'name', 'sha256', 'url', 'version']) ||
-		input.url !== frontendInput(input, repository).url
+			JSON.stringify(['integrity', 'name', 'sha256', 'version'])
 	)
 		throw new Error('Invalid fixed frontend asset identity or version.')
 	return input
 }
 
-export async function downloadFrontend(
-	input,
-	repository,
-	destination,
-	fetchAsset = fetch,
-) {
-	validateFrontend(input, input.version, repository)
+export async function downloadFrontend(input, destination, fetchAsset = fetch) {
+	validateFrontend(input)
 	await mkdir(destination, { recursive: true })
-	const response = await fetchAsset(input.url, {
-		signal: AbortSignal.timeout(120_000),
-	})
+	const response = await fetchAsset(
+		`https://registry.npmjs.org/@bluink/web/-/web-${input.version}.tgz`,
+		{
+			signal: AbortSignal.timeout(120_000),
+		},
+	)
 	if (!response.ok)
 		throw new Error(
-			`Upload the exact frontend asset first: HTTP ${response.status}`,
+			`Publish the exact Web package first: HTTP ${response.status}`,
 		)
 	const filename = `bluink-web-${input.version}.tgz`
 	const archive = path.join(destination, filename)
@@ -68,7 +63,7 @@ export async function downloadFrontend(
 	return verifyArchive({ ...input, filename, archive }, frontendAudit)
 }
 
-/** Verify bytes before staging; the same files are bundled in the CLI. */
+/** Stage exact Web bytes for a source checkout's native test executable. */
 export async function stageFrontend(record, destination) {
 	return verifyArchive(record, {
 		...frontendAudit,
@@ -104,12 +99,12 @@ export async function verifyBundledFrontend(directory, record) {
 	})
 }
 
-/** Source builds consume a verified cache or the exact public Release asset. */
+/** Source builds consume a verified cache or the exact registry archive. */
 export async function stageBuildFrontend(installRoot = root) {
 	const input = await json(path.join(installRoot, 'release-input.json'))
-	validateFrontend(input.frontend, input.version, input.publicRepository)
+	validateFrontend(input.frontend)
 	const destination = path.join(installRoot, '.resource-packages')
-	const filename = `bluink-web-${input.version}.tgz`
+	const filename = `bluink-web-${input.frontend.version}.tgz`
 	const record = {
 		...input.frontend,
 		filename,
@@ -119,7 +114,7 @@ export async function stageBuildFrontend(installRoot = root) {
 		await readFile(record.archive)
 	} catch (error) {
 		if (error.code !== 'ENOENT') throw error
-		await downloadFrontend(input.frontend, input.publicRepository, destination)
+		await downloadFrontend(input.frontend, destination)
 	}
 	await stageFrontend(record, path.join(installRoot, 'backend/web'))
 }

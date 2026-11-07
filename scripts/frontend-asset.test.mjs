@@ -48,7 +48,7 @@ test('Release frontend download and bundling are bound to exact bytes; source bu
 		const input = frontendInput(record, repository)
 		validateFrontend(input, record.version, repository)
 		for (const override of [
-			{ version: '26.10.8-alpha' },
+			{ version: 'invalid' },
 			{ url: 'https://example.com/file.tgz' },
 			{ sha256: 'invalid' },
 			{ archive: '/private/path' },
@@ -65,10 +65,12 @@ test('Release frontend download and bundling are bound to exact bytes; source bu
 		const bytes = await readFile(record.archive)
 		const downloaded = await downloadFrontend(
 			input,
-			repository,
 			path.join(directory, 'download'),
 			async (url) => {
-				assert.equal(url, input.url)
+				assert.equal(
+					url,
+					`https://registry.npmjs.org/@bluink/web/-/web-${input.version}.tgz`,
+				)
 				return new Response(bytes)
 			},
 		)
@@ -76,19 +78,13 @@ test('Release frontend download and bundling are bound to exact bytes; source bu
 		await assert.rejects(
 			downloadFrontend(
 				input,
-				repository,
 				directory,
 				async () => new Response('missing', { status: 404 }),
 			),
-			/Upload.*404/,
+			/Publish.*404/,
 		)
 		await assert.rejects(
-			downloadFrontend(
-				input,
-				repository,
-				directory,
-				async () => new Response('changed'),
-			),
+			downloadFrontend(input, directory, async () => new Response('changed')),
 			/integrity mismatch/,
 		)
 		const bundled = path.join(directory, 'bundled')

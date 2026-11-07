@@ -13,25 +13,21 @@ import { json, root, sha256, writeJson } from './release-utils.mjs'
 import { publicIdentity, versionPattern } from './release-identity.mjs'
 import { registryRecord } from './registry-publication.mjs'
 
-export async function resourceAudit(kind) {
-	if (!['web', 'fonts', 'typst'].includes(kind))
+const fontsPackage = '@bluink/fonts'
+const webPackage = '@bluink/web'
+
+function resourceName(name) {
+	if (name !== fontsPackage && name !== webPackage)
 		throw new Error('Unknown resource package.')
-	const pins =
-		kind === 'typst'
-			? await json(path.join(root, 'typst/sources.json'))
-			: undefined
+	return name.split('/')[1]
+}
+
+export function resourceAudit(kind) {
+	if (!['web', 'fonts'].includes(kind))
+		throw new Error('Unknown resource package.')
 	return {
-		allowed:
-			kind === 'web'
-				? webFileAllowed
-				: (file) => resourceFileAllowed(kind, file),
+		allowed: kind === 'web' ? webFileAllowed : resourceFileAllowed,
 		frontend: kind === 'web',
-		trustedUpstream: Object.fromEntries(
-			Object.entries(pins?.targets ?? {}).map(([target, spec]) => [
-				`assets/${target}/${spec.binary}`,
-				spec.binarySha256,
-			]),
-		),
 	}
 }
 
@@ -60,10 +56,8 @@ export async function resolvePublishedResources(
 	await mkdir(destination, { recursive: true })
 	const records = []
 	for (const pin of pins) {
-		if (
-			!['@bluink/fonts', '@bluink/typst'].includes(pin.name) ||
-			!versionPattern.test(pin.version)
-		)
+		resourceName(pin.name)
+		if (!versionPattern.test(pin.version))
 			throw new Error('Specify an exact published resource version.')
 		const published = await lookup(pin.name, pin.version)
 		if (
@@ -84,17 +78,13 @@ export async function resolvePublishedResources(
 }
 
 async function downloadResource(entry, destination, fetchArchive) {
-	const kind = entry.name?.split('/')[1]
-	if (
-		entry.name !== `@bluink/${kind}` ||
-		!['fonts', 'typst'].includes(kind) ||
-		!versionPattern.test(entry.version)
-	)
+	const kind = resourceName(entry.name)
+	if (!versionPattern.test(entry.version))
 		throw new Error('Invalid resource download identity.')
 	const filename = `bluink-${kind}-${entry.version}.tgz`
 	const archive = path.join(destination, filename)
 	const response = await fetchArchive(
-		`https://registry.npmjs.org/@bluink/${kind}/-/${kind}-${entry.version}.tgz`,
+		`https://registry.npmjs.org/${entry.name}/-/${kind}-${entry.version}.tgz`,
 		{ signal: AbortSignal.timeout(120_000) },
 	)
 	if (!response.ok)
@@ -105,61 +95,46 @@ async function downloadResource(entry, destination, fetchArchive) {
 	await writeFile(archive, bytes)
 	return verifyArchive(
 		{ ...entry, sha256: entry.sha256 ?? sha256(bytes), filename, archive },
-		await resourceAudit(kind),
+		resourceAudit(kind),
 	)
 }
 
 /** Public source builds use npm-installed assets, with no resource generation. */
 export async function stageInstalledResources({
 	installRoot = root,
-	packageRoots,
+	packageRoot,
 } = {}) {
 	const cliRequire = createRequire(
 		path.join(installRoot, 'backend/package.json'),
 	)
-	for (const kind of ['fonts', 'typst']) {
-		const source =
-			packageRoots?.[kind] ??
-			path.dirname(cliRequire.resolve(`@bluink/${kind}`))
-		await stageResourceDirectory(kind, source, installRoot)
-	}
+	await stageResourceDirectory(
+		packageRoot ?? path.dirname(cliRequire.resolve(fontsPackage)),
+		installRoot,
+	)
 }
 
 export async function stageResourceArchives(records, installRoot = root) {
 	for (const record of records) {
-		const kind = record.name.split('/')[1]
-		if (!['fonts', 'typst'].includes(kind))
-			throw new Error('Only Fonts and Typst can be staged as build resources.')
+		if (record.name !== fontsPackage)
+			throw new Error('Only Fonts can be staged as a build resource.')
 		await verifyArchive(record, {
-			...(await resourceAudit(kind)),
-			onInspect: (directory) =>
-				stageResourceDirectory(kind, directory, installRoot),
+			...resourceAudit('fonts'),
+			onInspect: (directory) => stageResourceDirectory(directory, installRoot),
 		})
 	}
 }
 
-async function stageResourceDirectory(kind, source, installRoot) {
-	const contract = kind === 'fonts' ? 'catalogue.json' : 'sources.json'
+async function stageResourceDirectory(source, installRoot) {
 	if (
-		!(await readFile(path.join(source, contract))).equals(
-			await readFile(path.join(installRoot, kind, contract)),
+		!(await readFile(path.join(source, 'catalogue.json'))).equals(
+			await readFile(path.join(installRoot, 'fonts/catalogue.json')),
 		)
 	)
 		throw new Error(
-			`Installed ${kind} contract differs from public build inputs.`,
+			'Installed fonts contract differs from public build inputs.',
 		)
-	if (kind === 'typst') {
-		const pins = await json(path.join(source, 'sources.json'))
-		for (const [target, spec] of Object.entries(pins.targets))
-			if (
-				sha256(
-					await readFile(path.join(source, 'assets', target, spec.binary)),
-				) !== spec.binarySha256
-			)
-				throw new Error(`Installed Typst binary checksum mismatch: ${target}`)
-	}
-	if (path.resolve(source) !== path.join(installRoot, kind)) {
-		const destination = path.join(installRoot, kind, 'assets')
+	if (path.resolve(source) !== path.join(installRoot, 'fonts')) {
+		const destination = path.join(installRoot, 'fonts/assets')
 		await rm(destination, { recursive: true, force: true })
 		await cp(path.join(source, 'assets'), destination, { recursive: true })
 	}
@@ -181,12 +156,11 @@ export async function readPreparedResources(input, directory, installRoot) {
 	const entries = await json(path.join(directory, 'dependencies.json'))
 	if (
 		!Array.isArray(entries) ||
-		entries.length !== 3 ||
-		new Set(entries.map((entry) => entry.name)).size !== 3
+		entries.length !== 2 ||
+		new Set(entries.map((entry) => entry.name)).size !== 2
 	)
 		throw new Error('Incomplete shared resource archive set.')
 	const records = []
-	const options = new Map()
 	for (const entry of entries) {
 		const expected =
 			entry.name === '@bluink/web'
@@ -209,84 +183,47 @@ export async function readPreparedResources(input, directory, installRoot) {
 			throw new Error(
 				'Shared resource differs from frozen input or has unsafe metadata.',
 			)
-		const kind = entry.name.split('/')[1]
-		const audit = await resourceAudit(kind)
 		const record = { ...entry, archive: path.join(directory, entry.filename) }
-		records.push(await verifyArchive(record, audit))
-		options.set(entry.name, audit)
+		records.push(
+			await verifyArchive(record, resourceAudit(entry.name.split('/')[1])),
+		)
 	}
 	// Verify every archive before staging native test/compile assets.
-	if (installRoot)
+	if (installRoot) {
 		await stageFrontend(
 			records.find((entry) => entry.name === '@bluink/web'),
 			path.join(installRoot, 'backend/web'),
 		)
-	if (installRoot)
-		for (const record of records.filter(
-			(entry) => entry.name !== '@bluink/web',
-		))
-			await verifyArchive(record, {
-				...options.get(record.name),
+		await verifyArchive(
+			records.find((entry) => entry.name === fontsPackage),
+			{
+				...resourceAudit('fonts'),
 				onInspect: async (directory) => {
-					const destination = path.join(
-						installRoot,
-						record.name.split('/')[1],
-						'assets',
-					)
+					const destination = path.join(installRoot, 'fonts/assets')
 					await rm(destination, { recursive: true, force: true })
 					await cp(path.join(directory, 'assets'), destination, {
 						recursive: true,
 					})
 				},
-			})
+			},
+		)
+	}
 	return records
 }
 
-export function resourceFileAllowed(kind, file) {
-	if (
-		/^(?:package\.json|index\.(?:js|d\.ts)|sources\.json|LICENSE|README\.md)$/.test(
-			file,
-		)
-	)
-		return true
-	if (kind === 'fonts')
-		if (
-			/^assets\/docx\/(?:manifest\.json|[\w-]+\/(?:LICENSE|[\w-]+\.ttf))$/.test(
-				file,
-			)
-		)
-			return true
-	if (kind === 'fonts')
-		return /^(?:catalogue\.(?:json|js|d\.ts)|assets\/(?:manifest\.json|web\/(?:[\w-]+\.css|licenses\.json|licenses\/[\w-]+\.txt|[\w-]+\/[\w-]+\.woff2)|pdf\/[\w-]+\/(?:LICENSE|[\w-]+\.ttf)))$/.test(
-			file,
-		)
-	return /^(?:licenses\/typst-assets-NOTICE|assets\/(?:(?:linux-x64|macos-arm64)\/(?:typst|LICENSE|NOTICE)|windows-x64\/(?:typst\.exe|LICENSE|NOTICE)))$/.test(
+/** Files allowed in the published @bluink/fonts package. */
+export function resourceFileAllowed(file) {
+	return /^(?:package\.json|index\.(?:js|d\.ts)|sources\.json|LICENSE|README\.md|catalogue\.(?:json|js|d\.ts)|assets\/(?:manifest\.json|web\/(?:[\w-]+\.css|licenses\.json|licenses\/[\w-]+\.txt|[\w-]+\/[\w-]+\.woff2)|pdf\/[\w-]+\/(?:LICENSE|[\w-]+\.ttf)|docx\/(?:manifest\.json|[\w-]+\/(?:LICENSE|[\w-]+\.ttf))))$/.test(
 		file,
 	)
 }
 
-export async function packResources(
-	destination = path.join(root, '.resource-packages'),
-	records = false,
-	repository,
-) {
-	const archives = []
-	for (const kind of ['fonts', 'typst']) {
-		const archive = await packResource(kind, destination, { repository })
-		archives.push(records ? archive : archive.archive)
-	}
-	return archives
-}
-
-/** Package one already-built resource without invoking either resource builder. */
+/** Package the already-built Fonts resource without invoking its builder. */
 export async function packResource(
-	kind,
 	destination,
 	{ version, repository, sourceRoot = root } = {},
 ) {
-	if (!['fonts', 'typst'].includes(kind))
-		throw new Error('Choose fonts or typst.')
-	const source = path.join(sourceRoot, kind)
+	const source = path.join(sourceRoot, 'fonts')
 	const manifest = await json(path.join(source, 'package.json'))
 	version ??= manifest.version
 	if (!versionPattern.test(version))
@@ -294,38 +231,25 @@ export async function packResource(
 	const publicRepository =
 		repository ?? manifest.repository?.url?.replace(/\.git$/, '')
 	publicIdentity(version, { publicRepository })
-	if (manifest.name !== `@bluink/${kind}`)
+	if (manifest.name !== fontsPackage)
 		throw new Error('Resource source has the wrong package identity.')
 	if (
 		!Array.isArray(manifest.files) ||
 		manifest.files.some(
 			(file) =>
 				typeof file !== 'string' ||
-				(!['assets', 'licenses'].includes(file) &&
-					(!resourceFileAllowed(kind, file) || file.includes('/'))),
+				(file !== 'assets' &&
+					(!resourceFileAllowed(file) || file.includes('/'))),
 		)
 	)
 		throw new Error('Resource source has unsafe package files.')
 	await mkdir(destination, { recursive: true })
-	const pins =
-		kind === 'typst' ? await json(path.join(source, 'sources.json')) : undefined
-	const trustedUpstream = Object.fromEntries(
-		Object.entries(pins?.targets ?? {}).map(([target, spec]) => [
-			`assets/${target}/${spec.binary}`,
-			spec.binarySha256,
-		]),
-	)
 	const temporary = await mkdtemp(path.join(os.tmpdir(), 'bluink-resource-'))
 	try {
 		for (const file of manifest.files)
 			await cp(path.join(source, file), path.join(temporary, file), {
 				recursive: true,
 			})
-		if (kind === 'typst')
-			for (const target of ['linux-x64', 'macos-arm64', 'windows-x64'])
-				await rm(path.join(temporary, 'assets', target, 'README.md'), {
-					force: true,
-				})
 		const published = Object.fromEntries(
 			[
 				'name',
@@ -346,34 +270,23 @@ export async function packResource(
 			published.repository = {
 				type: 'git',
 				url: `${publicRepository}.git`,
-				directory: kind,
+				directory: 'fonts',
 			}
 		published.publishConfig = { access: 'public' }
 		await writeJson(path.join(temporary, 'package.json'), published)
-		const archive = await packDirectory(temporary, destination, {
-			trustedUpstream,
-			allowed: (file) => resourceFileAllowed(kind, file),
+		return await packDirectory(temporary, destination, {
+			allowed: resourceFileAllowed,
 			required: [
 				'LICENSE',
 				'README.md',
 				'index.js',
 				'sources.json',
-				...(kind === 'fonts'
-					? [
-							'assets/web/inter.css',
-							'assets/pdf/inter/LICENSE',
-							'assets/docx/manifest.json',
-							'assets/docx/inter/inter-400-normal.ttf',
-						]
-					: [
-							'assets/linux-x64/typst',
-							'assets/macos-arm64/typst',
-							'assets/windows-x64/typst.exe',
-							'licenses/typst-assets-NOTICE',
-						]),
+				'assets/web/inter.css',
+				'assets/pdf/inter/LICENSE',
+				'assets/docx/manifest.json',
+				'assets/docx/inter/inter-400-normal.ttf',
 			],
 		})
-		return archive
 	} finally {
 		await rm(temporary, { recursive: true, force: true })
 	}

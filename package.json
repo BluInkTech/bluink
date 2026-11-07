@@ -1,6 +1,6 @@
 {
   "name": "bluink-public-build",
-  "version": "26.11.14-alpha",
+  "version": "26.11.15-alpha",
   "private": true,
   "type": "module",
   "workspaces": [

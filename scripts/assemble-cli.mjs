@@ -1,23 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2023–2026 BluInk
 
-import { cp, mkdir, readFile, rm } from 'node:fs/promises'
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readNativeComponents } from './native-components.mjs'
 import { contractHash, prepareCliBuild, verifyCliBuild } from './cli-build.mjs'
-import { stageFrontend } from './frontend-asset.mjs'
 import { productionLock, verifyArchive } from './package-artifacts.mjs'
 import {
 	buildPlatformPackage,
 	releaseNativeEntry,
 } from './platform-package.mjs'
-import { publicIdentity } from './release-identity.mjs'
-import { resourceFileAllowed } from './resource-packages.mjs'
-import {
-	auditDirectory,
-	cliFileAllowed,
-	webFileAllowed,
-} from './package-audit.mjs'
+import { nativePackageVersion, publicIdentity } from './release-identity.mjs'
+import { resourceAudit } from './resource-packages.mjs'
+import { auditDirectory, cliFileAllowed } from './package-audit.mjs'
 import {
 	json,
 	nativeDirectory as nativeOutputDirectory,
@@ -41,68 +37,60 @@ export async function buildPackage({
 	dependencies,
 	hostOnly = false,
 	preparedDirectory,
+	nativeSelection,
+	nativeArchiveDirectory,
 	destination = path.join(root, 'release'),
 	platforms: platformDestination = `${destination}-platforms`,
 } = {}) {
 	if (!dependencies?.length)
 		throw new Error(
-			'CLI assembly requires verified Web, Fonts and Typst archives. Use npm run build in the private workspace or pass --dependencies in a public checkout.',
+			'CLI assembly requires verified Web and Fonts archives. Use npm run build in the private workspace or pass --dependencies in a public checkout.',
 		)
 	const source = await json(path.join(root, 'backend/package.json'))
 	const productVersion = version ?? source.version
+	const nativeVersion = nativePackageVersion(productVersion)
 	const identity = publicIdentity(productVersion, metadata, !hostOnly)
 	const buildDirectory = preparedDirectory ?? path.join(root, '.cli-build')
-	if (!preparedDirectory) {
-		await npm(['run', 'contracts:check'])
-		await prepareCliBuild(buildDirectory, {
+	let native = []
+	const platforms = nativeSelection
+		? await readNativeComponents(
+				nativeSelection,
+				nativeArchiveDirectory,
+				identity.publicRepository,
+			)
+		: []
+	if (!nativeSelection) {
+		if (!preparedDirectory) {
+			await npm(['run', 'contracts:check'])
+			await prepareCliBuild(buildDirectory, {
+				...identity,
+				version: productVersion,
+			})
+		}
+		const build = await verifyCliBuild(buildDirectory, {
 			...identity,
 			version: productVersion,
 		})
+		identity.toolchain = build.toolchain
+		native = await verifyNativeArtifacts(nativeDirectory, undefined, hostOnly, {
+			version: nativeVersion,
+			publicCommit: identity.publicCommit,
+		})
 	}
-	const build = await verifyCliBuild(buildDirectory, {
-		...identity,
-		version: productVersion,
-	})
-	identity.toolchain = build.toolchain
-	const native = await verifyNativeArtifacts(
-		nativeDirectory,
-		undefined,
-		hostOnly,
-		{ version: productVersion, publicCommit: identity.publicCommit },
-	)
 	if (
-		dependencies.length !== 3 ||
-		new Set(dependencies.map((entry) => entry.name)).size !== 3 ||
+		dependencies.length !== 2 ||
+		new Set(dependencies.map((entry) => entry.name)).size !== 2 ||
 		dependencies.some(
-			(entry) =>
-				!['@bluink/web', '@bluink/fonts', '@bluink/typst'].includes(entry.name),
+			(entry) => !['@bluink/web', '@bluink/fonts'].includes(entry.name),
 		)
 	)
-		throw new Error('Supply exactly one Web, Fonts and Typst archive.')
-	const pins = await json(path.join(root, 'typst/sources.json'))
-	const trustedUpstream = Object.fromEntries(
-		Object.entries(pins.targets).map(([target, spec]) => [
-			`assets/${target}/${spec.binary}`,
-			spec.binarySha256,
-		]),
-	)
+		throw new Error('Supply exactly one Web and one Fonts archive.')
 	dependencies = await Promise.all(
 		dependencies.map((entry) =>
-			verifyArchive(
-				entry,
-				entry.name === '@bluink/web'
-					? { allowed: webFileAllowed, frontend: true }
-					: {
-							allowed: (file) =>
-								resourceFileAllowed(entry.name.split('/')[1], file),
-							...(entry.name === '@bluink/typst' && { trustedUpstream }),
-						},
-			),
+			verifyArchive(entry, resourceAudit(entry.name.split('/')[1])),
 		),
 	)
 	const web = dependencies.find((entry) => entry.name === '@bluink/web')
-	if (!web || web.version !== productVersion)
-		throw new Error('CLI and Web package versions must match exactly.')
 	const inspected = web
 	const fonts = dependencies.find((entry) => entry.name === '@bluink/fonts')
 	if (
@@ -117,7 +105,6 @@ export async function buildPackage({
 	const directory = destination
 	await rm(directory, { recursive: true, force: true })
 	await mkdir(directory, { recursive: true })
-	await stageFrontend(web, path.join(directory, 'web'))
 	for (const [from, to] of [
 		['scripts/package-launcher.mjs', packageLauncher],
 		['backend/LICENSE', 'LICENSE'],
@@ -127,24 +114,24 @@ export async function buildPackage({
 		await cp(path.join(root, from), path.join(directory, to), {
 			recursive: true,
 		})
-	await cp(
-		path.join(buildDirectory, 'THIRD_PARTY_NOTICES.txt'),
-		path.join(directory, 'THIRD_PARTY_NOTICES.txt'),
-	)
-	await rm(platformDestination, { recursive: true, force: true })
-	await mkdir(platformDestination, { recursive: true })
-	const platforms = []
-	for (const entry of native) {
-		const target = targets.find((value) => value.rust === entry.target)
-		const archive = await buildPlatformPackage(target, entry, {
-			nativeDirectory,
-			version: productVersion,
-			license: source.license,
-			identity,
-			notices: path.join(buildDirectory, 'THIRD_PARTY_NOTICES.txt'),
-			destination: platformDestination,
-		})
-		platforms.push({ ...archive, native: entry })
+	const notices = path.join(directory, 'THIRD_PARTY_NOTICES.txt')
+	if (nativeSelection) await writeFile(notices, platforms[0].notices)
+	else {
+		await cp(path.join(buildDirectory, 'THIRD_PARTY_NOTICES.txt'), notices)
+		await rm(platformDestination, { recursive: true, force: true })
+		await mkdir(platformDestination, { recursive: true })
+		for (const entry of native) {
+			const target = targets.find((value) => value.rust === entry.target)
+			const archive = await buildPlatformPackage(target, entry, {
+				nativeDirectory,
+				version: nativeVersion,
+				license: source.license,
+				identity,
+				notices: path.join(buildDirectory, 'THIRD_PARTY_NOTICES.txt'),
+				destination: platformDestination,
+			})
+			platforms.push({ ...archive, native: entry })
+		}
 	}
 	const manifest = {
 		name: source.name,
@@ -162,16 +149,14 @@ export async function buildPackage({
 			},
 		}),
 		dependencies: Object.fromEntries(
-			dependencies
-				.filter((entry) => entry.name !== '@bluink/web')
-				.map((entry) => [entry.name, entry.version]),
+			dependencies.map((entry) => [entry.name, entry.version]),
 		),
 		optionalDependencies: Object.fromEntries(
 			platforms.map((entry) => [entry.name, entry.version]),
 		),
 		publishConfig: {
 			access: 'public',
-			tag: identity.channel === 'stable' ? 'latest' : identity.channel,
+			tag: identity.channel === 'stable' ? 'next' : identity.channel,
 		},
 		files: [...source.files, 'release.json'],
 	}
@@ -187,6 +172,12 @@ export async function buildPackage({
 		name: manifest.name,
 		version: manifest.version,
 		distribution: hostOnly ? 'host-test' : 'all-platforms',
+		...(nativeSelection && {
+			nativeOrigin: {
+				releaseVersion: nativeSelection.releaseVersion,
+				publicCommit: nativeSelection.publicCommit,
+			},
+		}),
 		contractHash: inspected.metadata.contractHash,
 		frontend: {
 			name: web.name,
@@ -194,13 +185,11 @@ export async function buildPackage({
 			integrity: web.integrity,
 			sha256: web.sha256,
 		},
-		dependencies: dependencies
-			.filter((entry) => entry.name !== '@bluink/web')
-			.map(({ name, version, integrity }) => ({
-				name,
-				version,
-				integrity,
-			})),
+		dependencies: dependencies.map(({ name, version, integrity }) => ({
+			name,
+			version,
+			integrity,
+		})),
 		native: platforms.map((entry) => releaseNativeEntry(entry, entry.native)),
 	})
 	await auditDirectory(directory, {

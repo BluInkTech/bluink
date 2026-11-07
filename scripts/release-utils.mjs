@@ -16,7 +16,6 @@ export const targets = [
 		artifact: 'bluink-linux-x64',
 		addon: 'bluink-linux-x64-gnu.node',
 		addonPackage: '@bluink/cli-linux-x64-gnu',
-		typst: 'linux-x64/typst',
 	},
 	{
 		rust: 'x86_64-pc-windows-msvc',
@@ -25,7 +24,6 @@ export const targets = [
 		artifact: 'bluink-win32-x64.exe',
 		addon: 'bluink-win32-x64.node',
 		addonPackage: '@bluink/cli-win32-x64',
-		typst: 'windows-x64/typst.exe',
 	},
 	{
 		rust: 'aarch64-apple-darwin',
@@ -34,7 +32,6 @@ export const targets = [
 		artifact: 'bluink-darwin-arm64',
 		addon: 'bluink-darwin-arm64.node',
 		addonPackage: '@bluink/cli-darwin-arm64',
-		typst: 'macos-arm64/typst',
 	},
 ]
 
@@ -146,6 +143,7 @@ export async function nativeSourceDigest(workspaceRoot = root) {
 			'backend/Cargo.lock',
 			'backend/build.rs',
 			'scripts/build-native.mjs',
+			'scripts/release-identity.mjs',
 			'scripts/release-utils.mjs',
 		].map((file) => path.join(workspaceRoot, file)),
 	]

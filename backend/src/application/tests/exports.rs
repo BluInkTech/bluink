@@ -535,21 +535,11 @@ fn interrupted_http_download_releases_its_artifact_before_application_stop_finis
     clippy::too_many_lines,
     reason = "Keep each end-to-end scenario together so setup, failure checks and cleanup remain visible."
 )]
-fn shutdown_stops_the_typst_child_and_cancels_queued_pdf_work() {
+fn shutdown_stops_the_renderer_child_and_cancels_queued_pdf_work() {
     use std::os::unix::fs::PermissionsExt;
     let project = TestProject::new("export-active-child");
     let mut app = fixture(&project);
     let resources = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let target = if cfg!(target_os = "macos") {
-        "macos-arm64"
-    } else {
-        "linux-x64"
-    };
-    let typst = resources.join(format!("typst/assets/{target}/typst"));
-    assert!(
-        typst.is_file(),
-        "Packaged Typst is required for this acceptance test"
-    );
     app.options.pdf_font_folder = Some(
         resources
             .join("fonts/assets/pdf")
@@ -561,48 +551,46 @@ fn shutdown_stops_the_typst_child_and_cancels_queued_pdf_work() {
     let release = control.path().join("release");
     let finished = control.path().join("finished");
     let child_pid = control.path().join("pid");
-    let wrapper = control.path().join("typst");
+    let renderer = control.path().join("renderer");
     let quote =
         |path: &std::path::Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
-    // The wrapper provides a process barrier, then runs the actual packaged
-    // engine. A deadline prevents a failed assertion leaving a child behind.
+    // The renderer child is a process barrier that never finishes on its own:
+    // only cancellation ends it. A deadline prevents a failed assertion
+    // leaving a child behind. Its fourth argument is the PDF it would write.
     std::fs::write(
-        &wrapper,
+        &renderer,
         format!(
             r#"#!/bin/sh
-if [ "$1" = '--version' ]; then exec {} "$@"; fi
-for argument do output="$argument"; done
 printf '%s\n' "$$" > {}
-printf '%s\n' "$output" >> {}
+printf '%s\n' "$4" >> {}
 attempt=0
 while [ ! -f {} ]; do
   attempt=$((attempt + 1))
   if [ "$attempt" -ge 1000 ]; then exit 99; fi
   sleep 0.01
 done
-{} "$@"
-result=$?
-printf '%s\n' "$result" > {}
-exit "$result"
+printf '%s\n' done > {}
+exit 99
 "#,
-            quote(&typst),
             quote(&child_pid),
             quote(&started),
             quote(&release),
-            quote(&typst),
             quote(&finished)
         ),
     )
     .unwrap();
-    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-    app.options.typst_binary = Some(wrapper.to_string_lossy().into_owned());
+    std::fs::set_permissions(&renderer, std::fs::Permissions::from_mode(0o755)).unwrap();
+    app.options.pdf_renderer = Some(crate::export_jobs::pdf::Renderer::Child {
+        program: renderer,
+        arguments: Vec::new(),
+    });
     let app = Arc::new(app);
     let active = create(&app, "linked-pages", "pdf", true, "classic");
     let deadline = Instant::now() + Duration::from_secs(5);
     while !std::fs::read_to_string(&started).is_ok_and(|value| value.ends_with('\n')) {
         assert!(
             Instant::now() < deadline,
-            "Typst did not reach the process barrier"
+            "The renderer did not reach the process barrier"
         );
         std::thread::yield_now();
     }
@@ -637,7 +625,7 @@ exit "$result"
             .status()
             .unwrap()
             .success(),
-        "Typst child was not reaped before shutdown returned"
+        "The renderer child was not reaped before shutdown returned"
     );
     assert!(!finished.exists(), "Cancelled compiler finished rendering");
     assert_eq!(

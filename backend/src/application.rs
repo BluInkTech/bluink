@@ -52,7 +52,8 @@ pub(crate) struct ApplicationOptions {
     pub(crate) web_font_folder: Option<String>,
     pub(crate) pdf_font_folder: Option<String>,
     pub(crate) docx_font_folder: Option<String>,
-    pub(crate) typst_binary: Option<String>,
+    /// Starts the child that typesets a PDF.
+    pub(crate) pdf_renderer: Option<crate::export_jobs::pdf::Renderer>,
 }
 
 struct State {

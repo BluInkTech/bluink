@@ -5,11 +5,7 @@ use super::{Overrides, ResolvedTheme, Role, css, resolve, typst};
 use crate::domain::publication::PdfProfile;
 use crate::export_jobs::pdf::{PdfBundle, publish_pdf};
 use serde_json::json;
-use std::{
-    collections::BTreeMap,
-    fmt::Write,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, fmt::Write, path::Path};
 
 fn theme() -> ResolvedTheme {
     resolve(&super::tests::fixture(), "pdf", &Overrides::default()).unwrap()
@@ -174,19 +170,21 @@ fn bundle(theme: &ResolvedTheme) -> PdfBundle {
     }
 }
 
-fn binary() -> PathBuf {
-    let platform = if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        "windows-x64/typst.exe"
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        "linux-x64/typst"
-    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        "macos-arm64/typst"
-    } else {
-        panic!("No packaged Typst platform for this test host")
-    };
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../typst/assets")
-        .join(platform)
+fn rounded(values: &[serde_json::Value]) -> serde_json::Value {
+    fn round(value: &serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Number(number) if number.is_f64() => {
+                json!((number.as_f64().unwrap() * 1e6).round() / 1e6)
+            }
+            serde_json::Value::Array(items) => items.iter().map(round).collect(),
+            serde_json::Value::Object(fields) => fields
+                .iter()
+                .map(|(key, value)| (key.clone(), round(value)))
+                .collect(),
+            other => other.clone(),
+        }
+    }
+    values.iter().map(round).collect()
 }
 
 fn query_proof(files: BTreeMap<String, Vec<u8>>) -> Vec<serde_json::Value> {
@@ -194,25 +192,14 @@ fn query_proof(files: BTreeMap<String, Vec<u8>>) -> Vec<serde_json::Value> {
     for (relative, bytes) in files {
         std::fs::write(temp.path().join(relative), bytes).unwrap();
     }
-    let output = std::process::Command::new(binary())
-        .args([
-            "query",
-            "--features",
-            "a11y-extras",
-            "--ignore-system-fonts",
-            "--font-path",
-        ])
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../fonts/assets/pdf"))
-        .arg(temp.path().join("document.typ"))
-        .args(["metadata", "--field", "value"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
+    crate::export_jobs::pdf::query(
+        temp.path(),
+        "document.typ",
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../fonts/assets/pdf"),
+        "metadata",
+        "value",
+    )
+    .unwrap()
 }
 
 #[test]
@@ -385,7 +372,8 @@ fn explicit_headings_preserve_decorated_theme_geometry_and_semantic_levels() {
         .replace("  show link: set text(..link-text)", "  show link: set text(..link-text)\n  show heading: it => publication-block(\"heading\" + str(calc.min(it.level, 6)), it)");
     previous.insert("theme-values.typ".into(), runtime.into_bytes());
     let actual = query_proof(current);
-    assert_eq!(actual, query_proof(previous));
+    // Both layouts must agree; sizes may differ in the last bit of a float.
+    assert_eq!(rounded(&actual), rounded(&query_proof(previous)));
     let headings = actual
         .iter()
         .filter(|value| value["kind"] == "heading-proof")
@@ -416,32 +404,20 @@ fn portable_shell_and_every_role_compile_with_only_packaged_fonts_and_real_line_
         bundle.clone(),
         PdfProfile::Default,
         &temp.path().join("proof.pdf"),
-        &binary(),
         &font_path,
     )
     .unwrap();
     for (relative, bytes) in bundle.files {
         std::fs::write(temp.path().join(relative), bytes).unwrap();
     }
-    let query = std::process::Command::new(binary())
-        .args([
-            "query",
-            "--features",
-            "a11y-extras",
-            "--ignore-system-fonts",
-            "--font-path",
-        ])
-        .arg(&font_path)
-        .arg(temp.path().join("document.typ"))
-        .args(["metadata", "--field", "value"])
-        .output()
-        .unwrap();
-    assert!(
-        query.status.success(),
-        "{}",
-        String::from_utf8_lossy(&query.stderr)
-    );
-    let values: Vec<serde_json::Value> = serde_json::from_slice(&query.stdout).unwrap();
+    let values = crate::export_jobs::pdf::query(
+        temp.path(),
+        "document.typ",
+        &font_path,
+        "metadata",
+        "value",
+    )
+    .unwrap();
     let proof = values
         .iter()
         .find(|value| value["kind"] == "style-proof")
@@ -457,25 +433,14 @@ fn portable_shell_and_every_role_compile_with_only_packaged_fonts_and_real_line_
         .find(|value| value["kind"] == "heading-style")
         .expect("Rendered heading metadata");
     assert_eq!(heading["size"], theme.styles[&Role::Heading1].font_size_pt);
-    let query = std::process::Command::new(binary())
-        .args([
-            "query",
-            "--features",
-            "a11y-extras",
-            "--ignore-system-fonts",
-            "--font-path",
-        ])
-        .arg(&font_path)
-        .arg(temp.path().join("document.typ"))
-        .args(["table", "--field", "children"])
-        .output()
-        .unwrap();
-    assert!(
-        query.status.success(),
-        "{}",
-        String::from_utf8_lossy(&query.stderr)
-    );
-    let tables: Vec<serde_json::Value> = serde_json::from_slice(&query.stdout).unwrap();
+    let tables = crate::export_jobs::pdf::query(
+        temp.path(),
+        "document.typ",
+        &font_path,
+        "table",
+        "children",
+    )
+    .unwrap();
     let cells = tables[0].as_array().unwrap();
     assert_eq!(cells[0]["func"], "header");
     assert_eq!(cells[0]["children"][0]["x"], 0);
@@ -503,7 +468,6 @@ fn write_style_proofs() {
         bundle,
         PdfProfile::Default,
         &destination,
-        &binary(),
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../fonts/assets/pdf"),
     )
     .unwrap();

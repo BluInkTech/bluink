@@ -52,7 +52,7 @@ pub(crate) struct Context {
     pub(crate) web_fonts: Option<String>,
     pub(crate) pdf_fonts: Option<String>,
     pub(crate) docx_fonts: Option<String>,
-    pub(crate) typst: Option<String>,
+    pub(crate) renderer: Option<crate::export_jobs::pdf::Renderer>,
 }
 
 impl Context {
@@ -61,7 +61,7 @@ impl Context {
             web_fonts: self.web_fonts.as_deref(),
             pdf_fonts: self.pdf_fonts.as_deref(),
             docx_fonts: self.docx_fonts.as_deref(),
-            typst: self.typst.as_deref(),
+            renderer: self.renderer.as_ref(),
             cancelled: None,
         }
     }
@@ -1208,7 +1208,7 @@ mod tests {
                 web_fonts: None,
                 pdf_fonts: None,
                 docx_fonts: None,
-                typst: None,
+                renderer: None,
             },
             theme_preview,
             state: Mutex::new(JobState {

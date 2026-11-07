@@ -50,7 +50,11 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
 quick-xml = { version = "0.42", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-resvg = { version = "0.48", default-features = false, features = ["text", "raster-images"] }
+resvg = { version = "0.47", default-features = false, features = ["text", "raster-images"] }
+# Typst's library API is unstable; upgrade these together and adapt `export_jobs/pdf/world.rs`.
+typst = "=0.15.1"
+typst-layout = "=0.15.1"
+typst-pdf = "=0.15.1"
 git2 = { version = "0.21.0", default-features = false, features = ["vendored-libgit2"] }
 russh = { version = "0.65.1", default-features = false, features = ["ring", "rsa"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls-manual-roots"] }

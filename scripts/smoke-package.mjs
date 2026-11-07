@@ -174,9 +174,7 @@ export async function smokePackage(archive, expectedVersion, resources) {
 			'--no-fund',
 			'--offline',
 			// Absolute paths: npm reads a relative `dir/file.tgz` as a GitHub repository.
-			...resourceArchives
-				.filter((file) => !path.basename(file).startsWith('bluink-web-'))
-				.map((file) => path.resolve(file)),
+			...resourceArchives.map((file) => path.resolve(file)),
 			path.resolve(archive),
 		])
 		const packageRoot = path.join(
@@ -188,15 +186,6 @@ export async function smokePackage(archive, expectedVersion, resources) {
 		const manifest = await json(path.join(packageRoot, 'package.json'))
 		const cliVersion = expectedVersion ?? manifest.version
 		const release = await json(path.join(packageRoot, 'release.json'))
-		const frontend = await json(path.join(packageRoot, 'web/release.json'))
-		if (
-			frontend.version !== cliVersion ||
-			release.frontend?.version !== cliVersion ||
-			manifest.dependencies['@bluink/web']
-		)
-			throw new Error(
-				'CLI frontend must be bundled at the matching version, without an npm Web dependency.',
-			)
 		if (
 			manifest.name !== packageName ||
 			manifest.version !== cliVersion ||
@@ -210,8 +199,6 @@ export async function smokePackage(archive, expectedVersion, resources) {
 			'LICENSE',
 			'README.md',
 			'release.json',
-			'web/LICENSE',
-			'web/assets/index.html',
 			'vendor/workspace-starter.json',
 			'vendor/themes/classic/manifest.json',
 			'vendor/themes/editorial/manifest.json',
@@ -234,7 +221,20 @@ export async function smokePackage(archive, expectedVersion, resources) {
 			path.join(packageRoot, 'package.json'),
 		)
 		const installedRoot = async (name) =>
-			path.dirname(installedRequire.resolve(name))
+			path.dirname(
+				installedRequire.resolve(
+					name === '@bluink/web' ? `${name}/package.json` : name,
+				),
+			)
+		const webRoot = await installedRoot('@bluink/web')
+		const frontend = await json(path.join(webRoot, 'release.json'))
+		if (
+			frontend.version !== release.frontend?.version ||
+			frontend.version !== manifest.dependencies['@bluink/web'] ||
+			frontend.contractHash !== release.contractHash ||
+			!(await stat(path.join(webRoot, 'assets/index.html'))).isFile()
+		)
+			throw new Error('Installed Web package differs from the pinned frontend.')
 		// npm installs only this machine's platform package, at the pinned version.
 		const platformRoot = path.dirname(
 			installedRequire.resolve(`${target.addonPackage}/package.json`),
@@ -287,8 +287,7 @@ export async function smokePackage(archive, expectedVersion, resources) {
 		const buildInfo = JSON.parse(await shim(['build-info']))
 		const expected = {
 			...host.addon,
-			version: cliVersion,
-			publicCommit: release.publicCommit,
+			version: host.version,
 		}
 		if (
 			['sourceDigest', 'target', 'version', 'mode', 'publicCommit'].some(
@@ -310,17 +309,6 @@ export async function smokePackage(archive, expectedVersion, resources) {
 					`Installed dependency differs from the verified release: ${dependency.name}`,
 				)
 		}
-		const typst = path.join(
-			await installedRoot('@bluink/typst'),
-			'assets',
-			target.typst,
-		)
-		if (
-			process.platform !== 'win32' &&
-			((await stat(typst)).mode & 0o111) === 0
-		)
-			throw new Error('Packaged Typst is not executable.')
-		await runInstalled(typst, ['--version'])
 		const wordFonts = await json(
 			path.join(
 				await installedRoot('@bluink/fonts'),
@@ -418,7 +406,6 @@ export async function smokePackage(archive, expectedVersion, resources) {
 				'npm installs only the matching platform addon package',
 				'no install scripts',
 				'global command version and build identity',
-				'bundled Typst',
 				'note HTML/PDF',
 				'note/linked/Publication DOCX with embedded fonts',
 				'Publication PDF/site',

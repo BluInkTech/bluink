@@ -253,5 +253,300 @@
 				"sha256": "3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215"
 			}
 		]
+	},
+	"typst@0.15.1": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/LICENSE",
+				"sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+			},
+			{
+				"file": "rust/1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/NOTICE",
+				"sha256": "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26"
+			}
+		]
+	},
+	"typst-eval@0.15.1": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/LICENSE",
+				"sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+			},
+			{
+				"file": "rust/1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/NOTICE",
+				"sha256": "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26"
+			}
+		]
+	},
+	"typst-library@0.15.1": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/LICENSE",
+				"sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+			},
+			{
+				"file": "rust/1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/NOTICE",
+				"sha256": "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26"
+			}
+		]
+	},
+	"typst-macros@0.15.1": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/LICENSE",
+				"sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+			},
+			{
+				"file": "rust/1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/NOTICE",
+				"sha256": "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26"
+			}
+		]
+	},
+	"typst-syntax@0.15.1": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/LICENSE",
+				"sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+			},
+			{
+				"file": "rust/1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/NOTICE",
+				"sha256": "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26"
+			}
+		]
+	},
+	"typst-timing@0.15.1": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/LICENSE",
+				"sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+			},
+			{
+				"file": "rust/1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/NOTICE",
+				"sha256": "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26"
+			}
+		]
+	},
+	"typst-utils@0.15.1": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/LICENSE",
+				"sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+			},
+			{
+				"file": "rust/1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/NOTICE",
+				"sha256": "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26"
+			}
+		]
+	},
+	"typst-html@0.15.1": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/LICENSE",
+				"sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+			},
+			{
+				"file": "rust/1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/NOTICE",
+				"sha256": "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26"
+			}
+		]
+	},
+	"typst-svg@0.15.1": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/LICENSE",
+				"sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+			},
+			{
+				"file": "rust/1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/NOTICE",
+				"sha256": "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26"
+			}
+		]
+	},
+	"typst-layout@0.15.1": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/LICENSE",
+				"sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+			},
+			{
+				"file": "rust/1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/NOTICE",
+				"sha256": "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26"
+			}
+		]
+	},
+	"typst-realize@0.15.1": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/LICENSE",
+				"sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+			},
+			{
+				"file": "rust/1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/NOTICE",
+				"sha256": "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26"
+			}
+		]
+	},
+	"typst-pdf@0.15.1": {
+		"license": "Apache-2.0",
+		"files": [
+			{
+				"file": "rust/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/LICENSE",
+				"sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+			},
+			{
+				"file": "rust/1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26.txt",
+				"url": "https://raw.githubusercontent.com/typst/typst/9dfd3a08500b7896045f907433cf7b4b02434fad/NOTICE",
+				"sha256": "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26"
+			}
+		]
+	},
+	"comemo-macros@0.5.1": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/508a77d2e7b51d98adeed32648ad124b7b30241a8e70b2e72c99f92d8e5874d1.txt",
+				"url": "https://raw.githubusercontent.com/typst/comemo/0eaf0707f37032ad936d6d63bb60755fdd1d2cda/LICENSE-MIT",
+				"sha256": "508a77d2e7b51d98adeed32648ad124b7b30241a8e70b2e72c99f92d8e5874d1"
+			}
+		]
+	},
+	"glidesort@0.1.2": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/08961b3f37120e88e205e2def4af6da46f9eba8700fa80553fd0b8d8bb3d208a.txt",
+				"url": "https://raw.githubusercontent.com/orlp/glidesort/c4df9518ec23a424a867b3d50967f0aaafe3c0fd/README.md",
+				"sha256": "08961b3f37120e88e205e2def4af6da46f9eba8700fa80553fd0b8d8bb3d208a"
+			},
+			{
+				"file": "rust/b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5.txt",
+				"url": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/MIT.txt",
+				"sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+			}
+		]
+	},
+	"roman-numerals-rs@3.1.0": {
+		"license": "0BSD",
+		"files": [
+			{
+				"file": "rust/c744ffc7e120b22e6620b613298dc003a2613c0ae489ee414fb1d473f24f916f.txt",
+				"url": "https://raw.githubusercontent.com/AA-Turner/roman-numerals/ec81337f99d8b557a6fce10f674c054050551444/LICENCE.rst",
+				"sha256": "c744ffc7e120b22e6620b613298dc003a2613c0ae489ee414fb1d473f24f916f"
+			}
+		]
+	},
+	"wasmi@1.1.0": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657.txt",
+				"url": "https://raw.githubusercontent.com/wasmi-labs/wasmi/8273dfb09d493971b7bb12fe614d740cdc857175/LICENSE-MIT",
+				"sha256": "172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657"
+			}
+		]
+	},
+	"wasmi_collections@1.1.0": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657.txt",
+				"url": "https://raw.githubusercontent.com/wasmi-labs/wasmi/8273dfb09d493971b7bb12fe614d740cdc857175/LICENSE-MIT",
+				"sha256": "172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657"
+			}
+		]
+	},
+	"wasmi_core@1.1.0": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657.txt",
+				"url": "https://raw.githubusercontent.com/wasmi-labs/wasmi/8273dfb09d493971b7bb12fe614d740cdc857175/LICENSE-MIT",
+				"sha256": "172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657"
+			}
+		]
+	},
+	"wasmi_ir@1.1.0": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657.txt",
+				"url": "https://raw.githubusercontent.com/wasmi-labs/wasmi/8273dfb09d493971b7bb12fe614d740cdc857175/LICENSE-MIT",
+				"sha256": "172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657"
+			}
+		]
+	},
+	"wasmparser@0.239.0": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt",
+				"url": "https://raw.githubusercontent.com/bytecodealliance/wasm-tools/35f8671bce74190ef0b00ce36c399b053b490374/LICENSE-MIT",
+				"sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+			}
+		]
+	},
+	"krilla@0.8.2": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/9d1eb142840c7acfd5511b4dd298cece3f0053f5809228906445cd8a3365592f.txt",
+				"url": "https://raw.githubusercontent.com/LaurenzV/krilla/3ffdf0588cf98050aad6edba51ca70162e1fb5b5/LICENSE_MIT",
+				"sha256": "9d1eb142840c7acfd5511b4dd298cece3f0053f5809228906445cd8a3365592f"
+			},
+			{
+				"file": "rust/7aa87a70e18c9c160b5a14e24b46a8e407858b21fed635920c701657b4bd7976.txt",
+				"url": "https://raw.githubusercontent.com/LaurenzV/krilla/3ffdf0588cf98050aad6edba51ca70162e1fb5b5/NOTICE.md",
+				"sha256": "7aa87a70e18c9c160b5a14e24b46a8e407858b21fed635920c701657b4bd7976"
+			}
+		]
+	},
+	"krilla-svg@0.8.1": {
+		"license": "MIT",
+		"files": [
+			{
+				"file": "rust/9d1eb142840c7acfd5511b4dd298cece3f0053f5809228906445cd8a3365592f.txt",
+				"url": "https://raw.githubusercontent.com/LaurenzV/krilla/3ffdf0588cf98050aad6edba51ca70162e1fb5b5/LICENSE_MIT",
+				"sha256": "9d1eb142840c7acfd5511b4dd298cece3f0053f5809228906445cd8a3365592f"
+			},
+			{
+				"file": "rust/7aa87a70e18c9c160b5a14e24b46a8e407858b21fed635920c701657b4bd7976.txt",
+				"url": "https://raw.githubusercontent.com/LaurenzV/krilla/3ffdf0588cf98050aad6edba51ca70162e1fb5b5/NOTICE.md",
+				"sha256": "7aa87a70e18c9c160b5a14e24b46a8e407858b21fed635920c701657b4bd7976"
+			}
+		]
 	}
 }

@@ -114,7 +114,7 @@ fn blocking_admission_stays_owned_after_disconnect_and_stop_rejects_queued_work(
         web_font_folder: None,
         pdf_font_folder: None,
         docx_font_folder: None,
-        typst_binary: None,
+        pdf_renderer: None,
     })
     .unwrap();
     let runtime = tokio::runtime::Builder::new_multi_thread()

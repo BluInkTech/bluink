@@ -40,12 +40,10 @@ fn capture_child() {
             Some(root.join("fonts/assets/web").to_string_lossy().into_owned());
         options.pdf_font_folder =
             Some(root.join("fonts/assets/pdf").to_string_lossy().into_owned());
-        options.typst_binary = Some(
-            directory
-                .join("private-missing-typst")
-                .to_string_lossy()
-                .into_owned(),
-        );
+        options.pdf_renderer = Some(crate::export_jobs::pdf::Renderer::Child {
+            program: directory.join("private-missing-renderer"),
+            arguments: Vec::new(),
+        });
     });
     let mut expected = Vec::new();
     let item=call(&f,&mut expected,"create_item",&json!({"meta":{"type":"page","title":"private-document-title"},"content":page_content("private-authored-prose")}).to_string(),"POST");

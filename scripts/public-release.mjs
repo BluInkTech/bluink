@@ -6,24 +6,29 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { buildPackage } from './assemble-cli.mjs'
-import { contractHash, prepareCliBuild } from './cli-build.mjs'
 import {
-	downloadFrontend,
-	validateFrontend,
-	verifyBundledFrontend,
-} from './frontend-asset.mjs'
+	downloadNativeComponents,
+	readNativeComponents,
+	validateNativeSelection,
+} from './native-components.mjs'
+import { contractHash, prepareCliBuild } from './cli-build.mjs'
+import { downloadFrontend, validateFrontend } from './frontend-asset.mjs'
 import {
 	inspectArchive,
 	packDirectory,
 	productionLock,
 	verifyArchive,
 } from './package-artifacts.mjs'
-import { cliFileAllowed, webFileAllowed } from './package-audit.mjs'
+import { cliFileAllowed } from './package-audit.mjs'
 import {
 	releaseNativeEntry,
 	verifyPlatformArchive,
 } from './platform-package.mjs'
-import { publicIdentity, versionPattern } from './release-identity.mjs'
+import {
+	nativePackageVersion,
+	publicIdentity,
+	versionPattern,
+} from './release-identity.mjs'
 import {
 	publishRecords,
 	verifyRegistryProvenance,
@@ -45,7 +50,7 @@ import {
 import {
 	downloadResources,
 	readPreparedResources,
-	resourceFileAllowed,
+	resourceAudit,
 	resourceSummary,
 	stageInstalledResources,
 } from './resource-packages.mjs'
@@ -67,19 +72,17 @@ export function validateInput(input) {
 					'publicRepository',
 					'dependencies',
 					'frontend',
+					'native',
 				].includes(key),
 		)
 	)
 		throw new Error('Invalid public release input.')
 	publicIdentity(input.version, { publicRepository: input.publicRepository })
-	if (
-		input.dependencies.length !== 2 ||
-		new Set(input.dependencies.map((entry) => entry.name)).size !== 2
-	)
-		throw new Error('Release input requires exactly two npm dependencies.')
+	if (input.dependencies.length !== 1)
+		throw new Error('Release input requires exactly one npm dependency.')
 	for (const entry of input.dependencies)
 		if (
-			!['@bluink/fonts', '@bluink/typst'].includes(entry.name) ||
+			entry.name !== '@bluink/fonts' ||
 			!versionPattern.test(entry.version) ||
 			!/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(entry.integrity) ||
 			!/^[a-f0-9]{64}$/.test(entry.sha256) ||
@@ -88,7 +91,8 @@ export function validateInput(input) {
 			)
 		)
 			throw new Error('Invalid fixed dependency identity.')
-	validateFrontend(input.frontend, input.version, input.publicRepository)
+	validateFrontend(input.frontend)
+	if (input.native !== undefined) validateNativeSelection(input.native)
 	return input
 }
 
@@ -160,7 +164,7 @@ async function context(publishing = false) {
 	const manifest = await json(path.join(root, 'backend/package.json'))
 	if (
 		manifest.version !== input.version ||
-		Object.keys(manifest.dependencies).length !== 2 ||
+		Object.keys(manifest.dependencies).length !== 1 ||
 		input.dependencies.some(
 			(entry) => manifest.dependencies[entry.name] !== entry.version,
 		)
@@ -191,9 +195,7 @@ function frozenMatch(actual, expected) {
 async function dependencies(input) {
 	const destination = path.join(root, '.resource-packages')
 	const records = await downloadResources(input.dependencies, destination)
-	records.push(
-		await downloadFrontend(input.frontend, input.publicRepository, destination),
-	)
+	records.push(await downloadFrontend(input.frontend, destination))
 	await writeJson(
 		path.join(destination, 'dependencies.json'),
 		records.map(resourceSummary),
@@ -203,17 +205,29 @@ async function dependencies(input) {
 
 /** Verify the main package against the frozen inputs and the packed platform
  * packages it pins. `platforms` are archive records for every release target. */
-export async function verifyCliArchive(archive, identity, records, platforms) {
+export async function verifyCliArchive(
+	archive,
+	identity,
+	records,
+	platforms,
+	nativeSelection,
+) {
 	const native = []
 	for (const target of targets) {
 		const record = platforms.find((entry) => entry.name === target.addonPackage)
 		if (!record)
 			throw new Error(`Missing platform package: ${target.addonPackage}`)
-		const { manifest, addon } = await verifyPlatformArchive(
-			record,
-			target,
-			identity,
-		)
+		if (nativeSelection)
+			frozenMatch(
+				record,
+				nativeSelection.packages.find(({ name }) => name === record.name),
+			)
+		const { manifest, addon } = await verifyPlatformArchive(record, target, {
+			...identity,
+			version:
+				nativeSelection?.version ?? nativePackageVersion(identity.version),
+			publicCommit: nativeSelection?.publicCommit ?? identity.publicCommit,
+		})
 		native.push({ record: { ...record, manifest }, addon })
 	}
 	if (platforms.length !== targets.length)
@@ -227,9 +241,6 @@ export async function verifyCliArchive(archive, identity, records, platforms) {
 			'release.json',
 			'npm-shrinkwrap.json',
 			'THIRD_PARTY_NOTICES.txt',
-			'web/assets/index.html',
-			'web/LICENSE',
-			'web/release.json',
 		],
 		onInspect: async (directory, { manifest, metadata }) => {
 			const fields = new Set([
@@ -246,6 +257,7 @@ export async function verifyCliArchive(archive, identity, records, platforms) {
 				'dependencies',
 				'frontend',
 				'native',
+				'nativeOrigin',
 			])
 			if (
 				metadata?.format !== 'bluink.release' ||
@@ -268,7 +280,13 @@ export async function verifyCliArchive(archive, identity, records, platforms) {
 				manifest.scripts !== undefined
 			)
 				throw new Error('CLI archive has the wrong public release identity.')
-			const resources = records.filter((entry) => entry.name !== '@bluink/web')
+			const origin = nativeSelection && {
+				releaseVersion: nativeSelection.releaseVersion,
+				publicCommit: nativeSelection.publicCommit,
+			}
+			if (JSON.stringify(metadata.nativeOrigin) !== JSON.stringify(origin))
+				throw new Error('CLI native origin differs from the frozen release.')
+			const resources = records
 			const web = records.find((entry) => entry.name === '@bluink/web')
 			if (
 				JSON.stringify(Object.keys(metadata.frontend ?? {}).sort()) !==
@@ -276,7 +294,14 @@ export async function verifyCliArchive(archive, identity, records, platforms) {
 			)
 				throw new Error('Unexpected bundled frontend identity metadata.')
 			frozenMatch(metadata.frontend, web)
-			await verifyBundledFrontend(path.join(directory, 'web'), web)
+			if (
+				web.metadata?.contractHash !== metadata.contractHash ||
+				web.metadata?.fontsVersion !==
+					records.find(({ name }) => name === '@bluink/fonts')?.version
+			)
+				throw new Error(
+					'Web contract or Fonts version differs from the release.',
+				)
 			const expectedDependencies = resources
 				.map(({ name, version, integrity }) => ({ name, version, integrity }))
 				.sort((left, right) => left.name.localeCompare(right.name))
@@ -344,17 +369,19 @@ export async function verifyCliArchive(archive, identity, records, platforms) {
 
 async function assemble() {
 	const { input, identity } = await context()
-	const native = await verifyNativeArtifacts(
-		nativeDirectory('release'),
-		undefined,
-		false,
-		{ ...identity, version: input.version },
-	)
-	validateNativeReports(
-		{ ...identity, version: input.version },
-		native,
-		await readNativeReports(),
-	)
+	if (!input.native) {
+		const nativeIdentity = {
+			...identity,
+			version: nativePackageVersion(input.version),
+		}
+		const native = await verifyNativeArtifacts(
+			nativeDirectory('release'),
+			undefined,
+			false,
+			nativeIdentity,
+		)
+		validateNativeReports(nativeIdentity, native, await readNativeReports())
+	}
 	const records = await readPreparedResources(
 		input,
 		path.join(root, '.resource-packages'),
@@ -366,6 +393,8 @@ async function assemble() {
 		metadata,
 		dependencies: records,
 		preparedDirectory: path.join(root, '.cli-build'),
+		nativeSelection: input.native,
+		nativeArchiveDirectory: path.join(root, '.resource-packages'),
 	})
 	const output = path.join(root, 'package-out')
 	const cli = await packDirectory(directory, output, {
@@ -376,6 +405,7 @@ async function assemble() {
 		{ ...identity, version: input.version },
 		records,
 		platforms,
+		input.native,
 	)
 	for (const record of [...platforms, ...records])
 		await copyFile(record.archive, path.join(output, record.filename))
@@ -405,7 +435,10 @@ async function nativeReport() {
 		nativeDirectory('release'),
 		undefined,
 		true,
-		{ version: input.version, publicCommit: identity.publicCommit },
+		{
+			version: nativePackageVersion(input.version),
+			publicCommit: identity.publicCommit,
+		},
 	)
 	await mkdir(path.join(root, 'verification'), { recursive: true })
 	await writeJson(path.join(root, 'verification', `${native[0].target}.json`), {
@@ -454,7 +487,7 @@ async function bundle() {
 		manifest.version !== input.version ||
 		manifest.publicCommit !== identity.publicCommit ||
 		manifest.publicRepository !== identity.publicRepository ||
-		manifest.artifacts?.length !== 4 + targets.length ||
+		manifest.artifacts?.length !== 3 + targets.length ||
 		Object.keys(manifest).some(
 			(key) =>
 				![
@@ -493,7 +526,7 @@ async function bundle() {
 	if (
 		!cli ||
 		platforms.length !== targets.length ||
-		new Set(records.map((entry) => entry.name)).size !== 4 + targets.length
+		new Set(records.map((entry) => entry.name)).size !== 3 + targets.length
 	)
 		throw new Error('Incomplete prepared archive set.')
 	const dependencies = []
@@ -506,24 +539,10 @@ async function bundle() {
 				? input.frontend
 				: input.dependencies.find((entry) => entry.name === record.name),
 		)
-		const inspected = await verifyArchive(record, {
-			allowed:
-				record.name === '@bluink/web'
-					? webFileAllowed
-					: (file) => resourceFileAllowed(record.name.split('/')[1], file),
-			frontend: record.name === '@bluink/web',
-			trustedUpstream:
-				record.name === '@bluink/typst'
-					? Object.fromEntries(
-							Object.entries(
-								(await json(path.join(root, 'typst/sources.json'))).targets,
-							).map(([target, spec]) => [
-								`assets/${target}/${spec.binary}`,
-								spec.binarySha256,
-							]),
-						)
-					: {},
-		})
+		const inspected = await verifyArchive(
+			record,
+			resourceAudit(record.name.split('/')[1]),
+		)
 		dependencies.push({ ...record, ...inspected })
 	}
 	await verifyArchive(cli, { allowed: cliFileAllowed })
@@ -532,6 +551,7 @@ async function bundle() {
 		{ ...identity, version: input.version },
 		dependencies,
 		platforms,
+		input.native,
 	)
 	return {
 		input,
@@ -551,9 +571,7 @@ async function smoke() {
 	)
 	const report = await smokePackage(cli.archive, input.version, [
 		host.archive,
-		...dependencies
-			.filter((entry) => entry.name !== '@bluink/web')
-			.map((entry) => entry.archive),
+		...dependencies.map((entry) => entry.archive),
 	])
 	await mkdir(path.join(root, 'smoke-results'), { recursive: true })
 	await writeJson(
@@ -575,16 +593,20 @@ export function validateReports(
 	{ input, manifest, cli, nativeArtifacts },
 	reports,
 ) {
-	validateNativeReports(
-		{ version: input.version, publicCommit: manifest.publicCommit },
-		nativeArtifacts,
-		Object.fromEntries(
-			Object.entries(reports).map(([target, report]) => [
-				target,
-				report.native,
-			]),
-		),
-	)
+	if (!input.native)
+		validateNativeReports(
+			{
+				version: nativePackageVersion(input.version),
+				publicCommit: manifest.publicCommit,
+			},
+			nativeArtifacts,
+			Object.fromEntries(
+				Object.entries(reports).map(([target, report]) => [
+					target,
+					report.native,
+				]),
+			),
+		)
 	return targets.map((target) => {
 		const { smoke: report } = reports[target.rust] ?? {}
 		const artifact = nativeArtifacts.find(
@@ -625,9 +647,11 @@ async function verifiedBundle() {
 							`${target.platform}-${target.arch}.json`,
 						),
 					),
-					native: await json(
-						path.join(root, 'verification', `${target.rust}.json`),
-					),
+					native: prepared.input.native
+						? undefined
+						: await json(
+								path.join(root, 'verification', `${target.rust}.json`),
+							),
 				},
 			]),
 		),
@@ -649,30 +673,44 @@ async function verifiedBundle() {
 
 async function publish() {
 	await context(true)
-	const { identity, cli, platforms, dependencies } = await verifiedBundle()
-	await verifyRegistryProvenance(
-		dependencies.filter((entry) => entry.name !== '@bluink/web'),
-		identity,
-	)
+	const {
+		input,
+		identity: contextIdentity,
+		cli,
+		platforms,
+		dependencies,
+	} = await verifiedBundle()
+	const identity = {
+		...contextIdentity,
+		version: cli.version,
+		nativeOrigin: input.native,
+	}
+	const tagFor = (record) =>
+		record.name === packageName
+			? identity.channel === 'stable'
+				? 'next'
+				: identity.channel
+			: 'latest'
+	await verifyRegistryProvenance(dependencies, identity)
 	// Platform packages first: the main package's shrinkwrap pins them.
-	await publishRecords([...platforms, cli], {
+	const publishing = input.native ? [cli] : [...platforms, cli]
+	await publishRecords(publishing, {
+		tagFor,
 		verifyExisting: (records) => verifyRegistryProvenance(records, identity),
 	})
 	await writeJson(
 		path.join(root, 'package-out/registry-verification.json'),
 		await verifyRegistryProvenance(
-			[
-				...dependencies.filter((entry) => entry.name !== '@bluink/web'),
-				...platforms,
-				cli,
-			],
+			[...dependencies, ...platforms, cli],
 			identity,
 		),
 	)
-	for (const record of [...platforms, cli])
+	for (const record of publishing)
 		console.log(
 			'Verified npm distribution tag:',
-			await verifyRegistryTag(record.name, record.version),
+			await verifyRegistryTag(record.name, record.version, {
+				tag: tagFor(record),
+			}),
 		)
 }
 
@@ -704,12 +742,20 @@ if (
 			)
 	} else if (positionals[0] === 'resources') {
 		const { input, identity } = await context()
-		await verifyRegistryProvenance(
-			(await dependencies(input)).filter(
-				(entry) => entry.name !== '@bluink/web',
-			),
-			identity,
-		)
+		await verifyRegistryProvenance(await dependencies(input), identity)
+		if (input.native) {
+			const directory = path.join(root, '.resource-packages')
+			await downloadNativeComponents(input.native, directory)
+			const records = await readNativeComponents(
+				input.native,
+				directory,
+				identity.publicRepository,
+			)
+			await verifyRegistryProvenance(records, {
+				...identity,
+				nativeOrigin: input.native,
+			})
+		}
 	} else if (positionals[0] === 'resources-install') {
 		const { input } = await context()
 		await readPreparedResources(

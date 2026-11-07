@@ -50,7 +50,7 @@ impl Application {
             web_fonts: self.options.web_font_folder.clone(),
             pdf_fonts: self.options.pdf_font_folder.clone(),
             docx_fonts: self.options.docx_font_folder.clone(),
-            typst: self.options.typst_binary.clone(),
+            renderer: self.options.pdf_renderer.clone(),
         }
     }
 

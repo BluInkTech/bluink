@@ -18,10 +18,9 @@ npm test
 ```
 
 CLI builds consume the frontend version and checksums in `release-input.json`,
-plus exact published Fonts and Typst npm dependencies. They do
-not regenerate fonts or download upstream Typst archives. Fonts and Typst have
-independent release workflows. The included synthetic tests do not represent
-the complete product verification suite.
+plus the exact published Fonts npm dependency. They do not regenerate fonts.
+Fonts has an independent release workflow. The included synthetic tests do
+not represent the complete product verification suite.
 
 ## Feedback and contributions
 

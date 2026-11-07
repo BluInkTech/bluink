@@ -18,7 +18,7 @@ const identity = {
 	publicRepository: 'https://github.com/example/cli',
 	publicCommit: 'a'.repeat(40),
 }
-const records = ['fonts', 'typst', 'cli'].map((kind) => ({
+const records = ['fonts', 'cli'].map((kind) => ({
 	name: kind === 'cli' ? 'bluink' : `@bluink/${kind}`,
 	version: '26.10.7-alpha',
 	integrity: 'sha512-Ynl0ZXM=',
@@ -124,7 +124,7 @@ test('installation waits for catalogue propagation without retrying unrelated fa
 	const directory = await mkdtemp(path.join(os.tmpdir(), 'bluink-catalogue-'))
 	try {
 		const delayed = new Error(
-			`npm error code ETARGET\nnpm error notarget No matching version found for ${records[2].name}@${records[2].version}.`,
+			`npm error code ETARGET\nnpm error notarget No matching version found for ${records[1].name}@${records[1].version}.`,
 		)
 		let installs = 0
 		let pauses = 0
@@ -176,8 +176,8 @@ test('all versions and existing provenance are checked before any upload', async
 	await assert.rejects(
 		publishRecords(records, {
 			lookup: async (name) =>
-				name === records[2].name
-					? registry(records[2], 'different')
+				name === records[1].name
+					? registry(records[1], 'different')
 					: undefined,
 			upload,
 		}),
@@ -213,7 +213,7 @@ test('lost upload responses recover the same published bytes and retries never u
 	}
 	await publishRecords(records, options)
 	await publishRecords(records, options)
-	assert.equal(uploads, 3)
+	assert.equal(uploads, 2)
 	await assert.rejects(
 		publishRecords(records, {
 			...options,
@@ -224,7 +224,7 @@ test('lost upload responses recover the same published bytes and retries never u
 		}),
 		/verification pending/,
 	)
-	assert.equal(uploads, 3)
+	assert.equal(uploads, 2)
 })
 
 test('registry delay is bounded and integrity conflicts stop recovery', async () => {
@@ -317,7 +317,7 @@ function reportFor(record) {
 }
 
 test('verified npm provenance must bind the exact package, bytes, public workflow and CLI source', () => {
-	const record = records[2]
+	const record = records[1]
 	const { report } = reportFor(record)
 	assert.equal(
 		provenanceStatement(report, record, identity).commit,
@@ -362,44 +362,43 @@ test('verified npm provenance must bind the exact package, bytes, public workflo
 	)
 })
 
-test('resources bind their own workflow and tag, and their source commit is independent of CLI', () => {
-	for (const record of records.slice(0, 2)) {
-		const { statement, report } = reportFor(record)
-		statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit =
-			'b'.repeat(40)
-		const update = () => {
-			report.verified[0].attestationBundles[0].bundle.dsseEnvelope.payload =
-				Buffer.from(JSON.stringify(statement)).toString('base64')
-		}
-		update()
-		assert.equal(
-			provenanceStatement(report, record, identity).commit,
-			'b'.repeat(40),
-		)
-		assert.throws(
-			() =>
-				provenanceStatement(report, record, {
-					...identity,
-					packageName: record.name,
-				}),
-			/wrong workflow/,
-		)
-		statement.predicate.buildDefinition.externalParameters.workflow.path =
-			'.github/workflows/public-release.yml'
-		update()
-		assert.throws(
-			() => provenanceStatement(report, record, identity),
-			/wrong workflow/,
-		)
-		statement.predicate.buildDefinition.externalParameters.workflow.path =
-			provenancePolicy(record).workflow
-		statement.predicate.buildDefinition.externalParameters.workflow.ref = `refs/tags/v${record.version}`
-		update()
-		assert.throws(
-			() => provenanceStatement(report, record, identity),
-			/wrong workflow/,
-		)
+test('Fonts binds its own workflow and tag, and its source commit is independent of CLI', () => {
+	const record = records[0]
+	const { statement, report } = reportFor(record)
+	statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit =
+		'b'.repeat(40)
+	const update = () => {
+		report.verified[0].attestationBundles[0].bundle.dsseEnvelope.payload =
+			Buffer.from(JSON.stringify(statement)).toString('base64')
 	}
+	update()
+	assert.equal(
+		provenanceStatement(report, record, identity).commit,
+		'b'.repeat(40),
+	)
+	assert.throws(
+		() =>
+			provenanceStatement(report, record, {
+				...identity,
+				packageName: record.name,
+			}),
+		/wrong workflow/,
+	)
+	statement.predicate.buildDefinition.externalParameters.workflow.path =
+		'.github/workflows/public-release.yml'
+	update()
+	assert.throws(
+		() => provenanceStatement(report, record, identity),
+		/wrong workflow/,
+	)
+	statement.predicate.buildDefinition.externalParameters.workflow.path =
+		provenancePolicy(record).workflow
+	statement.predicate.buildDefinition.externalParameters.workflow.ref = `refs/tags/v${record.version}`
+	update()
+	assert.throws(
+		() => provenanceStatement(report, record, identity),
+		/wrong workflow/,
+	)
 	assert.throws(
 		() => provenancePolicy({ name: '@bluink/unknown', version: '26.10.1' }),
 		/Unknown/,
@@ -417,7 +416,7 @@ test('platform packages bind the CLI release workflow, tag and source commit', (
 		'@bluink/cli-darwin-arm64',
 		'@bluink/cli-linux-x64-gnu',
 	]) {
-		const record = { ...records[2], name }
+		const record = { ...records[1], name }
 		assert.deepEqual(provenancePolicy(record), {
 			workflow: '.github/workflows/public-release.yml',
 			ref: `refs/tags/v${record.version}`,

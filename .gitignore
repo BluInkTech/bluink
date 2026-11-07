@@ -11,8 +11,6 @@ backend/web/
 backend/dist/
 fonts/assets/
 fonts/.cache/
-typst/assets/
-typst/.cache/
 *.log
 *.tgz
 package-out/

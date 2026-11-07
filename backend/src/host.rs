@@ -137,6 +137,9 @@ pub struct Launch {
     /// The installed `bluink` package. Inside a host the executable path
     /// names the host, so the loader supplies the package it was loaded from.
     pub package_root: Option<PathBuf>,
+    /// The script the host ran to load Bluink. A PDF renderer child runs the
+    /// host with it again, so the child loads Bluink the same way.
+    pub launcher: Option<PathBuf>,
 }
 
 /// Who owns process signals: Bluink itself, or the host that loaded it.
@@ -172,6 +175,9 @@ pub fn run_embedded(launch: Launch) -> u8 {
     if let Some(root) = launch.package_root {
         resources::use_package_root(root);
     }
+    if let Some(launcher) = launch.launcher {
+        resources::use_launcher(launcher);
+    }
     start(&launch.arguments, Signals::Host)
 }
 
@@ -187,6 +193,11 @@ pub fn request_shutdown() {
 }
 
 fn start(arguments: &[String], signals: Signals) -> u8 {
+    if let Some((command, rest)) = arguments.split_first()
+        && command == crate::export_jobs::pdf::RENDER_COMMAND
+    {
+        return render_pdf(rest);
+    }
     let invocation = match cli::parse(arguments) {
         Ok(invocation) => invocation,
         Err(message) => {
@@ -281,6 +292,32 @@ fn start(arguments: &[String], signals: Signals) -> u8 {
         code = FAILURE;
     }
     code
+}
+
+/// A PDF renderer child, started by an export. Typst recurses deeply on long
+/// documents, so it runs on a thread with a large stack. Its diagnostics go
+/// to stderr unadorned, for the parent to map back to the source page.
+fn render_pdf(arguments: &[String]) -> u8 {
+    let arguments = arguments.to_vec();
+    let worker = std::thread::Builder::new()
+        .name("typst".to_owned())
+        .stack_size(256 * 1024 * 1024)
+        .spawn(move || crate::export_jobs::pdf::render_child(&arguments));
+    match worker.map(std::thread::JoinHandle::join) {
+        Ok(Ok(Ok(()))) => SUCCESS,
+        Ok(Ok(Err(diagnostics))) => {
+            output::notice(diagnostics.trim_end());
+            FAILURE
+        }
+        Ok(Err(_)) => {
+            output::notice("error: Typst stopped unexpectedly.");
+            FAILURE
+        }
+        Err(error) => {
+            output::notice(&format!("error: Cannot start Typst: {error}"));
+            FAILURE
+        }
+    }
 }
 
 /// A command's result plus the console, which must stop only after the

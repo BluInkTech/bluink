@@ -3,14 +3,19 @@
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
+    ffi::OsString,
     fmt::Write as _,
     fs,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
 mod compiler;
+mod world;
+
+#[cfg(test)]
+pub(crate) use world::query;
 
 use crate::domain::publication::{
     PdfProfile,
@@ -37,32 +42,41 @@ pub(crate) struct PdfBundle {
     pub(crate) page_lines: Vec<(usize, String)>,
 }
 
-/// Accepts only the pinned Typst. A version query that fails reports how it
-/// failed, so a broken or blocked binary is not mistaken for a wrong version.
-fn check_typst_version(version: &std::process::Output) -> Result<(), String> {
-    let stdout = String::from_utf8_lossy(&version.stdout);
-    if !version.status.success() {
-        let stderr = String::from_utf8_lossy(&version.stderr);
-        let detail = stderr.trim();
-        return Err(if detail.is_empty() {
-            format!(
-                "Packaged Typst could not report its version ({}).",
-                version.status
-            )
-        } else {
-            format!(
-                "Packaged Typst could not report its version ({}): {detail}",
-                version.status
-            )
-        });
-    }
-    if !stdout.starts_with("typst 0.15.1 ") {
+/// The hidden command a renderer child runs:
+/// `render-pdf <stage> <shell> <output> <fonts> <default|accessible>`.
+pub(crate) const RENDER_COMMAND: &str = "render-pdf";
+
+/// Starts the child process that typesets a staged bundle. Typst cannot stop a
+/// compile midway, so each one runs in a process an export can kill.
+#[derive(Clone)]
+pub(crate) enum Renderer {
+    /// A program and its leading arguments: Bluink's executable, or Node and
+    /// the launcher, so the child also loads Bluink's addon through Node.
+    Child {
+        program: PathBuf,
+        arguments: Vec<OsString>,
+    },
+    /// Typeset on the calling thread, without cancellation. Unit tests have no
+    /// Bluink executable to start.
+    #[cfg(test)]
+    InProcess,
+}
+
+/// The child's side: typeset the staged bundle and write the PDF. An error is
+/// Typst's diagnostics, which the parent maps back to the source page.
+pub(crate) fn render_child(arguments: &[String]) -> Result<(), String> {
+    let [stage, shell, output, fonts, profile] = arguments else {
         return Err(format!(
-            "Packaged Typst must be version 0.15.1, but reports “{}”.",
-            stdout.trim()
+            "Usage: bluink {RENDER_COMMAND} <stage> <shell> <output> <fonts> <default|accessible>"
         ));
-    }
-    Ok(())
+    };
+    let profile = match profile.as_str() {
+        "default" => PdfProfile::Default,
+        "accessible" => PdfProfile::Accessible,
+        other => return Err(format!("Unknown PDF profile: {other}")),
+    };
+    let pdf = world::compile(Path::new(stage), shell, Path::new(fonts), profile)?;
+    fs::write(output, pdf).map_err(|error| format!("Cannot write the compiled PDF: {error}"))
 }
 
 /// Compile without a cancellation source, as tests and fixtures do.
@@ -71,16 +85,22 @@ pub(crate) fn publish_pdf(
     bundle: PdfBundle,
     profile: PdfProfile,
     destination: &Path,
-    typst: &Path,
     font_path: &Path,
 ) -> Result<(), String> {
-    publish_pdf_until(bundle, profile, destination, typst, font_path, &|| false)
+    publish_pdf_until(
+        bundle,
+        profile,
+        destination,
+        &Renderer::InProcess,
+        font_path,
+        &|| false,
+    )
 }
 
 /// Compile in a private sibling folder and publish the verified PDF in one
-/// hard link. A failed compiler run never leaves a partial destination file.
-/// Typst stops as soon as `cancelled` returns true, so a cancelled export
-/// frees the print lane and shutdown does not wait for it.
+/// hard link. A failed compile never leaves a partial destination file.
+/// The renderer is killed as soon as `cancelled` returns true, so a cancelled
+/// export frees the print lane and shutdown does not wait for it.
 #[expect(
     clippy::too_many_lines,
     reason = "Keep the complete format or operation dispatch together for contract review."
@@ -89,7 +109,7 @@ pub(crate) fn publish_pdf_until(
     bundle: PdfBundle,
     profile: PdfProfile,
     destination: &Path,
-    typst: &Path,
+    renderer: &Renderer,
     font_path: &Path,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(), String> {
@@ -151,62 +171,69 @@ pub(crate) fn publish_pdf_until(
             fs::write(&output, bytes)
                 .map_err(|error| format!("Cannot write PDF bundle file {relative}: {error}"))?;
         }
-        compiler::verify_typst(typst)?;
         let output_pdf = stage.join("result.pdf");
-        let diagnostic_path = stage.join("typst-diagnostics.txt");
-        let diagnostics = fs::File::create(&diagnostic_path)
-            .map_err(|error| format!("Cannot stage Typst diagnostics: {error}"))?;
-        let mut command = Command::new(typst);
-        command.args(["compile", "--features", "a11y-extras"]);
-        if matches!(profile, PdfProfile::Accessible) {
-            command.args(["--pdf-standard", "ua-1"]);
-        }
-        command.args([
-            "--root",
-            stage.to_str().ok_or("PDF stage path is not UTF-8.")?,
-            "--ignore-system-fonts",
-            "--font-path",
-            font_path
-                .to_str()
-                .ok_or("Packaged font path is not UTF-8.")?,
-            "--diagnostic-format",
-            "short",
-        ]);
-        command
-            .arg(stage.join(&shell_path))
-            .arg(&output_pdf)
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(diagnostics));
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("Cannot start Typst: {error}"))?;
-        let deadline = Instant::now() + Duration::from_mins(30);
-        loop {
-            if let Some(status) = child
-                .try_wait()
-                .map_err(|error| format!("Cannot wait for Typst: {error}"))?
-            {
-                if !status.success() {
-                    let diagnostics = fs::read_to_string(&diagnostic_path)
-                        .unwrap_or_else(|_| "Typst diagnostics unavailable.".to_owned());
-                    let source = source_for_diagnostic(&diagnostics, &page_lines)
-                        .map(|id| format!(" in page {id}"))
-                        .unwrap_or_default();
-                    return Err(format!("Typst failed{source}: {}", diagnostics.trim()));
+        match renderer {
+            #[cfg(test)]
+            Renderer::InProcess => {
+                let pdf = world::compile(&stage, &shell_path, font_path, profile)
+                    .map_err(|diagnostics| failure(&diagnostics, &page_lines))?;
+                fs::write(&output_pdf, pdf)
+                    .map_err(|error| format!("Cannot write the compiled PDF: {error}"))?;
+            }
+            Renderer::Child { program, arguments } => {
+                // The child reads its arguments as Unicode, as every command does.
+                let (Some(stage_text), Some(fonts_text)) = (stage.to_str(), font_path.to_str())
+                else {
+                    return Err("PDF stage and font paths must be valid Unicode.".to_owned());
+                };
+                let diagnostic_path = stage.join("typst-diagnostics.txt");
+                let diagnostics = fs::File::create(&diagnostic_path)
+                    .map_err(|error| format!("Cannot stage Typst diagnostics: {error}"))?;
+                let mut child = Command::new(program)
+                    .args(arguments)
+                    .args([RENDER_COMMAND, stage_text, &shell_path])
+                    .arg(&output_pdf)
+                    .args([
+                        fonts_text,
+                        match profile {
+                            PdfProfile::Default => "default",
+                            PdfProfile::Accessible => "accessible",
+                        },
+                    ])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::from(diagnostics))
+                    .spawn()
+                    .map_err(|error| format!("Cannot start the PDF renderer: {error}"))?;
+                let deadline = Instant::now() + Duration::from_mins(30);
+                loop {
+                    if let Some(status) = child
+                        .try_wait()
+                        .map_err(|error| format!("Cannot wait for the PDF renderer: {error}"))?
+                    {
+                        if !status.success() {
+                            let diagnostics =
+                                fs::read_to_string(&diagnostic_path).unwrap_or_default();
+                            if diagnostics.trim().is_empty() {
+                                return Err(format!("Typst stopped unexpectedly ({status})."));
+                            }
+                            return Err(failure(&diagnostics, &page_lines));
+                        }
+                        break;
+                    }
+                    if cancelled() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err("Export cancelled.".to_owned());
+                    }
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err("Typst exceeded the 30-minute compilation limit.".to_owned());
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
                 }
-                break;
             }
-            if cancelled() {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("Export cancelled.".to_owned());
-            }
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("Typst exceeded the 30-minute compilation limit.".to_owned());
-            }
-            std::thread::sleep(Duration::from_millis(50));
         }
         compiler::validate_pdf(&output_pdf)?;
         fs::hard_link(&output_pdf, destination)
@@ -214,6 +241,13 @@ pub(crate) fn publish_pdf_until(
     })();
     let _ = fs::remove_dir_all(&stage);
     result
+}
+
+fn failure(diagnostics: &str, page_lines: &[(usize, String)]) -> String {
+    let source = source_for_diagnostic(diagnostics, page_lines)
+        .map(|id| format!(" in page {id}"))
+        .unwrap_or_default();
+    format!("Typst failed{source}: {}", diagnostics.trim())
 }
 
 fn source_for_diagnostic<'a>(
@@ -489,41 +523,9 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        BookEntry, PdfBundle, check_typst_version, collect_book_entries, publish_pdf,
-        render_publication_pdf, source_for_diagnostic,
+        BookEntry, PdfBundle, collect_book_entries, publish_pdf, render_publication_pdf,
+        source_for_diagnostic,
     };
-
-    pub(super) fn version_output(code: u32, stdout: &str, stderr: &str) -> std::process::Output {
-        #[cfg(windows)]
-        let status = std::os::windows::process::ExitStatusExt::from_raw(code);
-        #[cfg(unix)]
-        let status =
-            std::os::unix::process::ExitStatusExt::from_raw(i32::try_from(code).unwrap() << 8);
-        std::process::Output {
-            status,
-            stdout: stdout.as_bytes().to_vec(),
-            stderr: stderr.as_bytes().to_vec(),
-        }
-    }
-
-    #[test]
-    fn typst_version_check_reports_how_it_failed() {
-        assert!(check_typst_version(&version_output(0, "typst 0.15.1 (9dfd3a08)\n", "")).is_ok());
-        let older =
-            check_typst_version(&version_output(0, "typst 0.14.0 (abc)\n", "")).unwrap_err();
-        assert!(
-            older.contains("must be version 0.15.1, but reports “typst 0.14.0 (abc)”"),
-            "{older}"
-        );
-        let failed =
-            check_typst_version(&version_output(3, "", "Access is denied.\n")).unwrap_err();
-        assert!(
-            failed.starts_with("Packaged Typst could not report its version ("),
-            "{failed}"
-        );
-        assert!(failed.ends_with("): Access is denied."), "{failed}");
-        assert!(!failed.contains("must be version"), "{failed}");
-    }
     use crate::application::item_writes::write_asset;
     use crate::application::item_writes::write_item_input;
     use crate::domain::project::config::create_project_config;
@@ -577,22 +579,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "Keep each end-to-end scenario together so setup, failure checks and cleanup remain visible."
     )]
-    fn renders_book_and_compiles_with_packaged_typst() {
-        let binary = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-            "linux-x64/typst"
-        } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-            "windows-x64/typst.exe"
-        } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-            "macos-arm64/typst"
-        } else {
-            return;
-        };
-        let typst_binary = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../typst/assets")
-            .join(binary);
-        if !typst_binary.is_file() {
-            return;
-        }
+    fn renders_book_and_compiles_with_linked_typst() {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("project");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/pdf-project");
@@ -655,7 +642,6 @@ mod tests {
             bundle.clone(),
             plan.targets.pdf.profile,
             &root.join("book.pdf"),
-            &typst_binary,
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../fonts/assets/pdf"),
         )
         .unwrap();
@@ -669,7 +655,6 @@ mod tests {
                 bundle,
                 plan.targets.pdf.profile,
                 &root.join("book.pdf"),
-                &typst_binary,
                 &Path::new(env!("CARGO_MANIFEST_DIR")).join("../fonts/assets/pdf")
             )
             .unwrap_err()
@@ -688,7 +673,6 @@ mod tests {
             editorial,
             editorial_plan.targets.pdf.profile,
             &root.join("editorial.pdf"),
-            &typst_binary,
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../fonts/assets/pdf"),
         )
         .unwrap();
@@ -715,7 +699,6 @@ mod tests {
             themed,
             themed_plan.targets.pdf.profile,
             &root.join("field-notes.pdf"),
-            &typst_binary,
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../fonts/assets/pdf"),
         )
         .unwrap();
@@ -737,7 +720,6 @@ mod tests {
             accessible,
             accessible_plan.targets.pdf.profile,
             &root.join("accessible.pdf"),
-            &typst_binary,
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../fonts/assets/pdf"),
         )
         .unwrap();
@@ -766,7 +748,6 @@ mod tests {
                 bad,
                 accessible_plan.targets.pdf.profile,
                 &root.join("bad.pdf"),
-                &typst_binary,
                 &Path::new(env!("CARGO_MANIFEST_DIR")).join("../fonts/assets/pdf")
             )
             .unwrap_err()

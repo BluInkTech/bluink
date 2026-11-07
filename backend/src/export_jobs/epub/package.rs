@@ -140,7 +140,7 @@ impl Package {
         xml.element("dc:language", language)?;
         xml.start("meta", &[("property", "dcterms:modified".into())])?;
         // Reproducible export proofs use the same conventional clock override
-        // as Typst. Ordinary exports record their actual generation time.
+        // as PDF export. Ordinary exports record their actual generation time.
         let modified = match std::env::var("SOURCE_DATE_EPOCH") {
             Ok(value) => chrono::DateTime::from_timestamp(
                 value.parse().map_err(|_| "Invalid SOURCE_DATE_EPOCH")?,

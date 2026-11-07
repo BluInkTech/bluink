@@ -28,7 +28,7 @@ fn listener_admission_bind_failures_idempotent_stop_and_restart_are_owned_by_rus
         web_font_folder: None,
         pdf_font_folder: None,
         docx_font_folder: None,
-        typst_binary: None,
+        pdf_renderer: None,
     })
     .unwrap();
     assert!(

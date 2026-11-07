@@ -3,7 +3,6 @@
 
 import { lstat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
-import { createHash } from 'node:crypto'
 
 const forbiddenPath =
 	/(?:^|\/)(?:\.git|history\.git|project\.sqlite3(?:-wal|-shm)?|\.env(?:\.[^/]*)?|\.demo(?:-[^/]+)?|\.cache|node_modules|demo-data-generator|screenshots|recordings)(?:\/|$)|\.(?:map|tsbuildinfo|tgz|parquet)$/i
@@ -29,13 +28,7 @@ export async function filesIn(directory, prefix = '') {
 /** Scan actual distribution bytes in addition to the filename allowlist. */
 export async function auditDirectory(
 	directory,
-	{
-		allowed,
-		required = [],
-		frontend = false,
-		privateRevision,
-		trustedUpstream = {},
-	} = {},
+	{ allowed, required = [], frontend = false, privateRevision } = {},
 ) {
 	if ((await lstat(directory)).isSymbolicLink())
 		throw new Error('Symlinks are not distributable staging roots.')
@@ -65,20 +58,12 @@ export async function auditDirectory(
 				/-----\x42EGIN (?:OPENSSH |RSA |ENCRYPTED |EC )?PRIVATE KEY-----(?![\r\n])/g,
 				'\0',
 			)
-		const upstream = trustedUpstream[file]
-		if (
-			upstream &&
-			createHash('sha256').update(bytes).digest('hex') !== upstream
-		)
-			throw new Error(`Upstream executable checksum mismatch: ${file}`)
-		// Pinned upstream executables can contain their vendor's build paths.
-		// Credentials and this release's private revision are never exempted.
 		const sensitive =
 			/BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY|(?:npm|ghp|github_pat)_[A-Za-z0-9]{30,}/.test(
 				text,
 			)
 		if (
-			(!upstream && privateText.test(text)) ||
+			privateText.test(text) ||
 			sensitive ||
 			(privateRevision && text.includes(privateRevision))
 		)
@@ -96,7 +81,6 @@ export const webFileAllowed = (file) =>
 		file,
 	)
 export const cliFileAllowed = (file) =>
-	(file.startsWith('web/') && webFileAllowed(file.slice(4))) ||
 	/^(?:bin\/bluink\.mjs|package\.json|npm-shrinkwrap\.json|LICENSE|README\.md|THIRD_PARTY_NOTICES\.txt|release\.json|vendor\/(?:(?:sample-pages|workspace-starter)\.json|workspace-setups\/[\w-]+\.json|themes\/(?:classic|editorial)\/(?:manifest\.json|html\/article\.html|site\/(?:page|listing)\.html)))$/.test(
 		file,
 	)

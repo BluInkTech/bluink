@@ -4,6 +4,10 @@
 export const versionPattern =
 	/^(0|[1-9]\d?)\.(1[0-2]|[1-9])\.([1-9]\d*)(?:-(alpha|beta|rc))?$/
 
+export function nativePackageVersion(productVersion) {
+	return productVersion.replace(/-(alpha|beta|rc)$/, '')
+}
+
 export function calendarMonth(date = new Date()) {
 	return {
 		key: `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`,

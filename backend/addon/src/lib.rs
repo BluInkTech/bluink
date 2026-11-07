@@ -15,6 +15,8 @@ pub struct RunOptions {
     pub argv: Vec<String>,
     /// The installed `bluink` package the addon was loaded for.
     pub package_root: Option<String>,
+    /// The launcher script Node ran, which a PDF renderer child runs again.
+    pub launcher: Option<String>,
 }
 
 /// Starts Bluink and resolves with its exit code once it finishes.
@@ -27,6 +29,7 @@ pub fn run(env: &Env, options: RunOptions) -> Result<Object<'_>> {
             let code = bluink::run_embedded(bluink::Launch {
                 arguments: options.argv,
                 package_root: options.package_root.map(Into::into),
+                launcher: options.launcher.map(Into::into),
             });
             deferred.resolve(move |_| Ok(u32::from(code)));
         })

@@ -18,7 +18,7 @@ import {
 	resolvePublishedResources,
 	stageInstalledResources,
 } from './resource-packages.mjs'
-import { json, sha256, writeJson } from './release-utils.mjs'
+import { json, writeJson } from './release-utils.mjs'
 
 test('single-resource packing is reproducible, omits private tooling and needs no sibling package', async () => {
 	const temporary = await mkdtemp(
@@ -36,7 +36,7 @@ test('single-resource packing is reproducible, omits private tooling and needs n
 			license: 'MPL-2.0',
 			private: true,
 			author: 'Private author metadata',
-			devDependencies: { '@bluink/typst': '26.10.1-alpha' },
+			devDependencies: { harfbuzzjs: '1.6.4' },
 			scripts: { prepack: 'exit 99', build: 'exit 99' },
 			files: ['index.js', 'sources.json', 'LICENSE', 'README.md', 'assets'],
 		}
@@ -58,17 +58,9 @@ test('single-resource packing is reproducible, omits private tooling and needs n
 			repository: 'https://github.com/BluInkTech/bluink',
 			sourceRoot: temporary,
 		}
-		const first = await packResource(
-			'fonts',
-			path.join(temporary, 'first'),
-			options,
-		)
+		const first = await packResource(path.join(temporary, 'first'), options)
 		await utimes(path.join(source, 'index.js'), new Date(0), new Date(0))
-		const second = await packResource(
-			'fonts',
-			path.join(temporary, 'second'),
-			options,
-		)
+		const second = await packResource(path.join(temporary, 'second'), options)
 		assert.equal(first.sha256, second.sha256)
 		assert.equal(first.version, '26.10.2')
 		assert.equal(first.manifest.publishConfig.access, 'public')
@@ -78,11 +70,7 @@ test('single-resource packing is reproducible, omits private tooling and needs n
 		assert.equal(first.files.includes('private-notes.txt'), false)
 		assert.deepEqual(await json(path.join(source, 'package.json')), manifest)
 		await assert.rejects(
-			packResource('web', temporary, options),
-			/fonts or typst/,
-		)
-		await assert.rejects(
-			packResource('fonts', temporary, { ...options, version: 'latest' }),
+			packResource(temporary, { ...options, version: 'latest' }),
 			/calendar/,
 		)
 		await writeJson(path.join(source, 'package.json'), {
@@ -90,7 +78,7 @@ test('single-resource packing is reproducible, omits private tooling and needs n
 			files: ['../private-notes.txt'],
 		})
 		await assert.rejects(
-			packResource('fonts', temporary, options),
+			packResource(temporary, options),
 			/unsafe package files/,
 		)
 		await writeJson(path.join(source, 'package.json'), {
@@ -98,7 +86,7 @@ test('single-resource packing is reproducible, omits private tooling and needs n
 			files: [...manifest.files, 'private-notes.txt'],
 		})
 		await assert.rejects(
-			packResource('fonts', temporary, options),
+			packResource(temporary, options),
 			/unsafe package files/,
 		)
 	} finally {
@@ -206,76 +194,40 @@ test('CLI preparation downloads frozen registry bytes and never needs resource b
 	}
 })
 
-test('source builds stage installed resources and fail on catalogue drift or changed Typst binaries', async () => {
+test('source builds stage installed fonts and fail on catalogue drift', async () => {
 	const temporary = await mkdtemp(
 		path.join(os.tmpdir(), 'bluink-installed-resources-'),
 	)
 	try {
 		const installRoot = path.join(temporary, 'checkout')
-		const packageRoots = Object.fromEntries(
-			['fonts', 'typst'].map((kind) => [
-				kind,
-				path.join(installRoot, 'backend/node_modules/@bluink', kind),
-			]),
+		const packageRoot = path.join(
+			installRoot,
+			'backend/node_modules/@bluink/fonts',
 		)
-		for (const kind of ['fonts', 'typst']) {
-			await mkdir(path.join(installRoot, kind), { recursive: true })
-			await mkdir(path.join(packageRoots[kind], 'assets'), { recursive: true })
-			await writeJson(path.join(packageRoots[kind], 'package.json'), {
-				name: `@bluink/${kind}`,
-				type: 'module',
-				exports: './index.js',
-			})
-			await writeFile(path.join(packageRoots[kind], 'index.js'), 'export {}\n')
-		}
+		await mkdir(path.join(installRoot, 'fonts'), { recursive: true })
+		await mkdir(path.join(packageRoot, 'assets'), { recursive: true })
+		await writeJson(path.join(packageRoot, 'package.json'), {
+			name: '@bluink/fonts',
+			type: 'module',
+			exports: './index.js',
+		})
+		await writeFile(path.join(packageRoot, 'index.js'), 'export {}\n')
 		const catalogue = '[{"id":"fixture"}]\n'
 		await writeFile(path.join(installRoot, 'fonts/catalogue.json'), catalogue)
-		await writeFile(path.join(packageRoots.fonts, 'catalogue.json'), catalogue)
+		await writeFile(path.join(packageRoot, 'catalogue.json'), catalogue)
 		await writeFile(
-			path.join(packageRoots.fonts, 'assets/font.woff2'),
+			path.join(packageRoot, 'assets/font.woff2'),
 			'paired assets',
 		)
-		const targets = {}
-		for (const target of ['linux-x64', 'windows-x64', 'macos-arm64']) {
-			const binary = target === 'windows-x64' ? 'typst.exe' : 'typst'
-			const bytes = Buffer.from(target)
-			targets[target] = { binary, binarySha256: sha256(bytes) }
-			await mkdir(path.join(packageRoots.typst, 'assets', target))
-			await writeFile(
-				path.join(packageRoots.typst, 'assets', target, binary),
-				bytes,
-			)
-		}
-		for (const folder of [packageRoots.typst, path.join(installRoot, 'typst')])
-			await writeJson(path.join(folder, 'sources.json'), { targets })
 		await stageInstalledResources({ installRoot })
 		assert.equal(
 			await readFile(path.join(installRoot, 'fonts/assets/font.woff2'), 'utf8'),
 			'paired assets',
 		)
-		assert.equal(
-			await readFile(
-				path.join(installRoot, 'typst/assets/linux-x64/typst'),
-				'utf8',
-			),
-			'linux-x64',
-		)
-		await writeFile(
-			path.join(packageRoots.fonts, 'catalogue.json'),
-			'different',
-		)
+		await writeFile(path.join(packageRoot, 'catalogue.json'), 'different')
 		await assert.rejects(
-			stageInstalledResources({ installRoot, packageRoots }),
+			stageInstalledResources({ installRoot, packageRoot }),
 			/fonts contract differs/,
-		)
-		await writeFile(path.join(packageRoots.fonts, 'catalogue.json'), catalogue)
-		await writeFile(
-			path.join(packageRoots.typst, 'assets/linux-x64/typst'),
-			'tampered',
-		)
-		await assert.rejects(
-			stageInstalledResources({ installRoot, packageRoots }),
-			/Typst binary checksum mismatch/,
 		)
 	} finally {
 		await rm(temporary, { recursive: true, force: true })

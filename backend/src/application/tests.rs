@@ -57,7 +57,7 @@ impl TestProject {
             web_font_folder: None,
             pdf_font_folder: None,
             docx_font_folder: None,
-            typst_binary: None,
+            pdf_renderer: None,
         })
         .unwrap()
     }

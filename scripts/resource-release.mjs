@@ -23,7 +23,7 @@ export function validateResourceInput(input) {
 	if (
 		input?.format !== 'bluink.resource-input' ||
 		input.formatVersion !== 1 ||
-		!['fonts', 'typst'].includes(input.kind) ||
+		input.kind !== 'fonts' ||
 		!versionPattern.test(input.version) ||
 		!input.publicRepository ||
 		Object.keys(input).some(
@@ -128,14 +128,10 @@ function sameArtifact(actual, expected) {
 	)
 }
 
-async function context(kind, publishing = false) {
-	if (!['fonts', 'typst'].includes(kind))
-		throw new Error('Choose fonts or typst.')
+async function context(publishing = false) {
 	const input = validateResourceInput(
-		await json(path.join(root, '.resource-inputs', `${kind}.json`)),
+		await json(path.join(root, '.resource-inputs/fonts.json')),
 	)
-	if (input.kind !== kind)
-		throw new Error('Resource input belongs to a different package.')
 	const commit = (
 		await run('git', ['rev-parse', 'HEAD'], { capture: true })
 	).trim()
@@ -156,7 +152,7 @@ async function context(kind, publishing = false) {
 					process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,
 			),
 	})
-	const manifest = await json(path.join(root, kind, 'package.json'))
+	const manifest = await json(path.join(root, 'fonts/package.json'))
 	if (
 		manifest.name !== input.artifact.name ||
 		manifest.version !== input.version
@@ -191,7 +187,7 @@ async function candidate(input, identity) {
 			...input.artifact,
 			archive: path.join(directory, input.artifact.filename),
 		},
-		await resourceAudit(input.kind),
+		resourceAudit('fonts'),
 	)
 }
 
@@ -200,7 +196,7 @@ export async function prepareResource(input, identity) {
 	await npm(['run', 'build', '--workspaces=false'], {
 		cwd: path.join(root, input.kind),
 	})
-	const record = await packResource(input.kind, directory, {
+	const record = await packResource(directory, {
 		repository: input.publicRepository,
 	})
 	if (!sameArtifact(resourceSummary(record), input.artifact))
@@ -219,22 +215,15 @@ export async function prepareResource(input, identity) {
 
 /** Install only the exact tools that the copied installed-package tests import. */
 export function smokeDependencies(input, sourceManifest, archive) {
-	const dependencies = { [input.artifact.name]: `file:${archive}` }
-	if (input.kind === 'fonts') {
-		const version = sourceManifest.devDependencies?.['@bluink/typst']
-		if (!versionPattern.test(version))
-			throw new Error(
-				'Fonts smoke tests require an exact Typst test dependency.',
-			)
-		dependencies['@bluink/typst'] = version
-		const harfbuzzVersion = sourceManifest.devDependencies?.harfbuzzjs
-		if (!/^\d+\.\d+\.\d+$/.test(harfbuzzVersion))
-			throw new Error(
-				'Fonts smoke tests require an exact HarfBuzz test dependency.',
-			)
-		dependencies.harfbuzzjs = harfbuzzVersion
+	const harfbuzzVersion = sourceManifest.devDependencies?.harfbuzzjs
+	if (!/^\d+\.\d+\.\d+$/.test(harfbuzzVersion))
+		throw new Error(
+			'Fonts smoke tests require an exact HarfBuzz test dependency.',
+		)
+	return {
+		[input.artifact.name]: `file:${archive}`,
+		harfbuzzjs: harfbuzzVersion,
 	}
-	return dependencies
 }
 
 /** Exercise installed package code and assets, never source-tree replacements. */
@@ -324,13 +313,11 @@ if (
 		)
 	)
 		throw new Error(
-			'Choose context, prepare, smoke, verify or publish with --package fonts|typst.',
+			'Choose context, prepare, smoke, verify or publish with --package fonts.',
 		)
 	const action = positionals[0]
-	const { input, identity, manifest } = await context(
-		values.package,
-		action === 'publish',
-	)
+	if (values.package !== 'fonts') throw new Error('Choose --package fonts.')
+	const { input, identity, manifest } = await context(action === 'publish')
 	if (action === 'prepare') await prepareResource(input, identity)
 	if (action === 'smoke') await smokeResource(input, identity, manifest)
 	if (['verify', 'publish'].includes(action)) {

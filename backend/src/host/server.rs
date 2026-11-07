@@ -51,7 +51,7 @@ fn options(values: &Map<String, Value>) -> Result<ApplicationOptions, String> {
         web_font_folder: Some(resources.font_directory("web")?),
         pdf_font_folder: Some(resources.font_directory("pdf")?),
         docx_font_folder: Some(resources.font_directory("docx")?),
-        typst_binary: Some(resources.typst_binary()?),
+        pdf_renderer: Some(resources::pdf_renderer()?),
     })
 }
 

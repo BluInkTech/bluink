@@ -15,7 +15,7 @@ import {
 import os from 'node:os'
 import path from 'node:path'
 import { contractHash } from './cli-build.mjs'
-import { frontendInput, stageFrontend } from './frontend-asset.mjs'
+import { frontendInput } from './frontend-asset.mjs'
 import { packDirectory, productionLock } from './package-artifacts.mjs'
 import {
 	buildPlatformPackage,
@@ -47,14 +47,9 @@ test('shared resources relocate across runners, verify all archives before stagi
 		const entries = []
 		const shared = path.join(temporary, 'downloaded')
 		await mkdir(shared)
-		for (const kind of ['fonts', 'typst', 'web']) {
+		for (const kind of ['fonts', 'web']) {
 			const source = path.join(temporary, kind)
-			const file =
-				kind === 'web'
-					? 'assets/index.html'
-					: kind === 'fonts'
-						? 'assets/web/inter.css'
-						: 'assets/windows-x64/LICENSE'
+			const file = kind === 'web' ? 'assets/index.html' : 'assets/web/inter.css'
 			await mkdir(path.dirname(path.join(source, file)), { recursive: true })
 			await writeJson(path.join(source, 'package.json'), {
 				name: `@bluink/${kind}`,
@@ -95,7 +90,7 @@ test('shared resources relocate across runners, verify all archives before stagi
 		await writeJson(metadata, entries)
 		const installed = path.join(temporary, 'workspace')
 		const records = await readPreparedResources(input, shared, installed)
-		assert.equal(records.length, 3)
+		assert.equal(records.length, 2)
 		assert.ok(
 			records.every((record) => path.dirname(record.archive) === shared),
 		)
@@ -106,16 +101,9 @@ test('shared resources relocate across runners, verify all archives before stagi
 			),
 			'Shared resource fixture.\n',
 		)
-		assert.equal(
-			await readFile(
-				path.join(installed, 'typst/assets/windows-x64/LICENSE'),
-				'utf8',
-			),
-			'Shared resource fixture.\n',
-		)
 		for (const invalid of [
 			entries.slice(1),
-			[entries[0], entries[0], entries[2]],
+			[entries[0], entries[0]],
 			entries.map((entry) => ({
 				...entry,
 				archive: 'C:\\runner\\absolute.tgz',
@@ -134,7 +122,7 @@ test('shared resources relocate across runners, verify all archives before stagi
 			path.join(installed, 'fonts/assets/web/inter.css'),
 			'Preserve until all archives verify.',
 		)
-		await appendFile(path.join(shared, entries[2].filename), 'tampered')
+		await appendFile(path.join(shared, entries[1].filename), 'tampered')
 		await assert.rejects(
 			readPreparedResources(input, shared, installed),
 			/integrity mismatch/,
@@ -165,12 +153,14 @@ test('public release context binds version, repository, tag and protected OIDC p
 			},
 			'https://github.com/example/cli',
 		),
-		dependencies: ['fonts', 'typst'].map((kind) => ({
-			name: `@bluink/${kind}`,
-			version: '26.10.7-alpha',
-			integrity: 'sha512-Ynl0ZXM=',
-			sha256: 'c'.repeat(64),
-		})),
+		dependencies: [
+			{
+				name: '@bluink/fonts',
+				version: '26.10.7-alpha',
+				integrity: 'sha512-Ynl0ZXM=',
+				sha256: 'c'.repeat(64),
+			},
+		],
 	}
 	const context = {
 		commit: 'a'.repeat(40),
@@ -198,7 +188,7 @@ test('public release context binds version, repository, tag and protected OIDC p
 	assert.throws(
 		() =>
 			validateInput({ ...input, dependencies: input.dependencies.slice(1) }),
-		/two npm dependencies/,
+		/one npm dependency/,
 	)
 	assert.throws(
 		() =>
@@ -215,7 +205,7 @@ test('public release context binds version, repository, tag and protected OIDC p
 		() =>
 			validateInput({
 				...input,
-				frontend: { ...input.frontend, version: '26.10.8-alpha' },
+				frontend: { ...input.frontend, version: 'invalid' },
 			}),
 		/frontend asset identity or version/,
 	)
@@ -253,22 +243,27 @@ test('official archive verification inspects platform addons and dependency meta
 			publicCommit: 'a'.repeat(40),
 			publicRepository: 'https://github.com/example/cli',
 		}
-		const dependencies = ['fonts', 'typst'].map((kind) => ({
-			name: `@bluink/${kind}`,
-			version: identity.version,
-			integrity: 'sha512-Ynl0ZXM=',
-			manifest: { license: 'MPL-2.0' },
-		}))
+		const nativeVersion = '26.10.7'
+		const dependencies = [
+			{
+				name: '@bluink/fonts',
+				version: identity.version,
+				integrity: 'sha512-Ynl0ZXM=',
+				manifest: { license: 'MPL-2.0' },
+			},
+		]
 		const webSource = path.join(directory, 'frontend')
 		await mkdir(path.join(webSource, 'assets'), { recursive: true })
 		await writeJson(path.join(webSource, 'package.json'), {
 			name: '@bluink/web',
-			version: identity.version,
+			version: '26.10.6',
 			private: true,
 			files: ['assets', 'release.json', 'LICENSE', 'THIRD_PARTY_NOTICES.txt'],
 		})
 		await writeJson(path.join(webSource, 'release.json'), {
-			version: identity.version,
+			version: '26.10.6',
+			fontsVersion: dependencies[0].version,
+			contractHash: await contractHash(),
 		})
 		for (const file of [
 			'assets/index.html',
@@ -281,7 +276,6 @@ test('official archive verification inspects platform addons and dependency meta
 			path.join(directory, 'frontend-packed'),
 			{ allowed: () => true },
 		)
-		await stageFrontend(web, path.join(source, 'web'))
 		const records = [...dependencies, web]
 		// One platform package per release target, each with a release addon.
 		const digest = await nativeSourceDigest()
@@ -290,14 +284,14 @@ test('official archive verification inspects platform addons and dependency meta
 		const notices = path.join(directory, 'notices.txt')
 		await writeFile(notices, 'Synthetic notices.\n')
 		const addon = (target, overrides = {}) =>
-			`BLUINK_NATIVE_BUILD_INFO_V1:${JSON.stringify({ sourceDigest: digest, target: target.rust, mode: 'release', version: identity.version, publicCommit: identity.publicCommit, ...overrides })}:END_BLUINK_NATIVE_BUILD_INFO`
+			`BLUINK_NATIVE_BUILD_INFO_V1:${JSON.stringify({ sourceDigest: digest, target: target.rust, mode: 'release', version: nativeVersion, publicCommit: identity.publicCommit, ...overrides })}:END_BLUINK_NATIVE_BUILD_INFO`
 		for (const target of targets)
 			await writeFile(path.join(nativeDirectory, target.addon), addon(target))
 		const native = await verifyNativeArtifacts(
 			nativeDirectory,
 			undefined,
 			false,
-			identity,
+			{ ...identity, version: nativeVersion },
 		)
 		const platforms = []
 		for (const entry of native) {
@@ -305,7 +299,7 @@ test('official archive verification inspects platform addons and dependency meta
 			platforms.push({
 				...(await buildPlatformPackage(target, entry, {
 					nativeDirectory,
-					version: identity.version,
+					version: nativeVersion,
 					license: 'MPL-2.0',
 					identity,
 					notices,
@@ -320,7 +314,7 @@ test('official archive verification inspects platform addons and dependency meta
 			license: 'MPL-2.0',
 			repository: { url: `${identity.publicRepository}.git` },
 			dependencies: Object.fromEntries(
-				dependencies.map(({ name, version }) => [name, version]),
+				records.map(({ name, version }) => [name, version]),
 			),
 			optionalDependencies: Object.fromEntries(
 				platforms.map(({ name, version }) => [name, version]),
@@ -328,7 +322,6 @@ test('official archive verification inspects platform addons and dependency meta
 			bin: { bluink: 'bin/bluink.mjs' },
 			files: [
 				'bin',
-				'web',
 				'LICENSE',
 				'README.md',
 				'release.json',
@@ -358,7 +351,7 @@ test('official archive verification inspects platform addons and dependency meta
 				integrity: web.integrity,
 				sha256: web.sha256,
 			},
-			dependencies: dependencies.map(({ name, version, integrity }) => ({
+			dependencies: records.map(({ name, version, integrity }) => ({
 				name,
 				version,
 				integrity,
@@ -369,7 +362,7 @@ test('official archive verification inspects platform addons and dependency meta
 			await writeJson(path.join(source, 'package.json'), manifest)
 			await writeJson(
 				path.join(source, 'npm-shrinkwrap.json'),
-				productionLock(manifest, [...dependencies, ...platforms]),
+				productionLock(manifest, [...records, ...platforms]),
 			)
 		}
 		await writeManifest()
@@ -449,7 +442,7 @@ test('official archive verification inspects platform addons and dependency meta
 			},
 			{
 				nativeDirectory,
-				version: identity.version,
+				version: nativeVersion,
 				license: 'MPL-2.0',
 				identity,
 				notices,
@@ -495,7 +488,7 @@ test('publication requires all three reports bound to this exact archive and nat
 				},
 				native: {
 					status: 'passed',
-					version,
+					version: '26.10.7',
 					publicCommit,
 					target: target.rust,
 					sha256: 'c'.repeat(64),

@@ -131,22 +131,11 @@ fn complete_corpus_compiles_with_native_pdf_helpers_and_packaged_fonts() {
             ("assets/pixel.png".into(), include_bytes!("../../test-fixtures/one-pixel.png").to_vec()),
         ]),
     };
-    let platform = if cfg!(target_os = "windows") {
-        "windows-x64/typst.exe"
-    } else if cfg!(target_os = "linux") {
-        "linux-x64/typst"
-    } else {
-        "macos-arm64/typst"
-    };
-    let binary = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../typst/assets")
-        .join(platform);
     let fonts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fonts/assets/pdf");
     publish_pdf(
         bundle.clone(),
         super::PdfProfile::Default,
         &temp.path().join("full.pdf"),
-        &binary,
         &fonts,
     )
     .unwrap();
@@ -155,27 +144,9 @@ fn complete_corpus_compiles_with_native_pdf_helpers_and_packaged_fonts() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
     }
-    let query = std::process::Command::new(&binary)
-        .args([
-            "query",
-            "--features",
-            "a11y-extras",
-            "--ignore-system-fonts",
-            "--font-path",
-        ])
-        .arg(&fonts)
-        .arg(temp.path().join("document.typ"))
-        .args(["table", "--field", "children"])
-        .output()
-        .unwrap();
-    assert!(
-        query.status.success(),
-        "{}",
-        String::from_utf8_lossy(&query.stderr)
-    );
-    let table: Value = serde_json::from_slice(&query.stdout).unwrap();
-    let table = table.as_array().unwrap().first().unwrap();
-    let cells = table.as_array().unwrap();
+    let tables =
+        super::pdf::query(temp.path(), "document.typ", &fonts, "table", "children").unwrap();
+    let cells = tables.first().unwrap().as_array().unwrap();
     assert!(cells.iter().any(|cell| cell["rowspan"] == 2));
     assert!(cells.iter().any(|cell| cell["colspan"] == 2));
 }

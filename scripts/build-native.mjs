@@ -10,6 +10,7 @@ import { parseArgs } from 'node:util'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { nativePackageVersion } from './release-identity.mjs'
 import {
 	nativeBuildInfo,
 	nativeDirectory,
@@ -88,9 +89,11 @@ export async function buildNative(
 		? path.resolve(outputDirectory)
 		: nativeDirectory(mode, workspaceRoot)
 	const sourceDigest = await nativeSourceDigest(workspaceRoot)
-	const version = JSON.parse(
+	const productVersion = JSON.parse(
 		await readFile(path.join(workspaceRoot, 'backend/package.json'), 'utf8'),
 	).version
+	const version =
+		mode === 'release' ? nativePackageVersion(productVersion) : productVersion
 	const publicCommit = process.env.BLUINK_PUBLIC_COMMIT
 	if (
 		publicCommit &&

@@ -14,11 +14,11 @@ installs Bluink's native part for your machine as one of the optional
 `@bluink/cli-darwin-arm64`), and Node.js loads it. No package runs an install
 script, so npm's default script policy needs no exceptions; don't install with
 `--omit=optional`, which skips the native part.
-The compiled interface is bundled in this package. Its exact npm dependencies
-provide fonts and the PDF engine.
+Exact npm dependencies provide the compiled Web interface and Fonts. The PDF
+engine is built into the native addon.
 Installation requires network access; ordinary offline use needs no resource
 downloads or separate compiler installation. HTML, websites, PDF and Word
-(DOCX) share reusable publication themes. PDF uses the packaged Typst engine;
+(DOCX) share reusable publication themes. PDF uses the built-in Typst engine;
 Word is generated natively with embedded offline fonts. No Python installation
 is required. Calendar versions use YY.M.BUILD with an optional
 prerelease suffix.

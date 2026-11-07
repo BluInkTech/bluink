@@ -43,7 +43,7 @@ test('independent publication binds one frozen package to its own protected tag 
 	for (const override of [
 		{ repository: 'other/repo' },
 		{ ref: 'refs/tags/v26.10.2' },
-		{ ref: 'refs/tags/typst/v26.10.2' },
+		{ ref: 'refs/tags/web/v26.10.2' },
 		{ ref: 'refs/heads/main' },
 		{ event: 'workflow_dispatch' },
 		{ publicRepository: 'false' },
@@ -71,7 +71,7 @@ test('independent publication binds one frozen package to its own protected tag 
 		{ version: 'latest' },
 		{ artifact: { ...input.artifact, filename: '../outside.tgz' } },
 		{ artifact: { ...input.artifact, archive: '/runner/private.tgz' } },
-		{ artifact: { ...input.artifact, name: '@bluink/typst' } },
+		{ artifact: { ...input.artifact, name: '@bluink/web' } },
 		{ artifact: { ...input.artifact, sha256: 'invalid' } },
 	])
 		assert.throws(() => validateResourceInput({ ...input, ...override }))
@@ -96,7 +96,7 @@ test('resource publication requires all platform reports for exactly the tested 
 	assert.equal(validateResourceReports(input, identity, reports).length, 3)
 	for (const override of [
 		{ status: 'failed' },
-		{ kind: 'typst' },
+		{ kind: 'web' },
 		{ version: '26.10.3' },
 		{ publicCommit: 'c'.repeat(40) },
 		{ platform: 'win32' },
@@ -120,13 +120,11 @@ test('resource publication requires all platform reports for exactly the tested 
 test('installed Fonts smoke test installs its pinned shaping dependency', () => {
 	const manifest = {
 		devDependencies: {
-			'@bluink/typst': '26.10.2',
 			harfbuzzjs: '1.6.3',
 		},
 	}
 	assert.deepEqual(smokeDependencies(input, manifest, '/fonts.tgz'), {
 		'@bluink/fonts': 'file:/fonts.tgz',
-		'@bluink/typst': '26.10.2',
 		harfbuzzjs: '1.6.3',
 	})
 	assert.throws(
