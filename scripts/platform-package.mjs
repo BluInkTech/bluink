@@ -125,7 +125,7 @@ export function releaseNativeEntry(record, native) {
 
 /** Verify a packed platform package as a release artifact: its exact manifest and
  * a release-mode addon built from the current sources for this release. Returns
- * the addon's identity in the shape `verifyNativeArtifacts` reports. */
+ * the package manifest and the addon's verified identity. */
 export async function verifyPlatformArchive(record, target, identity) {
 	const license = (await json(path.join(root, 'backend/package.json'))).license
 	const expected = platformManifest(target, {
@@ -167,5 +167,5 @@ export async function verifyPlatformArchive(record, target, identity) {
 			}
 		},
 	})
-	return inspected.inspection
+	return { manifest: inspected.manifest, addon: inspected.inspection }
 }

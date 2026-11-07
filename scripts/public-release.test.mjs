@@ -390,8 +390,18 @@ test('official archive verification inspects platform addons and dependency meta
 		await chmod(path.join(source, 'LICENSE'), 0o755)
 		await utimes(path.join(source, 'LICENSE'), new Date(), new Date())
 		assert.equal((await packed()).sha256, first.sha256)
+		// A runner downloading the bundle receives only archive records.
+		const transferred = platforms.map(
+			({ name, version, sha256, integrity, archive }) => ({
+				name,
+				version,
+				sha256,
+				integrity,
+				archive,
+			}),
+		)
 		assert.equal(
-			(await verifyCliArchive(first.archive, identity, records, platforms))
+			(await verifyCliArchive(first.archive, identity, records, transferred))
 				.inspection.length,
 			3,
 		)

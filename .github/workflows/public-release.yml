@@ -87,7 +87,7 @@ jobs:
         run: test "$(npm --version)" = '12.2.0'
       - run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt,clippy
       - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b7d1c7a52e0 # v2.9.3
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: backend -> target
           key: ${{ matrix.target }}
@@ -289,7 +289,7 @@ jobs:
           latest="$(npm view bluink dist-tags.latest)"
           [[ "$alpha" == *-alpha ]] || { echo 'alpha tag does not point to an alpha release'; exit 1; }
           [[ "$GITHUB_REF_NAME" == "v-latest-$alpha" ]] || { echo 'promotion tag differs from the current alpha'; exit 1; }
-          [[ "$latest" == *-alpha || "$latest" == *-beta || "$latest" == *-rc ]] || { echo 'latest points to a stable release'; exit 1; }
+          [[ -z "$latest" || "$latest" == 0.0.0-stage || "$latest" == *-alpha || "$latest" == *-beta || "$latest" == *-rc ]] || { echo 'latest points to a stable release'; exit 1; }
           # Platform packages first, so latest never pins a missing addon.
           for package in @bluink/cli-win32-x64 @bluink/cli-darwin-arm64 @bluink/cli-linux-x64-gnu bluink; do
             npm dist-tag add "$package@$alpha" latest

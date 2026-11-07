@@ -209,10 +209,12 @@ export async function verifyCliArchive(archive, identity, records, platforms) {
 		const record = platforms.find((entry) => entry.name === target.addonPackage)
 		if (!record)
 			throw new Error(`Missing platform package: ${target.addonPackage}`)
-		native.push({
+		const { manifest, addon } = await verifyPlatformArchive(
 			record,
-			addon: await verifyPlatformArchive(record, target, identity),
-		})
+			target,
+			identity,
+		)
+		native.push({ record: { ...record, manifest }, addon })
 	}
 	if (platforms.length !== targets.length)
 		throw new Error('Unexpected platform package in the release.')
@@ -326,7 +328,12 @@ export async function verifyCliArchive(archive, identity, records, platforms) {
 			const lock = await json(path.join(directory, 'npm-shrinkwrap.json'))
 			if (
 				JSON.stringify(lock) !==
-				JSON.stringify(productionLock(manifest, [...records, ...platforms]))
+				JSON.stringify(
+					productionLock(manifest, [
+						...records,
+						...native.map(({ record }) => record),
+					]),
+				)
 			)
 				throw new Error('CLI production dependency lock changed.')
 			return native.map(({ addon }) => addon)
