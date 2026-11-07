@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2023–2026 BluInk
 
-// Published as @bluink/cli's bin/bluink.mjs. It must only import Node built-ins.
+// Published as bluink's bin/bluink.mjs. It must only import Node built-ins.
 // Node only loads Bluink's addon and waits; every command runs in Rust.
 import { createRequire } from 'node:module'
 import path from 'node:path'
@@ -75,8 +75,4 @@ async function main() {
 	return addon.run({ argv: process.argv.slice(2), packageRoot })
 }
 
-if (
-	process.argv[1] &&
-	path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-)
-	process.exitCode = await main()
+if (import.meta.main) process.exitCode = await main()

@@ -1,6 +1,6 @@
 {
 	"name": "bluink",
-	"version": "26.11.10-alpha",
+	"version": "26.11.11-alpha",
 	"description": "Structured writing & self-publishing application",
 	"private": true,
 	"type": "module",
